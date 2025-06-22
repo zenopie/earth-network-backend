@@ -1,9 +1,7 @@
-# main.py
-
 import os
 import hashlib
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from Crypto.Cipher import DES3
 
@@ -11,29 +9,21 @@ from Crypto.Cipher import DES3
 app = FastAPI(
     title="Earth Network BAC Service",
     description="A microservice to create the authentication command for ePassport Basic Access Control (BAC).",
-    version="1.0.2", # Final version!
+    version="1.0.2",
 )
 
 # --- Cryptographic Helper Functions for BAC ---
 
-# --- NEW HELPER FUNCTION: DES Key Parity Adjustment ---
 def adjust_key_parity(key: bytes) -> bytes:
-    """
-    Adjusts each byte of a DES key to have odd parity.
-    The LSB of each byte is set or cleared to make the number of '1's odd.
-    """
     adjusted_key = bytearray()
     for byte in key:
-        # Count the number of set bits (1s)
         parity = bin(byte).count('1')
-        # If parity is even, flip the last bit (LSB)
         if parity % 2 == 0:
             byte ^= 1
         adjusted_key.append(byte)
     return bytes(adjusted_key)
 
 def derive_bac_keys(doc_num: str, dob: str, doe: str):
-    # This function remains the same.
     mrz_info_str = (doc_num.ljust(9, '<') + dob + doe).upper()
     mrz_info_bytes = mrz_info_str.encode('utf-8')
     mrz_hash = hashlib.sha1(mrz_info_bytes).digest()
@@ -45,7 +35,6 @@ def derive_bac_keys(doc_num: str, dob: str, doe: str):
     return k_enc, k_mac
 
 def pad_iso9797_m2(data: bytes, block_size: int):
-    # This function is correct and remains unchanged.
     padded = data + b'\x80'
     padding_len = block_size - (len(padded) % block_size)
     if padding_len == block_size:
@@ -53,25 +42,21 @@ def pad_iso9797_m2(data: bytes, block_size: int):
     return padded + (b'\x00' * padding_len)
 
 def calculate_retail_mac(key: bytes, data: bytes):
-    """
-    Calculates the Retail-MAC using 2-key 3DES-CBC.
-    We pass the 16-byte key directly; the library handles the K1-K2-K1 scheme.
-    """
-    # The key is the 16-byte Kmac directly.
     padded_data = pad_iso9797_m2(data, DES3.block_size)
-    
-    # The library will correctly interpret the 16-byte key as a 2-key 3DES key.
     cipher = DES3.new(key, DES3.MODE_CBC, iv=b'\x00'*8)
-    
     encrypted = cipher.encrypt(padded_data)
     return encrypted[-8:]
 
-# --- Pydantic Model (Unchanged) ---
+# --- Pydantic Model ---
 class BacCommandRequest(BaseModel):
-    passport_number: str
-    date_of_birth: str
-    date_of_expiry: str
-    challenge_hex: str
+    passport_number: str = Field(..., min_length=1, max_length=9)
+    date_of_birth: str = Field(..., regex=r'^\d{6}$')
+    date_of_expiry: str = Field(..., regex=r'^\d{6}$')
+    challenge_hex: str = Field(..., regex=r'^[0-9a-fA-F]{16}$')
+
+    @validator('passport_number')
+    def validate_passport_number(cls, v):
+        return v.replace('<', '').strip().upper()
 
 # --- API Endpoints ---
 @app.get("/")
@@ -88,7 +73,6 @@ async def create_bac_command(request: BacCommandRequest):
             request.date_of_expiry
         )
 
-        # --- FIX: Adjust key parity before using the keys ---
         k_enc = adjust_key_parity(k_enc_raw)
         k_mac = adjust_key_parity(k_mac_raw)
         
@@ -108,7 +92,8 @@ async def create_bac_command(request: BacCommandRequest):
         apdu_command = (
             b'\x00\x82\x00\x00' +
             len(command_data).to_bytes(1, 'big') +
-            command_data
+            command_data +
+            b'\x00'  # Added Le byte
         )
         print("Successfully generated authentication command.")
         return {"command_hex": apdu_command.hex()}
