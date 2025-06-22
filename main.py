@@ -94,8 +94,8 @@ async def create_bac_command(request: BacCommandRequest):
         apdu_command = (
             b'\x00\x82\x00\x00' +
             len(command_data).to_bytes(1, 'big') +
-            command_data +
-            b'\x00'
+            command_data #+
+        #    b'\x00'
         )
         print(f"Generated APDU Command: {apdu_command.hex()}")
         print("Successfully generated authentication command.")
