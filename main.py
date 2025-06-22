@@ -50,9 +50,9 @@ def calculate_retail_mac(key: bytes, data: bytes):
 # --- Pydantic Model ---
 class BacCommandRequest(BaseModel):
     passport_number: str = Field(..., min_length=1, max_length=9)
-    date_of_birth: str = Field(..., regex=r'^\d{6}$')
-    date_of_expiry: str = Field(..., regex=r'^\d{6}$')
-    challenge_hex: str = Field(..., regex=r'^[0-9a-fA-F]{16}$')
+    date_of_birth: str = Field(..., pattern=r'^\d{6}$')
+    date_of_expiry: str = Field(..., pattern=r'^\d{6}$')
+    challenge_hex: str = Field(..., pattern=r'^[0-9a-fA-F]{16}$')
 
     @validator('passport_number')
     def validate_passport_number(cls, v):
