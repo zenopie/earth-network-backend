@@ -66,16 +66,18 @@ def read_root():
 @app.post("/create-bac-command")
 async def create_bac_command(request: BacCommandRequest):
     print("--- Received BAC Command Request ---")
+    print(f"Inputs: passport_number={request.passport_number}, dob={request.date_of_birth}, doe={request.date_of_expiry}, challenge_hex={request.challenge_hex}")
     try:
         k_enc_raw, k_mac_raw = derive_bac_keys(
             request.passport_number,
             request.date_of_birth,
             request.date_of_expiry
         )
+        print(f"Raw Kenc: {k_enc_raw.hex()}")
+        print(f"Raw Kmac: {k_mac_raw.hex()}")
 
         k_enc = adjust_key_parity(k_enc_raw)
         k_mac = adjust_key_parity(k_mac_raw)
-        
         print(f"Parity Adjusted Kenc: {k_enc.hex()}")
         print(f"Parity Adjusted Kmac: {k_mac.hex()}")
 
@@ -93,8 +95,9 @@ async def create_bac_command(request: BacCommandRequest):
             b'\x00\x82\x00\x00' +
             len(command_data).to_bytes(1, 'big') +
             command_data +
-            b'\x00'  # Added Le byte
+            b'\x00'
         )
+        print(f"Generated APDU Command: {apdu_command.hex()}")
         print("Successfully generated authentication command.")
         return {"command_hex": apdu_command.hex()}
     except Exception as e:
