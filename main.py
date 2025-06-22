@@ -41,10 +41,28 @@ def pad_iso9797_m2(data: bytes, block_size: int):
         return padded
     return padded + (b'\x00' * padding_len)
 
+# This is the CORRECT version
 def calculate_retail_mac(key: bytes, data: bytes):
+    """
+    Calculates the Retail-MAC by explicitly constructing the 24-byte
+    3DES key (K1-K2-K1) as required by the standard.
+    """
+    # Split the 16-byte Kmac into two 8-byte keys
+    key_a = key[:8]
+    key_b = key[8:16]
+    
+    # Construct the 24-byte key for the MAC cipher
+    mac_key = key_a + key_b + key_a
+    
+    # Pad the data using the correct ISO standard
     padded_data = pad_iso9797_m2(data, DES3.block_size)
-    cipher = DES3.new(key, DES3.MODE_CBC, iv=b'\x00'*8)
+    
+    # Create the cipher with the explicit 24-byte key
+    cipher = DES3.new(mac_key, DES3.MODE_CBC, iv=b'\x00'*8)
+    
     encrypted = cipher.encrypt(padded_data)
+    
+    # The MAC is the last 8 bytes of the result
     return encrypted[-8:]
 
 # --- Pydantic Model ---
