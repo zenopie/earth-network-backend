@@ -53,11 +53,16 @@ def pad_iso9797_m2(data: bytes, block_size: int):
     return padded + (b'\x00' * padding_len)
 
 def calculate_retail_mac(key: bytes, data: bytes):
-    # This function is correct and remains unchanged.
-    key_a, key_b = key[:8], key[8:16]
-    mac_key = key_a + key_b + key_a
+    """
+    Calculates the Retail-MAC using 2-key 3DES-CBC.
+    We pass the 16-byte key directly; the library handles the K1-K2-K1 scheme.
+    """
+    # The key is the 16-byte Kmac directly.
     padded_data = pad_iso9797_m2(data, DES3.block_size)
-    cipher = DES3.new(mac_key, DES3.MODE_CBC, iv=b'\x00'*8)
+    
+    # The library will correctly interpret the 16-byte key as a 2-key 3DES key.
+    cipher = DES3.new(key, DES3.MODE_CBC, iv=b'\x00'*8)
+    
     encrypted = cipher.encrypt(padded_data)
     return encrypted[-8:]
 
