@@ -1,6 +1,13 @@
-# requirements.txt
-
 fastapi
-uvicorn[standard]
-pycryptodome
-pydantic
+uvicorn
+secret_sdk
+aiofiles
+python-dotenv
+schedule
+aiohttp
+setuptools
+langchain-ollama
+secp256k1
+ollama
+openai
+apscheduler

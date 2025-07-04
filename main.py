@@ -1,126 +1,63 @@
-import os
-import hashlib
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, validator
+# /main.py
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from Crypto.Cipher import DES3
+import config
+# Import the individual router modules
+from routers import register, chat, analytics
 
-# --- Create the FastAPI app instance ---
 app = FastAPI(
-    title="Earth Network BAC Service",
-    description="A microservice to create the authentication command for ePassport Basic Access Control (BAC).",
-    version="1.0.2",
+    title="Erth Network API",
+    description="Backend services for Erth Network applications.",
+    version="1.4.0" # Version bump to reflect change
 )
 
-# --- Cryptographic Helper Functions for BAC ---
+# --- Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
-def adjust_key_parity(key: bytes) -> bytes:
-    adjusted_key = bytearray()
-    for byte in key:
-        parity = bin(byte).count('1')
-        if parity % 2 == 0:
-            byte ^= 1
-        adjusted_key.append(byte)
-    return bytes(adjusted_key)
+# --- Event Handlers & Scheduler ---
+scheduler = AsyncIOScheduler()
 
-def derive_bac_keys(doc_num: str, dob: str, doe: str):
-    mrz_info_str = (doc_num.ljust(9, '<') + dob + doe).upper()
-    mrz_info_bytes = mrz_info_str.encode('utf-8')
-    mrz_hash = hashlib.sha1(mrz_info_bytes).digest()
-    key_seed = mrz_hash[:16]
-    c1 = b'\x00\x00\x00\x01'
-    k_enc = hashlib.sha1(key_seed + c1).digest()[:16]
-    c2 = b'\x00\x00\x00\x02'
-    k_mac = hashlib.sha1(key_seed + c2).digest()[:16]
-    return k_enc, k_mac
+@app.on_event("startup")
+async def startup_event():
+    """Initializes analytics and starts the scheduler."""
+    print("Application startup...")
+    # Call init_analytics from the analytics router module
+    analytics.init_analytics()
+    # Schedule the job from the analytics router module to run every 24 hours
+    scheduler.add_job(analytics.update_analytics_job, 'interval', hours=24)
+    scheduler.start()
+    print("Startup complete. Analytics scheduler is running.")
 
-def pad_iso9797_m2(data: bytes, block_size: int):
-    padded = data + b'\x80'
-    padding_len = block_size - (len(padded) % block_size)
-    if padding_len == block_size:
-        return padded
-    return padded + (b'\x00' * padding_len)
+@app.on_event("shutdown")
+def shutdown_event():
+    """Shuts down the scheduler."""
+    scheduler.shutdown()
+    print("Application shutdown.")
 
-# This is the CORRECT version
-def calculate_retail_mac(key: bytes, data: bytes):
-    """
-    Calculates the Retail-MAC by explicitly constructing the 24-byte
-    3DES key (K1-K2-K1) as required by the standard.
-    """
-    # Split the 16-byte Kmac into two 8-byte keys
-    key_a = key[:8]
-    key_b = key[8:16]
-    
-    # Construct the 24-byte key for the MAC cipher
-    mac_key = key_a + key_b + key_a
-    
-    # Pad the data using the correct ISO standard
-    padded_data = pad_iso9797_m2(data, DES3.block_size)
-    
-    # Create the cipher with the explicit 24-byte key
-    cipher = DES3.new(mac_key, DES3.MODE_CBC, iv=b'\x00'*8)
-    
-    encrypted = cipher.encrypt(padded_data)
-    
-    # The MAC is the last 8 bytes of the result
-    return encrypted[-8:]
+# --- API Routers ---
+app.include_router(register.router, prefix="/api", tags=["Registration"])
+app.include_router(chat.router, prefix="/api", tags=["Chat"])
+app.include_router(analytics.router, prefix="/api", tags=["Analytics"])
 
-# --- Pydantic Model ---
-class BacCommandRequest(BaseModel):
-    passport_number: str = Field(..., min_length=1, max_length=9)
-    date_of_birth: str = Field(..., pattern=r'^\d{6}$')
-    date_of_expiry: str = Field(..., pattern=r'^\d{6}$')
-    challenge_hex: str = Field(..., pattern=r'^[0-9a-fA-F]{16}$')
 
-    @validator('passport_number')
-    def validate_passport_number(cls, v):
-        return v.replace('<', '').strip().upper()
+@app.get("/", tags=["Health Check"])
+async def read_root():
+    return {"message": "Welcome to the Erth Network API"}
 
-# --- API Endpoints ---
-@app.get("/")
-def read_root():
-    return {"message": "BAC Service is running."}
-
-@app.post("/create-bac-command")
-async def create_bac_command(request: BacCommandRequest):
-    print("--- Received BAC Command Request ---")
-    print(f"Inputs: passport_number={request.passport_number}, dob={request.date_of_birth}, doe={request.date_of_expiry}, challenge_hex={request.challenge_hex}")
-    try:
-        k_enc_raw, k_mac_raw = derive_bac_keys(
-            request.passport_number,
-            request.date_of_birth,
-            request.date_of_expiry
-        )
-        print(f"Raw Kenc: {k_enc_raw.hex()}")
-        print(f"Raw Kmac: {k_mac_raw.hex()}")
-
-        k_enc = adjust_key_parity(k_enc_raw)
-        k_mac = adjust_key_parity(k_mac_raw)
-        print(f"Parity Adjusted Kenc: {k_enc.hex()}")
-        print(f"Parity Adjusted Kmac: {k_mac.hex()}")
-
-        rnd_icc = bytes.fromhex(request.challenge_hex)
-        rnd_ifd, k_ifd = os.urandom(8), os.urandom(16)
-        s = rnd_ifd + rnd_icc + k_ifd
-        
-        cipher_enc = DES3.new(k_enc, DES3.MODE_ECB)
-        e_ifd = cipher_enc.encrypt(s)
-        
-        m_ifd = calculate_retail_mac(k_mac, e_ifd)
-        
-        command_data = e_ifd + m_ifd
-        apdu_command = (
-            b'\x00\x82\x00\x00' +
-            len(command_data).to_bytes(1, 'big') +
-            command_data #+
-        #    b'\x00'
-        )
-        print(f"Generated APDU Command: {apdu_command.hex()}")
-        print("Successfully generated authentication command.")
-        return {"command_hex": apdu_command.hex()}
-    except Exception as e:
-        print(f"Error creating BAC command: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="An internal error occurred during the cryptographic process."
-        )
+# --- Run Server ---
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=config.WEBHOOK_PORT,
+        reload=True
+    )
