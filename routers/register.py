@@ -128,7 +128,7 @@ async def register(
         
         # Check if the transaction succeeded on-chain
         if tx_info.code != 0:
-            raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.raw_log}")
+            raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
 
         return {"success": True, "hash": identity_hash, "tx_hash": tx_info.txhash, "logs": tx_info.logs}
 
