@@ -103,7 +103,7 @@ async def register(
             # Use the synchronous client's encryption utils for this part as required
             encryption_utils=secret_client.encrypt_utils
         )
-        tx = await async_wallet.create_and_broadcast_tx(msg_list=[msg], gas=200000, memo="")
+        tx = await async_wallet.create_and_broadcast_tx(msg_list=[msg], gas=500000, memo="")
         if tx.code != 0:
             raise HTTPException(status_code=500, detail=f"Transaction broadcast failed: {tx.raw_log}")
 
