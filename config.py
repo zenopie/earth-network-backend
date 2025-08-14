@@ -19,7 +19,6 @@ REGISTRATION_HASH = "12fad89bbc7f4c9051b7b5fa1c7af1c17480dcdee4b962cf6cb6ff668da
 
 # --- Secret AI / Ollama ---
 SECRET_AI_URL = "https://secretai-rytn.scrtlabs.com:21434"
-SECRET_AI_API_KEY = "sk-MiojMS-qLCH3sT597TIRWS1q1atz_V_oo3GSoKJphHL_852IKGbmvbLuh43aAXSy-B-0--1y"
 OLLAMA_MODEL = "gemma3:4b"
 
 # --- Analytics & DeFi Contracts ---
@@ -44,7 +43,7 @@ TOKENS = {
 UNIFIED_POOL_CONTRACT = "secret1rj2phrf6x3v7526jrz60m2dcq58slyq2269kra"
 UNIFIED_POOL_HASH = "2be409a0708a9e05155341ee3fe42a63bf2ff77b140942a2593767f5637bbf70"
 
-# --- Wallet Key Loading ---
+# --- Key Loading ---
 def get_wallet_key() -> str:
     """
     Loads the wallet mnemonic from the 'WALLET_KEY' environment variable.
@@ -56,6 +55,20 @@ def get_wallet_key() -> str:
         raise ValueError("FATAL: WALLET_KEY environment variable not set or is empty.")
     return key
 
+def get_secret_ai_api_key() -> str:
+    """
+    Loads the Secret AI API key from the 'SECRET_AI_API_KEY' environment variable.
+    """
+    api_key = os.getenv("SECRET_AI_API_KEY")
+    if not api_key:
+        # This error will cause the app to fail on startup if the key is missing.
+        raise ValueError("FATAL: SECRET_AI_API_KEY environment variable not set or is empty.")
+    return api_key
+
 # This line now calls the new function.
 WALLET_KEY = get_wallet_key()
 print("Wallet key loaded from environment variable.")
+
+# This line now calls the new function for the Secret AI API Key.
+SECRET_AI_API_KEY = get_secret_ai_api_key()
+print("Secret AI API key loaded from environment variable.")
