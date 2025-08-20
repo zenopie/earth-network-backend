@@ -11,3 +11,6 @@ secp256k1
 ollama
 openai
 apscheduler
+asn1crypto
+cryptography
+pymrtd

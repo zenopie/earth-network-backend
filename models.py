@@ -12,3 +12,14 @@ class ChatRequest(BaseModel):
     model: str
     messages: List[Dict]
     stream: bool = False
+
+class VerifyRequest(BaseModel):
+    """
+    Request model for /verify endpoint.
+
+    Fields:
+    - dg1: base64-encoded DG1 bytes (required)
+    - sod: base64-encoded SOD bytes (required)
+    """
+    dg1: str
+    sod: str

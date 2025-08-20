@@ -1,5 +1,9 @@
 # /config.py
 import os
+import tempfile
+import urllib.request
+import shutil
+import logging
 
 # --- Environment & Ports ---
 WEBHOOK_PORT = 8000
@@ -43,32 +47,121 @@ TOKENS = {
 UNIFIED_POOL_CONTRACT = "secret1rj2phrf6x3v7526jrz60m2dcq58slyq2269kra"
 UNIFIED_POOL_HASH = "2be409a0708a9e05155341ee3fe42a63bf2ff77b140942a2593767f5637bbf70"
 
+
 # --- Key Loading ---
 def get_wallet_key() -> str:
-    """
-    Loads the wallet mnemonic from the 'WALLET_KEY' environment variable.
-    """
+    """Loads the wallet mnemonic from the 'WALLET_KEY' environment variable."""
     key = os.getenv("WALLET_KEY")
     if not key:
-        # This error will be raised if the environment variable is not set or is empty.
-        # It will cause the app to fail on startup, which is good practice for missing critical config.
         raise ValueError("FATAL: WALLET_KEY environment variable not set or is empty.")
     return key
 
 def get_secret_ai_api_key() -> str:
-    """
-    Loads the Secret AI API key from the 'SECRET_AI_API_KEY' environment variable.
-    """
+    """Loads the Secret AI API key from the 'SECRET_AI_API_KEY' environment variable."""
     api_key = os.getenv("SECRET_AI_API_KEY")
     if not api_key:
-        # This error will cause the app to fail on startup if the key is missing.
         raise ValueError("FATAL: SECRET_AI_API_KEY environment variable not set or is empty.")
     return api_key
 
-# This line now calls the new function.
 WALLET_KEY = get_wallet_key()
-print("Wallet key loaded from environment variable.")
+logging.info("Wallet key loaded from environment variable.")
 
-# This line now calls the new function for the Secret AI API Key.
 SECRET_AI_API_KEY = get_secret_ai_api_key()
-print("Secret AI API key loaded from environment variable.")
+logging.info("Secret AI API key loaded from environment variable.")
+
+# --- CSCA Trust Store Configuration ---
+# This URL points to a Master List file containing trusted CSCA certificates.
+CSCA_URL = "https://raw.githubusercontent.com/zenopie/csca-trust-store/main/allowlist.ml"
+
+def _safe_filename(s: str) -> str:
+    """Creates a filesystem-friendly filename from a string."""
+    return "".join(c if c.isalnum() or c in ".-_" else "_" for c in s)[:200]
+
+def _download_and_extract_csca(url: str, dest_dir: str) -> str:
+    """
+    Downloads and extracts CSCA certificates from a URL.
+    - Saves the downloaded master list file to dest_dir.
+    - If the file is a `.ml` (Master List), it parses the CMS structure and
+      extracts all embedded certificates into a `certs` subdirectory.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp()
+    os.close(tmp_fd)
+    try:
+        with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as out:
+            shutil.copyfileobj(resp, out)
+
+        fname = os.path.basename(urllib.request.urlparse(url).path) or "csca_masterlist.ml"
+        target = os.path.join(dest_dir, fname)
+        shutil.move(tmp_path, target)
+
+        if fname.lower().endswith(".ml"):
+            try:
+                # Local import to avoid making asn1crypto a hard dependency if not used.
+                import asn1crypto.cms as cms
+                from cryptography import x509
+
+                with open(target, "rb") as f:
+                    content_info = cms.ContentInfo.load(f.read())
+                
+                if content_info['content_type'].native == 'signed_data':
+                    signed_data = content_info['content']
+                    certs_field = signed_data.get('certificates') or []
+                    certs_dir = os.path.join(dest_dir, "certs")
+                    os.makedirs(certs_dir, exist_ok=True)
+                    
+                    for idx, cert_choice in enumerate(certs_field):
+                        if cert_choice.name != 'certificate':
+                            continue
+                        try:
+                            cert_der = cert_choice.chosen.dump()
+                            cert = x509.load_der_x509_certificate(cert_der)
+                            subj = cert.subject.rfc4514_string()
+                            subj_safe = _safe_filename(subj)
+                            out_name = f"csca_{idx}_{subj_safe}.der"
+                            with open(os.path.join(certs_dir, out_name), "wb") as cf:
+                                cf.write(cert_der)
+                        except Exception as e:
+                            logging.warning(f"Skipping malformed certificate in master list: {e}")
+                            continue
+            except ImportError:
+                logging.error("`asn1crypto` library not found. Please `pip install asn1crypto` to parse .ml files.")
+            except Exception as e:
+                logging.error(f"Failed to parse master list file '{fname}': {e}")
+        return dest_dir
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def get_csca_dir() -> str:
+    """
+    Ensures CSCA certificates are available and returns the directory path.
+    Downloads and caches certificates from CSCA_URL on first run.
+    Returns the path to the 'certs' subdirectory where individual certs are stored.
+    """
+    if not CSCA_URL:
+        logging.warning("CSCA_URL not configured; chain validation will be disabled.")
+        return ""
+        
+    # Use a local cache directory within the project
+    cache_dir = os.path.join(os.path.dirname(__file__), ".csca_cache")
+    certs_subdir = os.path.join(cache_dir, "certs")
+    
+    # Download and extract only if the certs directory doesn't exist
+    if not os.path.isdir(certs_subdir):
+        logging.info(f"CSCA cache not found. Downloading from {CSCA_URL}...")
+        try:
+            _download_and_extract_csca(CSCA_URL, cache_dir)
+        except Exception as e:
+            raise RuntimeError(f"FATAL: Failed to download or process CSCA trust store: {e}")
+
+    if os.path.isdir(certs_subdir):
+        return certs_subdir
+    
+    logging.warning(f"CSCA 'certs' subdirectory not found in {cache_dir}. Validation may fail.")
+    return cache_dir # Fallback to the root cache dir
+
+# --- Initialize CSCA Trust Store on Application Startup ---
+CSCA_DIR = get_csca_dir()
+if CSCA_DIR and os.path.isdir(CSCA_DIR):
+    logging.info(f"CSCA Trust Store is ready at: {CSCA_DIR}")
