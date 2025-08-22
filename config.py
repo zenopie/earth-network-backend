@@ -193,3 +193,5 @@ MERKLE_PROOFS = os.getenv("MERKLE_PROOFS", "all")  # "none" or "all"
 MERKLE_TIMEOUT = int(os.getenv("MERKLE_TIMEOUT", "15"))
 MERKLE_MAX_RETRIES = int(os.getenv("MERKLE_MAX_RETRIES", "3"))
 MERKLE_INCLUDE_LEAF_HASHES = os.getenv("MERKLE_INCLUDE_LEAF_HASHES", "false").lower() in ("1", "true", "yes", "y")
+# When true, run a one-time Merkle generation at application startup
+MERKLE_RUN_ON_STARTUP = os.getenv("MERKLE_RUN_ON_STARTUP", "false").lower() in ("1", "true", "yes", "y")

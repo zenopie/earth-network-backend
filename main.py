@@ -45,6 +45,19 @@ async def startup_event():
         scheduler.add_job(config.refresh_csca_cache, 'interval', hours=24)
     # Schedule weekly Merkle generation every Monday at 00:00 UTC
     scheduler.add_job(airdrop.scheduled_weekly_job, 'cron', day_of_week='mon', hour=0, minute=0, timezone=timezone.utc)
+
+    # Optionally run Merkle job once on startup when enabled via env
+    if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
+        try:
+            validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
+            if validator:
+                print("MERKLE_RUN_ON_STARTUP enabled: running Merkle job at startup...")
+                airdrop.run_merkle_job(verbose=True)
+            else:
+                print("MERKLE_RUN_ON_STARTUP set but MERKLE_VALIDATOR is not configured; skipping.")
+        except Exception as e:
+            print(f"[AIRDROP] Startup Merkle job failed: {e}")
+
     scheduler.start()
     print("Startup complete. Analytics and airdrop schedulers are running.")
 

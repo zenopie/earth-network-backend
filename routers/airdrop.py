@@ -534,25 +534,6 @@ def get_current_claim(address: str):
     )
 
 
-@router.post("/run", response_model=RunMeta)
-def trigger_run():
-    """
-    Triggers a manual Merkle run using configured settings. Useful for on-demand refresh.
-    """
-    try:
-        meta = run_merkle_job(verbose=True)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Merkle job failed: {e}")
-    return RunMeta(
-        merkle_root=meta["merkle_root"],
-        generated_at=meta["generated_at"],
-        denom=meta["denom"],
-        validator=meta["validator_address"],
-        total_addresses=meta["total_addresses"],
-        total_amount=meta["total_amount"],
-        block_height=meta.get("block_height"),
-        block_time=meta.get("block_time"),
-    )
 
 
 # Initialize DB schema at import time to ensure tables exist before first use
