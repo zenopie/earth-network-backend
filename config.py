@@ -161,7 +161,35 @@ def get_csca_dir() -> str:
     logging.warning(f"CSCA 'certs' subdirectory not found in {cache_dir}. Validation may fail.")
     return cache_dir # Fallback to the root cache dir
 
+# --- CSCA Refresh Helper ---
+def refresh_csca_cache() -> str:
+    """
+    Re-downloads the CSCA trust store into the cache directory and returns the certs path.
+    """
+    if not CSCA_URL:
+        raise RuntimeError("CSCA_URL not configured; cannot refresh CSCA cache.")
+    cache_dir = os.path.join(os.path.dirname(__file__), ".csca_cache")
+    try:
+        _download_and_extract_csca(CSCA_URL, cache_dir)
+    except Exception as e:
+        raise RuntimeError(f"Failed to refresh CSCA trust store: {e}")
+    # Return the directory containing certs (if available)
+    certs_subdir = os.path.join(cache_dir, "certs")
+    return certs_subdir if os.path.isdir(certs_subdir) else cache_dir
+
 # --- Initialize CSCA Trust Store on Application Startup ---
 CSCA_DIR = get_csca_dir()
 if CSCA_DIR and os.path.isdir(CSCA_DIR):
     logging.info(f"CSCA Trust Store is ready at: {CSCA_DIR}")
+
+# --- Airdrop / Merkle Settings ---
+# Configuration for weekly Merkle snapshot builder
+# Set MERKLE_VALIDATOR to your validator operator address (secretvaloper...)
+MERKLE_VALIDATOR = os.getenv("MERKLE_VALIDATOR", "")
+MERKLE_DENOM = os.getenv("MERKLE_DENOM", "uscrt")
+MERKLE_LIMIT = int(os.getenv("MERKLE_LIMIT", "1000"))
+MERKLE_ODD_POLICY = os.getenv("MERKLE_ODD_POLICY", "duplicate")  # or "promote"
+MERKLE_PROOFS = os.getenv("MERKLE_PROOFS", "all")  # "none" or "all"
+MERKLE_TIMEOUT = int(os.getenv("MERKLE_TIMEOUT", "15"))
+MERKLE_MAX_RETRIES = int(os.getenv("MERKLE_MAX_RETRIES", "3"))
+MERKLE_INCLUDE_LEAF_HASHES = os.getenv("MERKLE_INCLUDE_LEAF_HASHES", "false").lower() in ("1", "true", "yes", "y")
