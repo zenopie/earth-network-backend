@@ -1,8 +1,5 @@
 # /config.py
 import os
-import tempfile
-import urllib.request
-import shutil
 import logging
 
 # --- Environment & Ports ---
@@ -73,66 +70,16 @@ logging.info("Secret AI API key loaded from environment variable.")
 # This URL points to a Master List file containing trusted CSCA certificates.
 CSCA_URL = "https://raw.githubusercontent.com/zenopie/csca-trust-store/main/allowlist.ml"
 
-def _safe_filename(s: str) -> str:
-    """Creates a filesystem-friendly filename from a string."""
-    return "".join(c if c.isalnum() or c in ".-_" else "_" for c in s)[:200]
-
 def _download_and_extract_csca(url: str, dest_dir: str) -> str:
     """
-    Downloads and extracts CSCA certificates from a URL.
-    - Saves the downloaded master list file to dest_dir.
-    - If the file is a `.ml` (Master List), it parses the CMS structure and
-      extracts all embedded certificates into a `certs` subdirectory.
+    Thin wrapper that delegates downloading and extraction to tools.extract_csca.download_and_extract_csca.
+    Kept for backward compatibility with existing callers/tests.
     """
-    os.makedirs(dest_dir, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp()
-    os.close(tmp_fd)
     try:
-        with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as out:
-            shutil.copyfileobj(resp, out)
-
-        fname = os.path.basename(urllib.request.urlparse(url).path) or "csca_masterlist.ml"
-        target = os.path.join(dest_dir, fname)
-        shutil.move(tmp_path, target)
-
-        if fname.lower().endswith(".ml"):
-            try:
-                # Local import to avoid making asn1crypto a hard dependency if not used.
-                import asn1crypto.cms as cms
-                from cryptography import x509
-
-                with open(target, "rb") as f:
-                    content_info = cms.ContentInfo.load(f.read())
-                
-                if content_info['content_type'].native == 'signed_data':
-                    signed_data = content_info['content']
-                    certs_field = signed_data.get('certificates') or []
-                    certs_dir = os.path.join(dest_dir, "certs")
-                    os.makedirs(certs_dir, exist_ok=True)
-                    
-                    for idx, cert_choice in enumerate(certs_field):
-                        if cert_choice.name != 'certificate':
-                            continue
-                        try:
-                            cert_der = cert_choice.chosen.dump()
-                            cert = x509.load_der_x509_certificate(cert_der)
-                            subj = cert.subject.rfc4514_string()
-                            subj_safe = _safe_filename(subj)
-                            out_name = f"csca_{idx}_{subj_safe}.der"
-                            with open(os.path.join(certs_dir, out_name), "wb") as cf:
-                                cf.write(cert_der)
-                        except Exception as e:
-                            logging.warning(f"Skipping malformed certificate in master list: {e}")
-                            continue
-            except ImportError:
-                logging.error("`asn1crypto` library not found. Please `pip install asn1crypto` to parse .ml files.")
-            except Exception as e:
-                logging.error(f"Failed to parse master list file '{fname}': {e}")
-        return dest_dir
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
+        from tools.extract_csca import download_and_extract_csca as _tool_download_and_extract_csca  # [`python.imports()`](tools/extract_csca.py:1)
+    except Exception as e:
+        raise RuntimeError(f"tools.extract_csca.download_and_extract_csca unavailable: {e}")
+    return _tool_download_and_extract_csca(url, dest_dir)
 def get_csca_dir() -> str:
     """
     Ensures CSCA certificates are available and returns the directory path.

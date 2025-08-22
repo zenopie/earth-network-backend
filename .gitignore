@@ -1,1 +1,59 @@
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
+*.iml
+
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.manifest
+*.spec
+__pypackages__/
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+
+# Tests / Coverage / Caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+pytestdebug.log
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# Logs
+logs/
+*.log
+nohup.out
+
+# Environment files (keep example tracked)
+.env
+.env.*
+!.env.example
+!example.env
+
+# Project-specific
+.csca_cache/
+merkle_data.db
+analyticsData.json
