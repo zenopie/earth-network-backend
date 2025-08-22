@@ -93,6 +93,9 @@ class LCDClient:
             return None, None
 
 
+# SDK helpers removed; using HTTP LCDClient above.
+
+
 def aggregate_balances(delegation_responses: List[Dict], denom: str, verbose: bool = False) -> Tuple[Dict[str, int], int]:
     """
     Aggregate balance amounts by delegator address for the given denom.

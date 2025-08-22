@@ -14,4 +14,5 @@ openai
 apscheduler
 asn1crypto
 cryptography
-pymrtd
+pymrtd; sys_platform == "darwin"
+pytest
