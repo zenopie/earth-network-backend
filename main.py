@@ -8,7 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
 # Import the individual router modules
-from routers import register, chat, analytics, verify, airdrop
+from routers import register, chat, analytics, verify, airdrop, secret_query
 
 app = FastAPI(
     title="Erth Network API",
@@ -73,6 +73,7 @@ app.include_router(chat.router, prefix="/api", tags=["Chat"])
 app.include_router(analytics.router, prefix="/api", tags=["Analytics"])
 app.include_router(verify.router, prefix="/api", tags=["Verification"])
 app.include_router(airdrop.router, prefix="/api", tags=["Airdrop"])
+app.include_router(secret_query.router, prefix="/api", tags=["SecretQuery"])
 
 
 @app.get("/", tags=["Health Check"])
