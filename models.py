@@ -20,6 +20,10 @@ class VerifyRequest(BaseModel):
     Fields:
     - dg1: base64-encoded DG1 bytes (required)
     - sod: base64-encoded SOD bytes (required)
+    - address: user's address for registration (required)
+    - referredBy: optional referrer address (optional)
     """
     dg1: str
     sod: str
+    address: str
+    referredBy: Optional[str] = None

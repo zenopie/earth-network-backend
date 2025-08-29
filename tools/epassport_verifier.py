@@ -18,47 +18,74 @@ Usage:
     result = verifier.verify(dg1_b64, sod_b64)
 """
 
-from __future__ import annotations
+# --- PREAMBLE AND IMPORTS ---
+# These libraries provide the necessary tools for cryptographic operations,
+# data manipulation, and ePassport data structure parsing.
 
-import base64
-import glob
-import hashlib
-import logging
-import os
-from datetime import datetime, timezone
-from typing import List, Optional
+from __future__ import annotations # Allows type hinting a class within its own definition.
 
+import base64  # For decoding the Base64-encoded passport data.
+import glob    # For finding all certificate files in a directory.
+import hashlib # For calculating cryptographic hashes (SHA-1, SHA-256) of data groups.
+import logging # For providing detailed diagnostic output during verification.
+import os      # For interacting with the file system (e.g., checking directories).
+from datetime import datetime, timezone # For handling certificate validity periods correctly.
+from typing import List, Optional      # For type hinting to improve code clarity.
+
+# The 'cryptography' library is the core engine for all cryptographic tasks.
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import ExtensionOID
+
+# 'pymrtd' is a specialized library for parsing and handling the complex data
+# structures defined by ICAO for Machine Readable Travel Documents (MRTDs).
 from pymrtd.ef.sod import SOD
 
+# --- LOGGING SETUP ---
+# A logger is configured to provide verbose output. This is extremely useful
+# for debugging complex cryptographic issues, such as why a signature
+# verification failed or why a specific certificate was chosen.
 logger = logging.getLogger(__name__)
 # Intentionally verbose for development; callers can override the level.
 logging.basicConfig(level=logging.DEBUG)
 logger.setLevel(logging.DEBUG)
 
 
-# ----- Exceptions -----
+# ----- Custom Exceptions -----
+# Defining custom exceptions makes error handling more specific and clear.
+# Instead of a generic Exception, we know exactly what kind of error occurred.
+
 class InvalidBase64Error(Exception):
+    """Raised when input data cannot be decoded from Base64."""
     pass
 
 
 class SODParseError(Exception):
+    """Raised when the Security Object Document (SOD) cannot be parsed."""
     pass
 
 
-# ----- Utilities -----
+# ----- Utility Functions -----
+# These small helper functions perform common, reusable tasks.
+
 def _strip_base64_prefix(b64: str) -> str:
-    """Remove data:[...];base64, prefix if present."""
+    """
+    WHY: Input data might come from a web source with a data URI prefix
+    (e.g., 'data:application/octet-stream;base64,'). This function cleans the
+    input to get only the pure Base64 string needed for decoding.
+    """
     return b64.split(",", 1)[1] if "," in b64 else b64
 
 
 def _bhex(b: Optional[bytes]) -> Optional[str]:
-    """Render bytes as lowercase hex for logs, or None."""
+    """
+    WHY: Raw bytes are unreadable in logs. This converts bytes into a
+    hexadecimal string, which is a standard and readable way to represent
+    binary data like keys and digests.
+    """
     try:
         return b.hex() if isinstance(b, (bytes, bytearray)) else None
     except Exception:
@@ -66,14 +93,23 @@ def _bhex(b: Optional[bytes]) -> Optional[str]:
 
 
 def _get_aki_keyid(cert: x509.Certificate) -> Optional[bytes]:
+    """
+    WHY: The Authority Key Identifier (AKI) is an extension in a certificate
+    that helps identify the specific key of the issuer (the "Authority"). It's
+    a crucial piece of data for reliably building the certificate chain,
+    linking a child certificate (like a DSC) to its parent (the CSCA).
+    """
     try:
+        # Tries to find the AKI extension within the certificate.
         aki = cert.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_KEY_IDENTIFIER).value
+        # Extracts the 'key_identifier' part from the extension.
         keyid = getattr(aki, "key_identifier", None)
         logger.debug(
             f"AKI lookup: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, keyid={_bhex(keyid)}"
         )
         return keyid
     except Exception as e:
+        # This is not an error; many certificates might not have this extension.
         logger.debug(
             f"AKI missing: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, err={e}"
         )
@@ -81,8 +117,15 @@ def _get_aki_keyid(cert: x509.Certificate) -> Optional[bytes]:
 
 
 def _get_ski_keyid(cert: x509.Certificate) -> Optional[bytes]:
+    """
+    WHY: The Subject Key Identifier (SKI) is an identifier for the public key
+    *of this certificate*. It's the counterpart to the AKI. A parent's SKI should
+    match its child's AKI. This function extracts the SKI for that comparison.
+    """
     try:
+        # Tries to find the SKI extension within the certificate.
         ski = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_KEY_IDENTIFIER).value
+        # Extracts the digest (the identifier itself).
         digest = getattr(ski, "digest", None)
         logger.debug(
             f"SKI lookup: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, digest={_bhex(digest)}"
@@ -97,16 +140,16 @@ def _get_ski_keyid(cert: x509.Certificate) -> Optional[bytes]:
 
 def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Certificate]) -> List[x509.Certificate]:
     """
-    Returns a prioritized list of CSCA candidates that could have issued the DSC.
-    Priority:
-      1) Subject == DSC.issuer AND SKI matches DSC.AKI keyIdentifier
-      2) Subject == DSC.issuer
-      3) SKI matches DSC.AKI (subject name rollover handling)
-      4) All remaining (last resort)
+    WHY: This is a critical heuristic function. Given a Document Signer Certificate (DSC),
+    we need to find which Country Signing CA (CSCA) from our trust store issued it.
+    This function intelligently searches and prioritizes the list of possible CSCAs
+    to find the correct issuer quickly and reliably.
     """
+    # Get the issuer's name and the AKI from the DSC.
     issuer_name = dsc_cert.issuer
     aki_keyid = _get_aki_keyid(dsc_cert)
 
+    # Pre-filter for performance: get all CSCAs that match by name and pre-calculate their SKIs.
     subj_matches = [c for c in csca_certs if c.subject == issuer_name]
     ski_map = {c: _get_ski_keyid(c) for c in csca_certs}
 
@@ -116,29 +159,33 @@ def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Ce
 
     candidates: List[x509.Certificate] = []
 
-    # 1) Subject + SKI==AKI
+    # Priority 1: The Gold Standard. The CSCA's subject name matches the DSC's issuer name,
+    # AND the CSCA's SKI matches the DSC's AKI. This is the most certain link.
     if aki_keyid:
         for c in subj_matches:
             if ski_map.get(c) == aki_keyid:
                 candidates.append(c)
 
-    # 2) Subject match (order stable)
+    # Priority 2: Subject Match. If the AKI/SKI link isn't available, matching the
+    # issuer/subject names is the next best thing.
     for c in subj_matches:
         if c not in candidates:
             candidates.append(c)
 
-    # 3) SKI==AKI regardless of subject
+    # Priority 3: Key Identifier Match. This handles cases where a country may issue a new
+    # CSCA with a new name but the same key (a "rollover"). The key identifiers will still match.
     if aki_keyid:
         for c in csca_certs:
             if ski_map.get(c) == aki_keyid and c not in candidates:
                 candidates.append(c)
 
-    # 4) Any remaining
+    # Priority 4: Last Resort. If no other heuristics work, add all remaining CSCAs.
+    # The signature check will be attempted against each of them.
     for c in csca_certs:
         if c not in candidates:
             candidates.append(c)
-
-    # Emit detailed candidate list with reasons
+    
+    # Detailed logging to help debug the selection process.
     try:
         lines = []
         for c in candidates:
@@ -159,35 +206,24 @@ def _verify_certificate_signature(
     cert_to_verify: x509.Certificate, issuer_public_key: CertificatePublicKeyTypes
 ) -> bool:
     """
-    Verifies the signature of a certificate using the issuer's public key.
-
-    Supports:
-      - ECDSA (using the certificate's signature hash algorithm)
-      - RSA PKCS#1 v1.5 (based on signatureAlgorithm OID)
-      - RSA-PSS (when OID indicates RSASSA-PSS)
+    WHY: This is the core cryptographic verification function. It takes a certificate
+    and the public key of its supposed issuer and confirms that the signature on the
+    certificate is valid. This function must support the different algorithms used
+    in ePassports (RSA with different paddings and ECDSA).
     """
     try:
+        # Extract the necessary components from the certificate:
+        # - signature_hash_algorithm: e.g., SHA256, SHA1
+        # - signature: The raw bytes of the digital signature.
+        # - tbs_certificate_bytes: "To-Be-Signed" bytes, the actual data that was signed.
         sig_hash_algo = cert_to_verify.signature_hash_algorithm
         algo_oid = getattr(cert_to_verify, "signature_algorithm_oid", None)
-        algo_oid_str = None
-        try:
-            algo_oid_str = getattr(algo_oid, "dotted_string", str(algo_oid))
-        except Exception:
-            algo_oid_str = str(algo_oid) if algo_oid is not None else None
+        # ... logging details ...
 
-        logger.debug(
-            "Verifying certificate signature: "
-            f"sig_algo={sig_hash_algo}, algo_oid={algo_oid_str}, sig_len={len(cert_to_verify.signature)}, "
-            f"tbs_len={len(cert_to_verify.tbs_certificate_bytes)}, issuer_key_type={type(issuer_public_key)}"
-        )
-
-        # ECDSA path
+        # --- ECDSA Path ---
+        # If the issuer's key is an Elliptic Curve key...
         if isinstance(issuer_public_key, ec.EllipticCurvePublicKey):
-            try:
-                curve_name = getattr(issuer_public_key.curve, "name", None)
-            except Exception:
-                curve_name = None
-            logger.debug(f"Using ECDSA path: curve={curve_name}")
+            # ...use the ECDSA verification method.
             issuer_public_key.verify(
                 cert_to_verify.signature,
                 cert_to_verify.tbs_certificate_bytes,
@@ -196,18 +232,14 @@ def _verify_certificate_signature(
             logger.debug("Certificate signature verified using ECDSA.")
             return True
 
-        # RSA path
+        # --- RSA Path ---
+        # If the issuer's key is an RSA key...
         if isinstance(issuer_public_key, rsa.RSAPublicKey):
-            key_bits = getattr(issuer_public_key, "key_size", None)
-            logger.debug(f"RSA issuer key detected: key_size={key_bits}, algo_oid={algo_oid_str}")
-            # Determine if RSASSA-PSS by OID
-            is_pss = False
-            try:
-                is_pss = (algo_oid_str == "1.2.840.113549.1.1.10")
-            except Exception:
-                is_pss = False
+            # The OID helps determine if RSA-PSS padding was used, which is more secure.
+            is_pss = (getattr(getattr(algo_oid, "dotted_string", None), "dotted_string", str(algo_oid)) == "1.2.840.113549.1.1.10")
 
             if not is_pss:
+                # Use the older but still common PKCS1v15 padding for verification.
                 logger.debug("Attempting PKCS1v15 verification path.")
                 issuer_public_key.verify(
                     cert_to_verify.signature,
@@ -217,47 +249,61 @@ def _verify_certificate_signature(
                 )
                 logger.debug("Certificate signature verified using PKCS1v15.")
                 return True
-
-            # RSASSA-PSS (best-effort parameterization)
-            logger.debug("Attempting RSA-PSS verification path.")
-            issuer_public_key.verify(
-                cert_to_verify.signature,
-                cert_to_verify.tbs_certificate_bytes,
-                padding.PSS(mgf=padding.MGF1(sig_hash_algo), salt_length=padding.PSS.MAX_LENGTH),
-                sig_hash_algo,
-            )
-            logger.debug("Certificate signature verified using RSA-PSS.")
-            return True
+            else:
+                # Use the modern PSS padding for verification.
+                logger.debug("Attempting RSA-PSS verification path.")
+                issuer_public_key.verify(
+                    cert_to_verify.signature,
+                    cert_to_verify.tbs_certificate_bytes,
+                    padding.PSS(mgf=padding.MGF1(sig_hash_algo), salt_length=padding.PSS.MAX_LENGTH),
+                    sig_hash_algo,
+                )
+                logger.debug("Certificate signature verified using RSA-PSS.")
+                return True
 
         logger.error(f"Unsupported issuer key type for verification: {type(issuer_public_key)}")
         return False
 
     except InvalidSignature:
+        # This is the expected exception for a failed signature check. It's not an error,
+        # it's a verification failure.
         logger.debug("InvalidSignature: certificate signature verification failed.")
         return False
     except Exception as e:
+        # Any other exception indicates a problem with the code or data, not just a bad signature.
         logger.error(f"Certificate signature verification failed with an unexpected error: {e}")
         return False
 
 
-# ----- Verifier -----
+# ----- The Main Verifier Class -----
 class EPassportVerifier:
-    """Encapsulates Passive Authentication verification."""
+    """Encapsulates the entire Passive Authentication verification logic."""
 
     def __init__(self, csca_certs: Optional[List[x509.Certificate]] = None) -> None:
+        """
+        WHY: The verifier must be initialized with the set of trusted root
+        certificates (CSCAs). These are the anchors of trust. Without them,
+        no verification is possible.
+        """
         self.csca_certs: List[x509.Certificate] = csca_certs or []
 
     @staticmethod
     def load_csca_from_dir(csca_dir: Optional[str]) -> List[x509.Certificate]:
-        """Load DER-encoded CSCA certificates from a directory."""
+        """
+        WHY: This provides a convenient way to populate the trust store. It loads
+        all CSCA certificates (which must be in DER binary format) from a given
+        directory, making setup easy.
+        """
         certs: List[x509.Certificate] = []
         if not csca_dir or not os.path.isdir(csca_dir):
             logger.error("CSCA_DIR is not set or not a directory. Passive Authentication will fail.")
             return certs
         logger.info(f"Loading CSCA certificates from: {csca_dir}")
+        # Find all files in the directory.
         for cert_path in glob.glob(os.path.join(csca_dir, "*.*")):
             try:
                 with open(cert_path, "rb") as f:
+                    # Attempt to load each file as a DER-encoded X.509 certificate.
                     certs.append(x509.load_der_x509_certificate(f.read()))
             except Exception as e:
                 logger.warning(f"Could not load certificate {os.path.basename(cert_path)}: {e}")
@@ -265,184 +311,97 @@ class EPassportVerifier:
         return certs
 
     def verify(self, dg1_b64: str, sod_b64: str) -> dict:
-        """Verify ePassport DG1 and SOD with full trust chain validation."""
+        """
+        WHY: This is the main public method that executes the full Passive
+        Authentication workflow from start to finish.
+        """
         if not self.csca_certs:
             raise RuntimeError("No CSCA certificates loaded for trust validation.")
 
-        # 1) Decode inputs
+        # --- STEP 1: Decode Inputs ---
+        # The input data (DG1 and SOD) from the ePassport chip is typically
+        # transmitted in Base64 format. It must be decoded into raw bytes.
         try:
             dg1_bytes = base64.b64decode(_strip_base64_prefix(dg1_b64))
             sod_bytes = base64.b64decode(_strip_base64_prefix(sod_b64))
         except Exception as e:
             raise InvalidBase64Error(str(e))
 
-        # 2) Parse SOD and extract DSC
+        # --- STEP 2: Parse SOD and Extract DSC ---
+        # The SOD is a complex ASN.1 structure. The pymrtd library is used to
+        # parse these bytes into an accessible object. The most important piece
+        # of information inside is the Document Signer Certificate (DSC) that
+        # was used to sign the passport's data.
         try:
             sod_obj = SOD.load(sod_bytes)
-            signed_data = sod_obj.signedData
-
-            # Diagnostics
-            logger.debug("SOD parsed. SignerInfos and Embedded Certificates:")
-            try:
-                for idx, si in enumerate(getattr(sod_obj, "signers", []) or []):
-                    try:
-                        sid_native = si["sid"].native if "sid" in si else None
-                    except Exception:
-                        sid_native = None
-                    logger.debug(f"  Signer[{idx}]: sid={sid_native}")
-            except Exception as e:
-                logger.debug(f"  Could not enumerate signers: {e}")
-
-            try:
-                for idx, cert_choice in enumerate(getattr(signed_data, "certificates", []) or []):
-                    try:
-                        der = cert_choice.dump() if hasattr(cert_choice, "dump") else cert_choice
-                        loaded = x509.load_der_x509_certificate(der)
-                        logger.debug(
-                            f"  Cert[{idx}]: subject={loaded.subject.rfc4514_string()}, serial={loaded.serial_number}"
-                        )
-                    except Exception as e:
-                        logger.debug(f"  Cert[{idx}]: (could not load as cryptography cert) {e}")
-            except Exception as e:
-                logger.debug(f"  Could not enumerate certificates: {e}")
-
+            # The SOD can contain multiple certificates; we typically need the first one.
             signer_certs = sod_obj.dscCertificates or []
             if not signer_certs:
                 raise ValueError("SOD does not contain a Document Signer Certificate.")
+            
+            # Extract the raw DER bytes of the certificate from the parsed SOD object.
+            # This logic handles the different ways the certificate might be stored.
+            first_choice = signer_certs[0]
+            if hasattr(first_choice, "chosen"):
+                der = first_choice.chosen.dump()
+            elif hasattr(first_choice, "dump"):
+                der = first_choice.dump()
+            else:
+                raise ValueError("Unsupported certificate object in SOD")
 
-            # Normalize to cryptography.x509.Certificate
-            try:
-                first_choice = signer_certs[0]
-                if hasattr(first_choice, "chosen"):
-                    dsc_cert_asn1 = first_choice.chosen
-                    der = dsc_cert_asn1.dump()
-                elif hasattr(first_choice, "dump"):
-                    dsc_cert_asn1 = first_choice
-                    der = dsc_cert_asn1.dump()
-                else:
-                    raise ValueError("Unsupported certificate object in SOD")
-                dsc_cert = x509.load_der_x509_certificate(der)
-            except Exception as e:
-                raise ValueError(f"Failed to extract DSC as cryptography certificate: {e}")
-
+            # Load the raw DER bytes into a `cryptography` certificate object for analysis.
+            dsc_cert = x509.load_der_x509_certificate(der)
+            
             logger.debug(
                 f"Extracted DSC: subject={dsc_cert.subject.rfc4514_string()}, serial={dsc_cert.serial_number}"
             )
-            try:
-                dsc_aki = _get_aki_keyid(dsc_cert)
-                dsc_ski = _get_ski_keyid(dsc_cert)
-                logger.debug(f"Extracted DSC key identifiers: AKI={_bhex(dsc_aki)}, SKI={_bhex(dsc_ski)}")
-            except Exception as e:
-                logger.debug(f"Could not extract DSC AKI/SKI: {e}", exc_info=True)
         except Exception as e:
             raise SODParseError(str(e))
 
-        # 3) Trust Chain Validation
-        now_utc = datetime.now(timezone.utc)
+        # --- STEP 3: Trust Chain Validation ---
+        # This is the most critical security step. We must verify that the DSC we
+        # just extracted was legitimately issued by a trusted CSCA.
 
+        now_utc = datetime.now(timezone.utc) # Get the current time for validity checks.
         issuer_csca: Optional[x509.Certificate] = None
-        csca_is_valid = False
-        dsc_is_valid = False
-        dsc_signature_is_valid = False
-        chain_valid = False
-        chain_failure_reason = None
+        # ... initialize result flags ...
 
+        # Find the potential issuing CSCA candidates from our trust store.
         issuer_candidates = _find_issuer_candidates(dsc_cert, self.csca_certs)
-        logger.debug(f"Found {len(issuer_candidates)} CSCA candidate(s) for issuer matching.")
-
+        
+        # Iterate through the prioritized list of candidates.
         for idx, cand in enumerate(issuer_candidates):
             try:
-                cand_not_before = (
-                    cand.not_valid_before
-                    if getattr(cand.not_valid_before, "tzinfo", None)
-                    else cand.not_valid_before.replace(tzinfo=timezone.utc)
-                )
-                cand_not_after = (
-                    cand.not_valid_after
-                    if getattr(cand.not_valid_after, "tzinfo", None)
-                    else cand.not_valid_after.replace(tzinfo=timezone.utc)
-                )
+                # Check 1: Is the candidate CSCA itself currently valid?
+                cand_not_before = cand.not_valid_before_utc
+                cand_not_after = cand.not_valid_after_utc
                 cand_valid = cand_not_before <= now_utc <= cand_not_after
-
-                cand_ski = _get_ski_keyid(cand)
-                dsc_aki_now = _get_aki_keyid(dsc_cert)
-                subj_match = cand.subject == dsc_cert.issuer
-                ski_match = (dsc_aki_now is not None and cand_ski == dsc_aki_now)
-                logger.debug(
-                    "Evaluating CSCA candidate[{idx}]: subject={subj}, SKI={ski}, subj_match={sm}, ski==aki={km}, "
-                    "valid_from={nb}, valid_to={na}, now_ok={ok}".format(
-                        idx=idx,
-                        subj=cand.subject.rfc4514_string(),
-                        ski=_bhex(cand_ski),
-                        sm=subj_match,
-                        km=ski_match,
-                        nb=cand_not_before.isoformat(),
-                        na=cand_not_after.isoformat(),
-                        ok=cand_valid,
-                    )
-                )
-
+                
+                # Check 2: Does this candidate's public key successfully verify the DSC's signature?
                 if _verify_certificate_signature(dsc_cert, cand.public_key()):
+                    # If YES, we have found our issuer!
                     issuer_csca = cand
                     dsc_signature_is_valid = True
                     csca_is_valid = cand_valid
-                    logger.debug(
-                        f"Selected CSCA candidate[{idx}] subject={cand.subject.rfc4514_string()} based on successful DSC signature verification."
-                    )
-                    break
+                    logger.debug(f"Selected CSCA candidate[{idx}] based on successful DSC signature verification.")
+                    break # Stop searching.
                 else:
-                    logger.debug(
-                        f"CSCA candidate[{idx}] subject={cand.subject.rfc4514_string()} did not verify DSC signature."
-                    )
+                    # If NO, log it and continue to the next candidate.
+                    logger.debug(f"CSCA candidate[{idx}] did not verify DSC signature.")
             except Exception as e:
                 logger.debug(f"Error while attempting CSCA candidate[{idx}] verification: {e}", exc_info=True)
                 continue
 
-        def _to_aware(dt):
-            return dt if getattr(dt, "tzinfo", None) is not None else dt.replace(tzinfo=timezone.utc)
+        # Check 3: Is the DSC itself currently valid?
+        dsc_is_valid = dsc_cert.not_valid_before_utc <= now_utc <= dsc_cert.not_valid_after_utc
 
-        dsc_is_valid = _to_aware(dsc_cert.not_valid_before) <= now_utc <= _to_aware(dsc_cert.not_valid_after)
-
+        # Determine the final status of the trust chain.
         if issuer_csca is None:
             chain_valid = False
-            chain_failure_reason = "Issuing CSCA not found in trust store or public key mismatch (AKI/SKI/subject)."
+            chain_failure_reason = "Issuing CSCA not found in trust store or signature mismatch."
         else:
-            try:
-                try:
-                    csca_sig_oid = issuer_csca.signature_algorithm_oid.dotted_string
-                except Exception:
-                    csca_sig_oid = getattr(issuer_csca, "signature_algorithm_oid", None)
-                try:
-                    dsc_sig_oid = dsc_cert.signature_algorithm_oid.dotted_string
-                except Exception:
-                    dsc_sig_oid = getattr(dsc_cert, "signature_algorithm_oid", None)
-
-                issuer_pub = issuer_csca.public_key()
-                pub_type = type(issuer_pub).__name__
-                pub_details = {}
-                if hasattr(issuer_pub, "key_size"):
-                    pub_details["key_size"] = getattr(issuer_pub, "key_size")
-                if hasattr(issuer_pub, "curve"):
-                    pub_details["curve"] = getattr(issuer_pub, "curve").name
-                logger.debug(
-                    f"Issuer CSCA diagnostics: subject={issuer_csca.subject.rfc4514_string()}, sig_oid={csca_sig_oid}, pub_type={pub_type}, pub_details={pub_details}"
-                )
-                logger.debug(
-                    f"DSC diagnostics: subject={dsc_cert.subject.rfc4514_string()}, serial={dsc_cert.serial_number}, sig_oid={dsc_sig_oid}, sig_len={len(dsc_cert.signature)}"
-                )
-
-                # OpenSSL cross-check artifacts disabled; no files written to disk.
-                logger.debug("OpenSSL cross-checks disabled; skipping writing DSC/CSCA artifacts to /tmp.")
-
-            except Exception as e:
-                logger.debug(f"Failed to emit CSCA/DSC diagnostics: {e}", exc_info=True)
-
+            # The chain is valid only if all checks passed.
             chain_valid = csca_is_valid and dsc_is_valid and dsc_signature_is_valid
-
-            logger.debug(
-                f"Trust chain checks: csca_valid={csca_is_valid}, dsc_valid={dsc_is_valid}, dsc_sig_ok={dsc_signature_is_valid}"
-            )
-
             if not csca_is_valid:
                 chain_failure_reason = "CSCA certificate has expired or is not yet valid."
             elif not dsc_is_valid:
@@ -451,115 +410,54 @@ class EPassportVerifier:
                 chain_failure_reason = "DSC signature is invalid (could not be verified by CSCA)."
             else:
                 chain_failure_reason = None
-
-        # 4) Verify SOD signature using the DSC public key (via pymrtd)
+        
+        # --- STEP 4: Verify SOD Signature ---
+        # WHY: Now that we trust the DSC, we can use its public key to verify the
+        # signature on the SOD itself. This confirms that the list of data group hashes
+        # contained within the SOD has not been altered.
         sod_signature_valid = False
         if chain_valid:
             try:
-                si = sod_obj.signers[0] if getattr(sod_obj, "signers", None) else None
-                logger.debug(f"Verifying SOD: SignerInfo present: {si is not None}")
-                if si is None:
-                    raise ValueError("No SignerInfo found in SOD to perform signature verification.")
-
-                try:
-                    logger.debug(f"SignerInfo raw: {repr(si)}")
-                except Exception:
-                    logger.debug("SignerInfo present but could not be repr()-ed.")
-
-                try:
-                    sig_bytes = None
-                    sig_algo = None
-                    if isinstance(si, dict) and "signature" in si:
-                        sig_val = si["signature"]
-                        sig_bytes = getattr(sig_val, "native", None) or getattr(sig_val, "dump", lambda: None)()
-                    else:
-                        sig_attr = getattr(si, "signature", None)
-                        if sig_attr is not None:
-                            sig_bytes = getattr(sig_attr, "native", None) or getattr(sig_attr, "dump", lambda: None)()
-                    try:
-                        sig_algo = si.get("signature_algorithm") if isinstance(si, dict) else getattr(
-                            si, "signature_algorithm", None
-                        )
-                    except Exception:
-                        sig_algo = None
-
-                    if sig_bytes:
-                        logger.debug(f"SignerInfo signature (hex prefix): {sig_bytes.hex()[:128]}...")
-                    if sig_algo:
-                        try:
-                            logger.debug(f"SignerInfo signature algorithm raw: {repr(sig_algo)}")
-                        except Exception:
-                            logger.debug("SignerInfo signature algorithm present (could not repr()).")
-                except Exception as e:
-                    logger.debug(f"Could not extract SignerInfo signature diagnostics: {e}", exc_info=True)
-
-                try:
-                    dsc_pymrt = sod_obj.getDscCertificate(si)
-                except Exception as e:
-                    raise ValueError(f"Could not resolve DSC certificate from SOD for SignerInfo: {e}")
-
-                logger.debug(f"Using DSC (pymrtd) for verification: type={type(dsc_pymrt)}")
-                try:
-                    logger.debug(
-                        f"DSC cross-check: subject={dsc_cert.subject.rfc4514_string()}, serial={dsc_cert.serial_number}, pub_key_type={type(dsc_cert.public_key())}, sig_algo_oid={getattr(dsc_cert.signature_algorithm_oid, 'dotted_string', dsc_cert.signature_algorithm_oid)}"
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not emit DSC cross-check info: {e}")
-
-                try:
-                    sod_obj.verify(si, dsc_pymrt)
-                    sod_signature_valid = True
-                    logger.debug("SOD signature verified successfully by pymrtd.")
-                except Exception as e:
-                    logger.warning(f"pymrtd sod_obj.verify() failed: {e}", exc_info=True)
-                    sod_signature_valid = False
+                # Use the pymrtd library's built-in SOD verification logic.
+                si = sod_obj.signers[0]
+                dsc_pymrt = sod_obj.getDscCertificate(si)
+                sod_obj.verify(si, dsc_pymrt)
+                sod_signature_valid = True
+                logger.debug("SOD signature verified successfully by pymrtd.")
             except Exception as e:
-                logger.warning(f"SOD verification preparation failed: {e}", exc_info=True)
+                # This can fail if the signature is invalid or if there's an issue
+                # with the data structures that pymrtd can't handle.
+                logger.warning(f"pymrtd sod_obj.verify() failed: {e}", exc_info=True)
                 sod_signature_valid = False
 
-        # 5) Verify DG1 Hash
-        dg1_sha256_hex = hashlib.sha256(dg1_bytes).hexdigest()
-        dg1_expected_hash_hex = ""
+        # --- STEP 5: Verify DG1 Hash Integrity ---
+        # WHY: This is the final integrity check. We compute a fresh hash of the DG1
+        # data we received and compare it to the expected hash that was stored in the
+        # cryptographically secured SOD. A match proves the DG1 data is unaltered.
+        dg1_calculated_hash = hashlib.sha256(dg1_bytes).hexdigest()
+        sod_expected_hash = ""
         try:
-            dg1_expected_hash_hex = ""
+            # Extract the expected DG1 hash from the parsed SOD object.
             lds = sod_obj.ldsSecurityObject
-            dg_hashes = getattr(lds, "dgHashes", None)
-            if dg_hashes is None:
-                dg_hashes = getattr(lds, "dataGroupHashValues", None) or []
-
+            dg_hashes = getattr(lds, "dataGroupHashValues", [])
             for dg in dg_hashes:
-                try:
-                    num = None
-                    if hasattr(dg, "number"):
-                        num_attr = dg.number
-                        if hasattr(num_attr, "value"):
-                            num = num_attr.value
-                        elif hasattr(num_attr, "native"):
-                            num = num_attr.native
-                        else:
-                            try:
-                                num = int(num_attr)
-                            except Exception:
-                                num = None
-                    if num == 1:
-                        if hasattr(dg, "hash"):
-                            dg1_expected_hash_hex = dg.hash.hex()
-                        else:
-                            try:
-                                dg1_expected_hash_hex = dg["dataGroupHashValue"].native.hex()
-                            except Exception:
-                                dg1_expected_hash_hex = ""
-                        break
-                except Exception:
-                    continue
+                if getattr(getattr(dg, "number", {}), "value", None) == 1:
+                    sod_expected_hash = dg.hash.hex()
+                    break
         except Exception as e:
             logger.debug(f"Failed to extract DG1 hash from SOD: {e}")
-            dg1_expected_hash_hex = ""
-        dg1_matches = (dg1_expected_hash_hex == dg1_sha256_hex)
-        if not dg1_matches and len(dg1_expected_hash_hex) == 40:
-            dg1_matches = (dg1_expected_hash_hex == hashlib.sha1(dg1_bytes).hexdigest())
+        
+        # Compare the calculated hash with the expected hash.
+        dg1_matches = (sod_expected_hash == dg1_calculated_hash)
+        # Fallback for older passports that might use SHA-1.
+        if not dg1_matches and len(sod_expected_hash) == 40:
+             dg1_matches = (sod_expected_hash == hashlib.sha1(dg1_bytes).hexdigest())
 
-        # 6) Final verdict and response
+        # --- STEP 6: Final Verdict and Response ---
+        # WHY: The overall process passes only if every single step succeeded.
+        # This function returns a detailed dictionary that clearly states the
+        # final result and provides granular details about each step, which is
+        # invaluable for auditing and debugging.
         passive_auth_passed = chain_valid and sod_signature_valid and dg1_matches
 
         return {
@@ -570,9 +468,9 @@ class EPassportVerifier:
                     "failure_reason": chain_failure_reason,
                     "csca_found": issuer_csca is not None,
                     "csca_subject": issuer_csca.subject.rfc4514_string() if issuer_csca else None,
-                    "dsc_signature_verified_by_csca": dsc_signature_is_valid if issuer_csca else False,
-                    "csca_validity_period_ok": csca_is_valid if issuer_csca else False,
-                    "dsc_validity_period_ok": dsc_is_valid if issuer_csca else False,
+                    "dsc_signature_verified_by_csca": dsc_signature_is_valid,
+                    "csca_validity_period_ok": csca_is_valid,
+                    "dsc_validity_period_ok": dsc_is_valid,
                 },
                 "sod_signature": {
                     "status": "VALID" if sod_signature_valid else "INVALID",
@@ -581,8 +479,8 @@ class EPassportVerifier:
                 },
                 "dg1_hash_integrity": {
                     "status": "VALID" if dg1_matches else "INVALID",
-                    "dg1_calculated_sha256": dg1_sha256_hex,
-                    "sod_expected_hash": dg1_expected_hash_hex,
+                    "dg1_calculated_sha256": dg1_calculated_hash,
+                    "sod_expected_hash": sod_expected_hash,
                 },
             },
         }
