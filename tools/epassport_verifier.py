@@ -373,8 +373,8 @@ class EPassportVerifier:
         for idx, cand in enumerate(issuer_candidates):
             try:
                 # Check 1: Is the candidate CSCA itself currently valid?
-                cand_not_before = cand.not_valid_before_utc
-                cand_not_after = cand.not_valid_after_utc
+                cand_not_before = cand.not_valid_before.replace(tzinfo=timezone.utc)
+                cand_not_after = cand.not_valid_after.replace(tzinfo=timezone.utc)
                 cand_valid = cand_not_before <= now_utc <= cand_not_after
                 
                 # Check 2: Does this candidate's public key successfully verify the DSC's signature?
@@ -393,7 +393,9 @@ class EPassportVerifier:
                 continue
 
         # Check 3: Is the DSC itself currently valid?
-        dsc_is_valid = dsc_cert.not_valid_before_utc <= now_utc <= dsc_cert.not_valid_after_utc
+        dsc_not_before = dsc_cert.not_valid_before.replace(tzinfo=timezone.utc)
+        dsc_not_after = dsc_cert.not_valid_after.replace(tzinfo=timezone.utc)
+        dsc_is_valid = dsc_not_before <= now_utc <= dsc_not_after
 
         # Determine the final status of the trust chain.
         if issuer_csca is None:
@@ -439,13 +441,55 @@ class EPassportVerifier:
         try:
             # Extract the expected DG1 hash from the parsed SOD object.
             lds = sod_obj.ldsSecurityObject
-            dg_hashes = getattr(lds, "dataGroupHashValues", [])
-            for dg in dg_hashes:
-                if getattr(getattr(dg, "number", {}), "value", None) == 1:
-                    sod_expected_hash = dg.hash.hex()
-                    break
+            logger.debug(f"LDS Security Object type: {type(lds)}")
+            logger.debug(f"LDS Security Object dir: {[attr for attr in dir(lds) if not attr.startswith('_')]}")
+            
+            # Try different ways to access data group hashes
+            dg_hashes = None
+            if hasattr(lds, "dataGroupHashValues"):
+                dg_hashes = lds.dataGroupHashValues
+                logger.debug(f"Found dataGroupHashValues: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
+            elif hasattr(lds, "dgHashes"):
+                dg_hashes = lds.dgHashes
+                logger.debug(f"Found dgHashes: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
+            elif hasattr(lds, "hashValues"):
+                dg_hashes = lds.hashValues
+                logger.debug(f"Found hashValues: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
+            
+            if dg_hashes:
+                for i, dg in enumerate(dg_hashes):
+                    logger.debug(f"DG[{i}] type: {type(dg)}, dir: {[attr for attr in dir(dg) if not attr.startswith('_')]}")
+                    dg_number = None
+                    dg_hash = None
+                    
+                    # Try different ways to get the data group number
+                    if hasattr(dg, "number"):
+                        if hasattr(dg.number, "value"):
+                            dg_number = dg.number.value
+                        else:
+                            dg_number = dg.number
+                    elif hasattr(dg, "dataGroupNumber"):
+                        dg_number = dg.dataGroupNumber
+                    
+                    # Try different ways to get the hash
+                    if hasattr(dg, "hash"):
+                        dg_hash = dg.hash
+                    elif hasattr(dg, "dataGroupHashValue"):
+                        dg_hash = dg.dataGroupHashValue
+                    elif hasattr(dg, "hashValue"):
+                        dg_hash = dg.hashValue
+                    
+                    logger.debug(f"DG[{i}]: number={dg_number}, hash_len={len(dg_hash) if dg_hash else 'no hash'}")
+                    
+                    if dg_number == 1 and dg_hash:
+                        sod_expected_hash = dg_hash.hex() if hasattr(dg_hash, 'hex') else dg_hash
+                        logger.debug(f"Found DG1 hash: {sod_expected_hash}")
+                        break
+            
+            if not sod_expected_hash:
+                logger.warning("No DG1 hash found in SOD")
         except Exception as e:
-            logger.debug(f"Failed to extract DG1 hash from SOD: {e}")
+            logger.error(f"Failed to extract DG1 hash from SOD: {e}", exc_info=True)
         
         # Compare the calculated hash with the expected hash.
         dg1_matches = (sod_expected_hash == dg1_calculated_hash)
