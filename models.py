@@ -27,3 +27,6 @@ class VerifyRequest(BaseModel):
     sod: str
     address: str
     referredBy: Optional[str] = None
+
+class FaucetGasRequest(BaseModel):
+    address: str
