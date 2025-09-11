@@ -120,10 +120,10 @@ async def update_analytics_job():
         print(f"[Analytics] Final ANML Price calculated: ${anml_price_final:.6f}")
 
         # 7. Assemble the final data point
-        now_utc_day_start = int(time.time() // 86400 * 86400 * 1000)
+        now_utc_hour_start = int(time.time() // 3600 * 3600 * 1000)
 
         data_point = {
-            "timestamp": now_utc_day_start,
+            "timestamp": now_utc_hour_start,
             "erthPrice": global_erth_price,
             "erthTotalSupply": erth_total_supply,
             "erthMarketCap": global_erth_price * erth_total_supply,
@@ -134,11 +134,11 @@ async def update_analytics_job():
             "anmlMarketCap": anml_price_final * anml_total_supply,
         }
 
-        if not any(p['timestamp'] == now_utc_day_start for p in analytics_history):
+        if not any(p['timestamp'] == now_utc_hour_start for p in analytics_history):
             analytics_history.append(data_point)
             save_analytics_data()
         else:
-            print(f"[Analytics] Data for timestamp {now_utc_day_start} already exists. Skipping add.")
+            print(f"[Analytics] Data for timestamp {now_utc_hour_start} already exists. Skipping add.")
             
     except Exception as e:
         print(f"[Analytics] FATAL ERROR during analytics update: {e}")
@@ -149,7 +149,7 @@ async def update_analytics_job():
 def init_analytics():
     print("[Analytics] Initializing...")
     load_analytics_data()
-    is_stale = not analytics_history or (time.time() - analytics_history[-1]["timestamp"] / 1000) >= 86400
+    is_stale = not analytics_history or (time.time() - analytics_history[-1]["timestamp"] / 1000) >= 3600
     if is_stale:
         print("[Analytics] Data is stale or missing. Running initial update now.")
         asyncio.run(update_analytics_job())
@@ -161,4 +161,17 @@ async def get_analytics():
     return {
         "latest": analytics_history[-1] if analytics_history else None,
         "history": analytics_history
+    }
+
+@router.get("/erth-price", summary="Get Current ERTH Price")
+async def get_erth_price():
+    """Get the current ERTH price in USD from the latest analytics data."""
+    if not analytics_history:
+        return {"error": "No analytics data available"}
+    
+    latest_data = analytics_history[-1]
+    return {
+        "price": latest_data["erthPrice"],
+        "timestamp": latest_data["timestamp"],
+        "marketCap": latest_data["erthMarketCap"]
     }
