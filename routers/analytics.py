@@ -175,3 +175,16 @@ async def get_erth_price():
         "timestamp": latest_data["timestamp"],
         "marketCap": latest_data["erthMarketCap"]
     }
+
+@router.get("/anml-price", summary="Get Current ANML Price")
+async def get_anml_price():
+    """Get the current ANML price in USD from the latest analytics data."""
+    if not analytics_history:
+        return {"error": "No analytics data available"}
+    
+    latest_data = analytics_history[-1]
+    return {
+        "price": latest_data["anmlPrice"],
+        "timestamp": latest_data["timestamp"],
+        "marketCap": latest_data["anmlMarketCap"]
+    }
