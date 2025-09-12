@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-secret_sdk
+git+https://github.com/secretanalytics/secret-sdk-python.git
 aiofiles
 python-dotenv
 schedule
