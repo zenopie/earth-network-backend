@@ -388,16 +388,16 @@ def run_merkle_job(verbose: bool = False) -> Dict:
     if not validator:
         raise RuntimeError("MERKLE_VALIDATOR not configured; cannot run Merkle job.")
 
-    denom = getattr(config, "MERKLE_DENOM", "uscrt")
-    limit = int(getattr(config, "MERKLE_LIMIT", 1000))
-    odd_policy = getattr(config, "MERKLE_ODD_POLICY", "duplicate")
-    proofs_scope = getattr(config, "MERKLE_PROOFS", "all")
-    include_leaf_hashes = bool(getattr(config, "MERKLE_INCLUDE_LEAF_HASHES", False))
+    denom = "uscrt"
+    limit = 1000
+    odd_policy = "duplicate"
+    proofs_scope = "all"
+    include_leaf_hashes = False
 
     client = LCDClient(
         getattr(config, "SECRET_LCD_URL", ""),
-        timeout=int(getattr(config, "MERKLE_TIMEOUT", 15)),
-        max_retries=int(getattr(config, "MERKLE_MAX_RETRIES", 3)),
+        timeout=15,
+        max_retries=3,
         verbose=verbose,
     )
 
