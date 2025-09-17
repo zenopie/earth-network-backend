@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from secret_sdk.client.lcd import AsyncLCDClient
 from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.feegrant import MsgGrantAllowance, BasicAllowance
-from secret_sdk.core.coins import Coins
+from secret_sdk.core.coins import Coins, Coin
 from datetime import datetime
 
 import config
@@ -155,7 +155,7 @@ async def faucet_gas(
         
         # Create a BasicAllowance with spend limit and expiration
         allowance = BasicAllowance(
-            spend_limit=Coins([{"denom": "uscrt", "amount": "200000"}]),
+            spend_limit=Coins([Coin(denom="uscrt", amount="200000")]),
             expiration=expiration_time_in_seconds
         )
 
