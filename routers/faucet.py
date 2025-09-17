@@ -68,6 +68,45 @@ async def check_registration_status(address: str, secret_async_client: AsyncLCDC
         logger.error(f"Error checking registration status: {e}")
         return False
 
+@router.get("/faucet-eligibility/{address}", summary="Check if user can use the faucet")
+async def check_faucet_eligibility(
+    address: str,
+    secret_async_client: AsyncLCDClient = Depends(get_async_secret_client)
+):
+    """
+    Check if a user is eligible to use the faucet (registered and hasn't used it in the past week).
+    """
+    try:
+        # Load faucet usage cache
+        load_faucet_cache()
+
+        # Check if user is registered
+        is_registered = await check_registration_status(address, secret_async_client)
+
+        # Check if user can use faucet (weekly cooldown)
+        can_use = can_use_faucet(address)
+
+        # Calculate next available time if not eligible
+        next_available = None
+        if not can_use:
+            last_usage = FAUCET_USAGE_CACHE.get(address, 0)
+            next_available = last_usage + (7 * 24 * 60 * 60)  # 1 week after last usage
+
+        return {
+            "eligible": is_registered and can_use,
+            "registered": is_registered,
+            "cooldown_passed": can_use,
+            "next_available_timestamp": next_available,
+            "next_available_datetime": datetime.fromtimestamp(next_available).isoformat() if next_available else None
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking faucet eligibility: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking faucet eligibility: {str(e)}"
+        )
+
 @router.post("/faucet-gas", summary="Grant gas allowance to registered users")
 async def faucet_gas(
     req: FaucetGasRequest,
