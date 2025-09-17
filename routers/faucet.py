@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException, Depends
 from secret_sdk.client.lcd import AsyncLCDClient
 from secret_sdk.key.mnemonic import MnemonicKey
-from secret_sdk.core.feegrant import MsgGrantAllowance
+from secret_sdk.core.feegrant import MsgGrantAllowance, BasicAllowance
 from secret_sdk.core.coins import Coins
 from datetime import datetime
 
@@ -153,20 +153,16 @@ async def faucet_gas(
         now_in_seconds = int(time.time())
         expiration_time_in_seconds = now_in_seconds + (1 * 3600)  # 1 hour
         
+        # Create a BasicAllowance with spend limit and expiration
+        allowance = BasicAllowance(
+            spend_limit=Coins([{"denom": "uscrt", "amount": "200000"}]),
+            expiration=expiration_time_in_seconds
+        )
+
         grant_msg = MsgGrantAllowance(
             granter=async_wallet.key.acc_address,
             grantee=address,
-            allowance={
-                "expiration": {
-                    "seconds": str(expiration_time_in_seconds)
-                },
-                "spend_limit": [
-                    {
-                        "amount": "200000",
-                        "denom": "uscrt"
-                    }
-                ]
-            }
+            allowance=allowance
         )
         
         # Broadcast the grant transaction
