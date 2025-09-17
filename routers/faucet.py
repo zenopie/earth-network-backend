@@ -154,9 +154,10 @@ async def faucet_gas(
         expiration_time_in_seconds = now_in_seconds + (1 * 3600)  # 1 hour
         
         # Create a BasicAllowance with spend limit and expiration
+        expiration_datetime = datetime.fromtimestamp(expiration_time_in_seconds).isoformat() + "Z"
         allowance = BasicAllowance(
             spend_limit=Coins([Coin(denom="uscrt", amount="200000")]),
-            expiration=expiration_time_in_seconds
+            expiration=expiration_datetime
         )
 
         grant_msg = MsgGrantAllowance(
