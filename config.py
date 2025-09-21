@@ -60,11 +60,21 @@ def get_secret_ai_api_key() -> str:
         raise ValueError("FATAL: SECRET_AI_API_KEY environment variable not set or is empty.")
     return api_key
 
+def get_dg1_hash_secret() -> str:
+    """Loads the DG1 hash secret from the 'DG1_HASH_SECRET' environment variable."""
+    secret = os.getenv("DG1_HASH_SECRET")
+    if not secret:
+        raise ValueError("FATAL: DG1_HASH_SECRET environment variable not set or is empty.")
+    return secret
+
 WALLET_KEY = get_wallet_key()
 logging.info("Wallet key loaded from environment variable.")
 
 SECRET_AI_API_KEY = get_secret_ai_api_key()
 logging.info("Secret AI API key loaded from environment variable.")
+
+DG1_HASH_SECRET = get_dg1_hash_secret()
+logging.info("DG1 hash secret loaded from environment variable.")
 
 # --- CSCA Trust Store Configuration ---
 # This URL points to a Master List file containing trusted CSCA certificates.

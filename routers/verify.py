@@ -62,7 +62,11 @@ async def verify(
             return result
             
         # Step 3: If verification passed, register the user with DG1 hash as identity
-        identity_hash = result["details"]["dg1_hash_integrity"]["dg1_calculated_sha256"]
+        dg1_hash = result["details"]["dg1_hash_integrity"]["dg1_calculated_sha256"]
+
+        # Hash the DG1 with secret to break traceability
+        combined = f"{dg1_hash}{config.DG1_HASH_SECRET}"
+        identity_hash = hashlib.sha256(combined.encode('utf-8')).hexdigest()
         
         # Check for existing registration on-chain
         logger.info(f"Checking for existing registration with DG1 hash: {identity_hash}")
