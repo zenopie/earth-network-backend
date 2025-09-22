@@ -501,16 +501,71 @@ class EPassportVerifier:
         
         # Compare the calculated hash with the expected hash.
         dg1_matches = (sod_expected_hash == dg1_calculated_hash)
+
+        # --- STEP 6: Check Passport Expiration Date ---
+        # Parse the DG1 MRZ data to extract and validate passport expiration
+        passport_expired = False
+        passport_expiry_date = None
+        passport_expiry_reason = None
+
+        try:
+            # DG1 contains the MRZ (Machine Readable Zone) data
+            # The MRZ format varies but expiration date is typically at fixed positions
+            dg1_text = dg1_bytes.decode('utf-8', errors='ignore')
+            logger.debug(f"DG1 text content: {repr(dg1_text[:100])}...")  # Log first 100 chars safely
+
+            # Try to find expiration date in YYMMDD format (common in MRZ)
+            # Look for patterns like dates in the MRZ
+            import re
+
+            # MRZ typically has expiration in YYMMDD format
+            # Look for 6-digit sequences that could be dates
+            date_pattern = r'(\d{6})'
+            date_matches = re.findall(date_pattern, dg1_text)
+
+            for date_str in date_matches:
+                try:
+                    # Try to parse as YYMMDD (assuming 20xx for now)
+                    year = 2000 + int(date_str[:2])
+                    month = int(date_str[2:4])
+                    day = int(date_str[4:6])
+
+                    # Validate date ranges
+                    if 1 <= month <= 12 and 1 <= day <= 31 and 2020 <= year <= 2050:
+                        candidate_date = datetime(year, month, day, tzinfo=timezone.utc)
+
+                        # Check if this date is in the future (likely expiration)
+                        if candidate_date > now_utc:
+                            passport_expiry_date = candidate_date
+                            break
+
+                except ValueError:
+                    continue  # Invalid date, try next match
+
+            if passport_expiry_date:
+                passport_expired = passport_expiry_date <= now_utc
+                if passport_expired:
+                    passport_expiry_reason = f"Passport expired on {passport_expiry_date.strftime('%Y-%m-%d')}"
+                    logger.warning(f"Passport expired: {passport_expiry_reason}")
+                else:
+                    logger.debug(f"Passport expires on: {passport_expiry_date.strftime('%Y-%m-%d')}")
+            else:
+                logger.warning("Could not extract passport expiration date from DG1 MRZ data")
+                passport_expiry_reason = "Unable to determine passport expiration date"
+
+        except Exception as e:
+            logger.warning(f"Error parsing DG1 for expiration date: {e}")
+            passport_expiry_reason = f"Error parsing passport expiration: {str(e)}"
         # Fallback for older passports that might use SHA-1.
         if not dg1_matches and len(sod_expected_hash) == 40:
              dg1_matches = (sod_expected_hash == hashlib.sha1(dg1_bytes).hexdigest())
 
-        # --- STEP 6: Final Verdict and Response ---
+        # --- STEP 7: Final Verdict and Response ---
         # WHY: The overall process passes only if every single step succeeded.
         # This function returns a detailed dictionary that clearly states the
         # final result and provides granular details about each step, which is
         # invaluable for auditing and debugging.
-        passive_auth_passed = chain_valid and sod_signature_valid and dg1_matches
+        passive_auth_passed = chain_valid and sod_signature_valid and dg1_matches and not passport_expired
 
         # Determine overall failure reason for app display
         failure_reason = None
@@ -521,6 +576,8 @@ class EPassportVerifier:
                 failure_reason = "SOD signature verification failed - document integrity could not be verified"
             elif not dg1_matches:
                 failure_reason = "DG1 hash mismatch - document data has been tampered with"
+            elif passport_expired:
+                failure_reason = passport_expiry_reason
 
         return {
             "passive_authentication_passed": passive_auth_passed,
@@ -544,6 +601,12 @@ class EPassportVerifier:
                     "status": "VALID" if dg1_matches else "INVALID",
                     "dg1_calculated_sha256": dg1_calculated_hash,
                     "sod_expected_hash": sod_expected_hash,
+                },
+                "passport_expiration": {
+                    "status": "VALID" if not passport_expired else "EXPIRED",
+                    "expiry_date": passport_expiry_date.isoformat() if passport_expiry_date else None,
+                    "expired": passport_expired,
+                    "failure_reason": passport_expiry_reason if passport_expired else None,
                 },
             },
         }
