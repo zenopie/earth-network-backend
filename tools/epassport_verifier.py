@@ -512,8 +512,19 @@ class EPassportVerifier:
         # invaluable for auditing and debugging.
         passive_auth_passed = chain_valid and sod_signature_valid and dg1_matches
 
+        # Determine overall failure reason for app display
+        failure_reason = None
+        if not passive_auth_passed:
+            if not chain_valid:
+                failure_reason = f"Trust chain validation failed: {chain_failure_reason}"
+            elif not sod_signature_valid:
+                failure_reason = "SOD signature verification failed - document integrity could not be verified"
+            elif not dg1_matches:
+                failure_reason = "DG1 hash mismatch - document data has been tampered with"
+
         return {
             "passive_authentication_passed": passive_auth_passed,
+            "failure_reason": failure_reason,
             "details": {
                 "trust_chain": {
                     "status": "VALID" if chain_valid else "INVALID",
