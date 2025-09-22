@@ -373,8 +373,16 @@ class EPassportVerifier:
         for idx, cand in enumerate(issuer_candidates):
             try:
                 # Check 1: Is the candidate CSCA itself currently valid?
-                cand_not_before = cand.not_valid_before.replace(tzinfo=timezone.utc)
-                cand_not_after = cand.not_valid_after.replace(tzinfo=timezone.utc)
+                cand_not_before = (
+                    cand.not_valid_before
+                    if getattr(cand.not_valid_before, "tzinfo", None)
+                    else cand.not_valid_before.replace(tzinfo=timezone.utc)
+                )
+                cand_not_after = (
+                    cand.not_valid_after
+                    if getattr(cand.not_valid_after, "tzinfo", None)
+                    else cand.not_valid_after.replace(tzinfo=timezone.utc)
+                )
                 cand_valid = cand_not_before <= now_utc <= cand_not_after
                 
                 # Check 2: Does this candidate's public key successfully verify the DSC's signature?
@@ -392,10 +400,10 @@ class EPassportVerifier:
                 logger.debug(f"Error while attempting CSCA candidate[{idx}] verification: {e}", exc_info=True)
                 continue
 
-        # Check 3: Is the DSC itself currently valid?
-        dsc_not_before = dsc_cert.not_valid_before.replace(tzinfo=timezone.utc)
-        dsc_not_after = dsc_cert.not_valid_after.replace(tzinfo=timezone.utc)
-        dsc_is_valid = dsc_not_before <= now_utc <= dsc_not_after
+        def _to_aware(dt):
+            return dt if getattr(dt, "tzinfo", None) is not None else dt.replace(tzinfo=timezone.utc)
+
+        dsc_is_valid = _to_aware(dsc_cert.not_valid_before) <= now_utc <= _to_aware(dsc_cert.not_valid_after)
 
         # Determine the final status of the trust chain.
         if issuer_csca is None:
