@@ -63,24 +63,25 @@ async def verify(
             
         # Step 3: If verification passed, register the user with DG1 hash as identity
         dg1_hash = result["details"]["dg1_hash_integrity"]["dg1_calculated_sha256"]
-        logger.info(f"DG1 hash from verification: {dg1_hash}")
+        # Note: Not logging DG1 hash as it contains passport-derived data
 
         # Hash the DG1 with secret to break traceability
         combined = f"{dg1_hash}{config.DG1_HASH_SECRET}"
         identity_hash = hashlib.sha256(combined.encode('utf-8')).hexdigest()
-        logger.info(f"Generated identity hash: {identity_hash}")
+        # Note: Not logging identity hash for privacy
 
         # TODO: Enable registration for production
-        REGISTRATION_ENABLED = False  # Set to True to enable blockchain registration
+        REGISTRATION_ENABLED = True  # Set to True to enable blockchain registration
 
         if REGISTRATION_ENABLED:
             # Check for existing registration on-chain
-            logger.info(f"Checking for existing registration with DG1 hash: {identity_hash}")
+            logger.info("Checking for existing passport registration")
             query_msg = {"query_registration_status_by_id_hash": {"id_hash": identity_hash}}
             existing_registration = await secret_async_client.wasm.contract_query(
                 config.REGISTRATION_CONTRACT, query_msg, config.REGISTRATION_HASH
             )
             if existing_registration.get("registration_status"):
+                logger.info("Registration rejected: passport already registered")
                 raise HTTPException(status_code=409, detail="This ePassport has already been registered.")
 
             # Execute the registration transaction
@@ -112,7 +113,7 @@ async def verify(
                         break
                 except LCDResponseError as e:
                     if "tx not found" in str(e).lower():
-                        logger.debug(f"Polling for tx {tx.txhash}... attempt {i+1}")
+                        logger.info(f"Waiting for transaction confirmation... attempt {i+1}")
                         await asyncio.sleep(1)
                         continue
                     raise HTTPException(status_code=500, detail=f"Error polling for transaction: {e}")
@@ -122,6 +123,9 @@ async def verify(
 
             if tx_info.code != 0:
                 raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
+
+            # Log successful registration without sensitive data
+            logger.info(f"✅ Passport registration successful - TX: {tx_info.txhash}")
 
             # Return verification result with registration info
             result["registration"] = {

@@ -185,19 +185,8 @@ def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Ce
         if c not in candidates:
             candidates.append(c)
     
-    # Detailed logging to help debug the selection process.
-    try:
-        lines = []
-        for c in candidates:
-            ski = ski_map.get(c)
-            subj_match = (c.subject == issuer_name)
-            ski_match = (aki_keyid is not None and ski == aki_keyid)
-            lines.append(
-                f"  - subject={c.subject.rfc4514_string()} | SKI={_bhex(ski)} | subj_match={subj_match} | ski==aki={ski_match}"
-            )
-        logger.debug("Issuer candidates (priority order):\n" + ("\n".join(lines) if lines else "  <none>"))
-    except Exception as e:
-        logger.debug(f"Failed to emit issuer candidates detail: {e}", exc_info=True)
+    # Log candidate count without detailed subject information for privacy
+    logger.info(f"Found {len(candidates)} CSCA certificate candidates for trust chain validation")
 
     return candidates
 
@@ -491,7 +480,7 @@ class EPassportVerifier:
                     
                     if dg_number == 1 and dg_hash:
                         sod_expected_hash = dg_hash.hex() if hasattr(dg_hash, 'hex') else dg_hash
-                        logger.debug(f"Found DG1 hash: {sod_expected_hash}")
+                        logger.debug("DG1 hash extracted from SOD successfully")
                         break
             
             if not sod_expected_hash:
@@ -512,7 +501,7 @@ class EPassportVerifier:
             # DG1 contains the MRZ (Machine Readable Zone) data
             # The MRZ format varies but expiration date is typically at fixed positions
             dg1_text = dg1_bytes.decode('utf-8', errors='ignore')
-            logger.debug(f"DG1 text content: {repr(dg1_text[:100])}...")  # Log first 100 chars safely
+            # Note: Not logging DG1 content as it contains personal information
 
             # Try to find expiration date in YYMMDD format (common in MRZ)
             # Look for patterns like dates in the MRZ
@@ -546,9 +535,9 @@ class EPassportVerifier:
                 passport_expired = passport_expiry_date <= now_utc
                 if passport_expired:
                     passport_expiry_reason = f"Passport expired on {passport_expiry_date.strftime('%Y-%m-%d')}"
-                    logger.warning(f"Passport expired: {passport_expiry_reason}")
+                    logger.info("Passport verification failed: document is expired")
                 else:
-                    logger.debug(f"Passport expires on: {passport_expiry_date.strftime('%Y-%m-%d')}")
+                    logger.info("Passport expiration date validated successfully")
             else:
                 logger.warning("Could not extract passport expiration date from DG1 MRZ data")
                 passport_expiry_reason = "Unable to determine passport expiration date"
