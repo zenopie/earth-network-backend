@@ -22,6 +22,7 @@ router = APIRouter()
 # Simple in-memory cache for tracking faucet usage (no database needed)
 FAUCET_USAGE_CACHE = {}
 FAUCET_CACHE_FILE = "faucet_usage.json"
+FAUCET_COOLDOWN_SECONDS = int(os.getenv("FAUCET_COOLDOWN_SECONDS", "604800"))  # Default: 1 week (604800 seconds)
 
 def load_faucet_cache():
     """Load faucet usage cache from file if it exists."""
@@ -45,11 +46,10 @@ def save_faucet_cache():
         logger.warning(f"Could not save faucet cache: {e}")
 
 def can_use_faucet(address: str) -> bool:
-    """Check if an address can use the faucet (once per week)."""
+    """Check if an address can use the faucet (respecting cooldown period)."""
     now = time.time()
     last_usage = FAUCET_USAGE_CACHE.get(address, 0)
-    week_in_seconds = 7 * 24 * 60 * 60
-    return now - last_usage > week_in_seconds
+    return now - last_usage > FAUCET_COOLDOWN_SECONDS
 
 def mark_faucet_used(address: str):
     """Mark that an address has used the faucet."""
@@ -74,7 +74,7 @@ async def check_faucet_eligibility(
     secret_async_client: AsyncLCDClient = Depends(get_async_secret_client)
 ):
     """
-    Check if a user is eligible to use the faucet (registered and hasn't used it in the past week).
+    Check if a user is eligible to use the faucet (registered and hasn't used it within the cooldown period).
     """
     try:
         # Load faucet usage cache
@@ -83,14 +83,14 @@ async def check_faucet_eligibility(
         # Check if user is registered
         is_registered = await check_registration_status(address, secret_async_client)
 
-        # Check if user can use faucet (weekly cooldown)
+        # Check if user can use faucet (cooldown period)
         can_use = can_use_faucet(address)
 
         # Calculate next available time if not eligible
         next_available = None
         if not can_use:
             last_usage = FAUCET_USAGE_CACHE.get(address, 0)
-            next_available = last_usage + (7 * 24 * 60 * 60)  # 1 week after last usage
+            next_available = last_usage + FAUCET_COOLDOWN_SECONDS
 
         return {
             "eligible": is_registered and can_use,
@@ -113,7 +113,7 @@ async def faucet_gas(
     secret_async_client: AsyncLCDClient = Depends(get_async_secret_client)
 ):
     """
-    Grants a gas fee allowance to registered users who haven't used the faucet in the past week.
+    Grants a gas fee allowance to registered users who haven't used the faucet within the cooldown period.
     Uses Cosmos feegrant module to give users gas credits for swapping tokens.
     """
     try:
@@ -130,11 +130,11 @@ async def faucet_gas(
                 detail="User must be registered to use gas faucet"
             )
         
-        # Step 2: Check if user can use faucet (weekly cooldown)
+        # Step 2: Check if user can use faucet (cooldown period)
         if not can_use_faucet(address):
             raise HTTPException(
                 status_code=429, 
-                detail="Gas faucet can only be used once per week"
+                detail=f"Gas faucet can only be used once every {FAUCET_COOLDOWN_SECONDS} seconds"
             )
         
         # Step 3: Create wallet and grant gas allowance
@@ -190,7 +190,7 @@ async def faucet_gas(
             "tx_hash": tx.txhash,
             "allowance_amount": "0.2 SCRT",
             "expires_at": datetime.fromtimestamp(expiration_time_in_seconds).isoformat(),
-            "next_faucet_available": time.time() + (7 * 24 * 60 * 60)  # 1 week from now
+            "next_faucet_available": time.time() + FAUCET_COOLDOWN_SECONDS
         }
         
     except HTTPException:
