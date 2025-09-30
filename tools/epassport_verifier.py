@@ -35,6 +35,7 @@ from typing import List, Optional      # For type hinting to improve code clarit
 # The 'cryptography' library is the core engine for all cryptographic tasks.
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
 from cryptography.hazmat.primitives.serialization import Encoding
@@ -45,13 +46,10 @@ from cryptography.x509.oid import ExtensionOID
 from pymrtd.ef.sod import SOD
 
 # --- LOGGING SETUP ---
-# A logger is configured to provide verbose output. This is extremely useful
-# for debugging complex cryptographic issues, such as why a signature
-# verification failed or why a specific certificate was chosen.
+# A logger is configured to provide output for important verification events.
 logger = logging.getLogger(__name__)
-# Intentionally verbose for development; callers can override the level.
-logging.basicConfig(level=logging.DEBUG)
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
 
 
 # ----- Custom Exceptions -----
@@ -104,15 +102,9 @@ def _get_aki_keyid(cert: x509.Certificate) -> Optional[bytes]:
         aki = cert.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_KEY_IDENTIFIER).value
         # Extracts the 'key_identifier' part from the extension.
         keyid = getattr(aki, "key_identifier", None)
-        logger.debug(
-            f"AKI lookup: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, keyid={_bhex(keyid)}"
-        )
         return keyid
-    except Exception as e:
+    except Exception:
         # This is not an error; many certificates might not have this extension.
-        logger.debug(
-            f"AKI missing: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, err={e}"
-        )
         return None
 
 
@@ -127,14 +119,8 @@ def _get_ski_keyid(cert: x509.Certificate) -> Optional[bytes]:
         ski = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_KEY_IDENTIFIER).value
         # Extracts the digest (the identifier itself).
         digest = getattr(ski, "digest", None)
-        logger.debug(
-            f"SKI lookup: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, digest={_bhex(digest)}"
-        )
         return digest
-    except Exception as e:
-        logger.debug(
-            f"SKI missing: subject={cert.subject.rfc4514_string()}, serial={cert.serial_number}, err={e}"
-        )
+    except Exception:
         return None
 
 
@@ -152,10 +138,6 @@ def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Ce
     # Pre-filter for performance: get all CSCAs that match by name and pre-calculate their SKIs.
     subj_matches = [c for c in csca_certs if c.subject == issuer_name]
     ski_map = {c: _get_ski_keyid(c) for c in csca_certs}
-
-    logger.debug(
-        f"Issuer matching: dsc_issuer={issuer_name.rfc4514_string()}, dsc_aki={_bhex(aki_keyid)}, subj_matches={len(subj_matches)}"
-    )
 
     candidates: List[x509.Certificate] = []
 
@@ -184,9 +166,6 @@ def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Ce
     for c in csca_certs:
         if c not in candidates:
             candidates.append(c)
-    
-    # Log candidate count without detailed subject information for privacy
-    logger.info(f"Found {len(candidates)} CSCA certificate candidates for trust chain validation")
 
     return candidates
 
@@ -218,7 +197,6 @@ def _verify_certificate_signature(
                 cert_to_verify.tbs_certificate_bytes,
                 ec.ECDSA(sig_hash_algo),
             )
-            logger.debug("Certificate signature verified using ECDSA.")
             return True
 
         # --- RSA Path ---
@@ -229,38 +207,30 @@ def _verify_certificate_signature(
 
             if not is_pss:
                 # Use the older but still common PKCS1v15 padding for verification.
-                logger.debug("Attempting PKCS1v15 verification path.")
                 issuer_public_key.verify(
                     cert_to_verify.signature,
                     cert_to_verify.tbs_certificate_bytes,
                     padding.PKCS1v15(),
                     sig_hash_algo,
                 )
-                logger.debug("Certificate signature verified using PKCS1v15.")
                 return True
             else:
                 # Use the modern PSS padding for verification.
-                logger.debug("Attempting RSA-PSS verification path.")
                 issuer_public_key.verify(
                     cert_to_verify.signature,
                     cert_to_verify.tbs_certificate_bytes,
                     padding.PSS(mgf=padding.MGF1(sig_hash_algo), salt_length=padding.PSS.MAX_LENGTH),
                     sig_hash_algo,
                 )
-                logger.debug("Certificate signature verified using RSA-PSS.")
                 return True
 
-        logger.error(f"Unsupported issuer key type for verification: {type(issuer_public_key)}")
         return False
 
     except InvalidSignature:
-        # This is the expected exception for a failed signature check. It's not an error,
-        # it's a verification failure.
-        logger.debug("InvalidSignature: certificate signature verification failed.")
+        # This is the expected exception for a failed signature check.
         return False
-    except Exception as e:
-        # Any other exception indicates a problem with the code or data, not just a bad signature.
-        logger.error(f"Certificate signature verification failed with an unexpected error: {e}")
+    except Exception:
+        # Any other exception indicates a problem with the code or data.
         return False
 
 
@@ -380,13 +350,8 @@ class EPassportVerifier:
                     issuer_csca = cand
                     dsc_signature_is_valid = True
                     csca_is_valid = cand_valid
-                    logger.debug(f"Selected CSCA candidate[{idx}] based on successful DSC signature verification.")
                     break # Stop searching.
-                else:
-                    # If NO, log it and continue to the next candidate.
-                    logger.debug(f"CSCA candidate[{idx}] did not verify DSC signature.")
-            except Exception as e:
-                logger.debug(f"Error while attempting CSCA candidate[{idx}] verification: {e}", exc_info=True)
+            except Exception:
                 continue
 
         def _to_aware(dt):
@@ -398,17 +363,22 @@ class EPassportVerifier:
         if issuer_csca is None:
             chain_valid = False
             chain_failure_reason = "Issuing CSCA not found in trust store or signature mismatch."
+            logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason}")
         else:
             # The chain is valid only if all checks passed.
             chain_valid = csca_is_valid and dsc_is_valid and dsc_signature_is_valid
             if not csca_is_valid:
                 chain_failure_reason = "CSCA certificate has expired or is not yet valid."
+                logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason} | CSCA: {issuer_csca.subject.rfc4514_string()}")
             elif not dsc_is_valid:
                 chain_failure_reason = "DSC certificate has expired or is not yet valid."
+                logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason} | CSCA: {issuer_csca.subject.rfc4514_string()}")
             elif not dsc_signature_is_valid:
                 chain_failure_reason = "DSC signature is invalid (could not be verified by CSCA)."
+                logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason} | CSCA: {issuer_csca.subject.rfc4514_string()}")
             else:
                 chain_failure_reason = None
+                logger.info(f"✅ Trust chain validated successfully | CSCA: {issuer_csca.subject.rfc4514_string()}")
         
         # --- STEP 4: Verify SOD Signature ---
         # WHY: Now that we trust the DSC, we can use its public key to verify the
@@ -417,16 +387,75 @@ class EPassportVerifier:
         sod_signature_valid = False
         if chain_valid:
             try:
-                # Use the pymrtd library's built-in SOD verification logic.
+                # Manual SOD signature verification following ICAO 9303 standard
                 si = sod_obj.signers[0]
-                dsc_pymrt = sod_obj.getDscCertificate(si)
-                sod_obj.verify(si, dsc_pymrt)
+                signed_attrs = si['signed_attrs']
+
+                # The signature is computed over the DER encoding of the signed attributes
+                # BUT with the tag changed from context-specific [0] to SET OF (0x31)
+                # This is a critical ICAO 9303 requirement that pymrtd sometimes mishandles
+                signed_attrs_bytes = signed_attrs.dump()
+
+                # Replace the implicit [0] tag (0xA0) with SET OF tag (0x31)
+                if signed_attrs_bytes[0] == 0xA0:
+                    signed_attrs_bytes = b'\x31' + signed_attrs_bytes[1:]
+
+                # Extract signature and algorithm info
+                signature_bytes = si['signature'].native
+                digest_algo = si['digest_algorithm']['algorithm'].native
+                sig_algo = si['signature_algorithm']['algorithm'].native
+
+                # Map algorithm OIDs to hash algorithms
+                hash_algo_map = {
+                    'sha1': hashes.SHA1(),
+                    'sha256': hashes.SHA256(),
+                    'sha384': hashes.SHA384(),
+                    'sha512': hashes.SHA512(),
+                }
+                hash_algo = hash_algo_map.get(digest_algo)
+                if not hash_algo:
+                    raise ValueError(f"Unsupported digest algorithm: {digest_algo}")
+
+                # Get the DSC public key for verification
+                dsc_public_key = dsc_cert.public_key()
+
+                # Verify based on key type
+                if isinstance(dsc_public_key, rsa.RSAPublicKey):
+                    is_pss = 'pss' in sig_algo.lower() or sig_algo == 'rsassa_pss'
+
+                    if is_pss:
+                        dsc_public_key.verify(
+                            signature_bytes,
+                            signed_attrs_bytes,
+                            padding.PSS(
+                                mgf=padding.MGF1(hash_algo),
+                                salt_length=padding.PSS.AUTO
+                            ),
+                            hash_algo
+                        )
+                    else:
+                        dsc_public_key.verify(
+                            signature_bytes,
+                            signed_attrs_bytes,
+                            padding.PKCS1v15(),
+                            hash_algo
+                        )
+                elif isinstance(dsc_public_key, ec.EllipticCurvePublicKey):
+                    dsc_public_key.verify(
+                        signature_bytes,
+                        signed_attrs_bytes,
+                        ec.ECDSA(hash_algo)
+                    )
+                else:
+                    raise ValueError(f"Unsupported public key type: {type(dsc_public_key)}")
+
                 sod_signature_valid = True
-                logger.debug("SOD signature verified successfully by pymrtd.")
+                logger.info("✅ SOD signature verified successfully")
+            except InvalidSignature:
+                logger.warning("❌ SOD signature verification failed: Invalid signature")
+                sod_signature_valid = False
             except Exception as e:
-                # This can fail if the signature is invalid or if there's an issue
-                # with the data structures that pymrtd can't handle.
-                logger.warning(f"pymrtd sod_obj.verify() failed: {e}", exc_info=True)
+                logger.error(f"❌ SOD signature verification failed: {e}")
                 sod_signature_valid = False
 
         # --- STEP 5: Verify DG1 Hash Integrity ---
@@ -438,27 +467,21 @@ class EPassportVerifier:
         try:
             # Extract the expected DG1 hash from the parsed SOD object.
             lds = sod_obj.ldsSecurityObject
-            logger.debug(f"LDS Security Object type: {type(lds)}")
-            logger.debug(f"LDS Security Object dir: {[attr for attr in dir(lds) if not attr.startswith('_')]}")
-            
+
             # Try different ways to access data group hashes
             dg_hashes = None
             if hasattr(lds, "dataGroupHashValues"):
                 dg_hashes = lds.dataGroupHashValues
-                logger.debug(f"Found dataGroupHashValues: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
             elif hasattr(lds, "dgHashes"):
                 dg_hashes = lds.dgHashes
-                logger.debug(f"Found dgHashes: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
             elif hasattr(lds, "hashValues"):
                 dg_hashes = lds.hashValues
-                logger.debug(f"Found hashValues: {type(dg_hashes)} with {len(dg_hashes) if dg_hashes else 0} items")
-            
+
             if dg_hashes:
-                for i, dg in enumerate(dg_hashes):
-                    logger.debug(f"DG[{i}] type: {type(dg)}, dir: {[attr for attr in dir(dg) if not attr.startswith('_')]}")
+                for dg in dg_hashes:
                     dg_number = None
                     dg_hash = None
-                    
+
                     # Try different ways to get the data group number
                     if hasattr(dg, "number"):
                         if hasattr(dg.number, "value"):
@@ -467,7 +490,7 @@ class EPassportVerifier:
                             dg_number = dg.number
                     elif hasattr(dg, "dataGroupNumber"):
                         dg_number = dg.dataGroupNumber
-                    
+
                     # Try different ways to get the hash
                     if hasattr(dg, "hash"):
                         dg_hash = dg.hash
@@ -475,18 +498,15 @@ class EPassportVerifier:
                         dg_hash = dg.dataGroupHashValue
                     elif hasattr(dg, "hashValue"):
                         dg_hash = dg.hashValue
-                    
-                    logger.debug(f"DG[{i}]: number={dg_number}, hash_len={len(dg_hash) if dg_hash else 'no hash'}")
-                    
+
                     if dg_number == 1 and dg_hash:
                         sod_expected_hash = dg_hash.hex() if hasattr(dg_hash, 'hex') else dg_hash
-                        logger.debug("DG1 hash extracted from SOD successfully")
                         break
-            
+
             if not sod_expected_hash:
-                logger.warning("No DG1 hash found in SOD")
+                logger.warning("❌ No DG1 hash found in SOD")
         except Exception as e:
-            logger.error(f"Failed to extract DG1 hash from SOD: {e}", exc_info=True)
+            logger.error(f"❌ Failed to extract DG1 hash from SOD: {e}")
         
         # Compare the calculated hash with the expected hash.
         dg1_matches = (sod_expected_hash == dg1_calculated_hash)
@@ -535,15 +555,14 @@ class EPassportVerifier:
                 passport_expired = passport_expiry_date <= now_utc
                 if passport_expired:
                     passport_expiry_reason = f"Passport expired on {passport_expiry_date.strftime('%Y-%m-%d')}"
-                    logger.info("Passport verification failed: document is expired")
                 else:
-                    logger.info("Passport expiration date validated successfully")
+                    passport_expiry_reason = None
             else:
-                logger.warning("Could not extract passport expiration date from DG1 MRZ data")
+                logger.warning("❌ Could not extract passport expiration date from DG1 MRZ data")
                 passport_expiry_reason = "Unable to determine passport expiration date"
 
         except Exception as e:
-            logger.warning(f"Error parsing DG1 for expiration date: {e}")
+            logger.warning(f"❌ Error parsing DG1 for expiration date: {e}")
             passport_expiry_reason = f"Error parsing passport expiration: {str(e)}"
         # Fallback for older passports that might use SHA-1.
         if not dg1_matches and len(sod_expected_hash) == 40:
@@ -563,10 +582,15 @@ class EPassportVerifier:
                 failure_reason = f"Trust chain validation failed: {chain_failure_reason}"
             elif not sod_signature_valid:
                 failure_reason = "SOD signature verification failed - document integrity could not be verified"
+                logger.warning("❌ Passport verification failed: SOD signature invalid")
             elif not dg1_matches:
                 failure_reason = "DG1 hash mismatch - document data has been tampered with"
+                logger.warning("❌ Passport verification failed: DG1 hash mismatch")
             elif passport_expired:
                 failure_reason = passport_expiry_reason
+                logger.warning(f"❌ Passport verification failed: {passport_expiry_reason}")
+        else:
+            logger.info(f"✅ Passport verification successful | CSCA: {issuer_csca.subject.rfc4514_string() if issuer_csca else 'N/A'}")
 
         return {
             "passive_authentication_passed": passive_auth_passed,

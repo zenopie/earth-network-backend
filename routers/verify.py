@@ -25,8 +25,8 @@ from tools.epassport_verifier import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -125,7 +125,7 @@ async def verify(
                 raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
 
             # Log successful registration without sensitive data
-            logger.info(f"✅ Passport registration successful - TX: {tx_info.txhash}")
+            logger.info(f"✅ Registration transaction successful | TX: {tx_info.txhash} | Address: {req.address}")
 
             # Return verification result with registration info
             result["registration"] = {
