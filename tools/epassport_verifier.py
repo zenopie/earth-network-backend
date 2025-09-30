@@ -378,7 +378,7 @@ class EPassportVerifier:
                 logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason} | CSCA: {issuer_csca.subject.rfc4514_string()}")
             else:
                 chain_failure_reason = None
-                logger.info(f"✅ Trust chain validated successfully | CSCA: {issuer_csca.subject.rfc4514_string()}")
+                print(f"✅ Trust chain validated successfully | CSCA: {issuer_csca.subject.rfc4514_string()}")
         
         # --- STEP 4: Verify SOD Signature ---
         # WHY: Now that we trust the DSC, we can use its public key to verify the
@@ -450,7 +450,7 @@ class EPassportVerifier:
                     raise ValueError(f"Unsupported public key type: {type(dsc_public_key)}")
 
                 sod_signature_valid = True
-                logger.info("✅ SOD signature verified successfully")
+                print("✅ SOD signature verified successfully")
             except InvalidSignature:
                 logger.warning("❌ SOD signature verification failed: Invalid signature")
                 sod_signature_valid = False
@@ -590,7 +590,7 @@ class EPassportVerifier:
                 failure_reason = passport_expiry_reason
                 logger.warning(f"❌ Passport verification failed: {passport_expiry_reason}")
         else:
-            logger.info(f"✅ Passport verification successful | CSCA: {issuer_csca.subject.rfc4514_string() if issuer_csca else 'N/A'}")
+            print(f"✅ Passport verification successful | CSCA: {issuer_csca.subject.rfc4514_string() if issuer_csca else 'N/A'}")
 
         return {
             "passive_authentication_passed": passive_auth_passed,
