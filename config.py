@@ -6,7 +6,6 @@ import logging
 WEBHOOK_PORT = 8000
 ALLOWED_ORIGINS = [
     "https://erth.network",
-    # "http://localhost:3000"
 ]
 
 # --- File Paths ---

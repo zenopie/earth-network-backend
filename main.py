@@ -43,16 +43,16 @@ async def startup_event():
     # Schedule periodic CSCA cache refresh if CSCA_URL (hard-coded) is configured
     if getattr(config, "CSCA_URL", ""):
         scheduler.add_job(config.refresh_csca_cache, 'interval', hours=24)
-    # Schedule weekly Merkle generation every Monday at 00:00 UTC
-    scheduler.add_job(airdrop.scheduled_weekly_job, 'cron', day_of_week='mon', hour=0, minute=0, timezone=timezone.utc)
+    # Schedule weekly Merkle generation every Sunday at 00:00 UTC
+    scheduler.add_job(airdrop.scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc)
 
     # Optionally run Merkle job once on startup when enabled via env
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
         try:
             validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
             if validator:
-                print("MERKLE_RUN_ON_STARTUP enabled: running Merkle job at startup...")
-                airdrop.run_merkle_job(verbose=True)
+                print("MERKLE_RUN_ON_STARTUP enabled: running Merkle job and submitting to contract at startup...")
+                airdrop.scheduled_weekly_job()
             else:
                 print("MERKLE_RUN_ON_STARTUP set but MERKLE_VALIDATOR is not configured; skipping.")
         except Exception as e:
@@ -68,14 +68,14 @@ def shutdown_event():
     print("Application shutdown.")
 
 # --- API Routers ---
-app.include_router(register.router, prefix="/api", tags=["Registration"])
-app.include_router(chat.router, prefix="/api", tags=["Chat"])
-app.include_router(analytics.router, prefix="/api", tags=["Analytics"])
-app.include_router(verify.router, prefix="/api", tags=["Verification"])
-app.include_router(airdrop.router, prefix="/api", tags=["Airdrop"])
-app.include_router(secret_query.router, prefix="/api", tags=["SecretQuery"])
-app.include_router(faucet.router, prefix="/api", tags=["Faucet"])
-app.include_router(app_version.router, prefix="/api", tags=["App Version"])
+app.include_router(register.router, tags=["Registration"])
+app.include_router(chat.router, tags=["Chat"])
+app.include_router(analytics.router, tags=["Analytics"])
+app.include_router(verify.router, tags=["Verification"])
+app.include_router(airdrop.router, tags=["Airdrop"])
+app.include_router(secret_query.router, tags=["SecretQuery"])
+app.include_router(faucet.router, tags=["Faucet"])
+app.include_router(app_version.router, tags=["App Version"])
 
 
 @app.get("/", tags=["Health Check"])

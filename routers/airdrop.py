@@ -12,11 +12,10 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from secret_sdk.client.lcd import LCDClient
-from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.wasm import MsgExecuteContract
 
 import config
+from dependencies import secret_client, wallet
 
 
 # ------------- Merkle Builder (from user's script, adapted as a module) -------------
@@ -564,10 +563,6 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         if not contract_address or not contract_hash:
             raise RuntimeError("AIRDROP_CONTRACT or AIRDROP_HASH not configured")
 
-        # Create LCD client and wallet
-        lcd_client = LCDClient(url=config.SECRET_LCD_URL, chain_id=config.SECRET_CHAIN_ID)
-        wallet = lcd_client.wallet(MnemonicKey(mnemonic=config.WALLET_KEY))
-
         print(f"[AIRDROP] Submitting to contract {contract_address}", file=sys.stderr)
         print(f"[AIRDROP] Merkle root: {merkle_root}", file=sys.stderr)
         print(f"[AIRDROP] Total stake: {total_stake}", file=sys.stderr)
@@ -580,26 +575,47 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
             }
         }
 
-        # Create the MsgExecuteContract
+        # Create MsgExecuteContract
         msg = MsgExecuteContract(
             sender=wallet.key.acc_address,
             contract=contract_address,
             msg=execute_msg,
-            code_hash=contract_hash
+            code_hash=contract_hash,
+            encryption_utils=secret_client.encrypt_utils
         )
 
         # Broadcast transaction
-        tx = wallet.create_and_sign_tx(msgs=[msg], gas="300000")
-        result = lcd_client.tx.broadcast(tx)
+        tx = wallet.create_and_broadcast_tx(msg_list=[msg], gas=500000, memo="Weekly airdrop reset")
 
-        if result.code != 0:
-            raise RuntimeError(f"Contract execution failed: {result.raw_log}")
+        if tx.code != 0:
+            raise RuntimeError(f"Broadcast failed: {tx.raw_log}")
 
-        print(f"[AIRDROP] Successfully submitted to contract. TX: {result.txhash}", file=sys.stderr)
+        print(f"[AIRDROP] Transaction broadcast successful. TX: {tx.txhash}", file=sys.stderr)
+
+        # Poll for transaction confirmation
+        tx_info = None
+        for i in range(15):  # Poll for ~15 seconds
+            try:
+                tx_info = secret_client.tx.tx_info(tx.txhash)
+                if tx_info:
+                    break
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    print(f"[AIRDROP] Polling for tx... attempt {i+1}/15", file=sys.stderr)
+                    time.sleep(1)
+                    continue
+                # For other errors, log but don't fail
+                print(f"[AIRDROP] Error polling transaction: {e}", file=sys.stderr)
+                break
+
+        if tx_info and tx_info.code != 0:
+            raise RuntimeError(f"Transaction failed on-chain: {tx_info.logs}")
+
+        print(f"[AIRDROP] Successfully submitted to contract. TX: {tx.txhash}", file=sys.stderr)
 
         return {
             "success": True,
-            "txhash": result.txhash,
+            "txhash": tx.txhash,
             "merkle_root": merkle_root,
             "total_stake": total_stake
         }

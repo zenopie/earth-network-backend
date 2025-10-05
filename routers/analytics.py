@@ -132,6 +132,7 @@ async def update_analytics_job():
             "anmlPrice": anml_price_final,
             "anmlTotalSupply": anml_total_supply,
             "anmlMarketCap": anml_price_final * anml_total_supply,
+            "scrtPrice": prices.get("sSCRT", 0),
         }
 
         if not any(p['timestamp'] == now_utc_hour_start for p in analytics_history):
