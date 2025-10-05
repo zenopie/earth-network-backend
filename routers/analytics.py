@@ -4,6 +4,7 @@ import json
 import time
 import asyncio
 import aiohttp
+import traceback
 from typing import List, Dict, Any
 from fastapi import APIRouter
 
@@ -143,6 +144,7 @@ async def update_analytics_job():
             
     except Exception as e:
         print(f"[Analytics] FATAL ERROR during analytics update: {e}")
+        traceback.print_exc()
 
 
 # --- Initialization and API Endpoint (No Changes Below) ---
