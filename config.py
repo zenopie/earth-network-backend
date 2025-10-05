@@ -143,12 +143,9 @@ if CSCA_DIR and os.path.isdir(CSCA_DIR):
 # Configuration for weekly Merkle snapshot builder
 # Set MERKLE_VALIDATOR to your validator operator address (secretvaloper...)
 MERKLE_VALIDATOR = os.getenv("MERKLE_VALIDATOR", "")
-MERKLE_DENOM = os.getenv("MERKLE_DENOM", "uscrt")
-MERKLE_LIMIT = int(os.getenv("MERKLE_LIMIT", "1000"))
-MERKLE_ODD_POLICY = os.getenv("MERKLE_ODD_POLICY", "duplicate")  # or "promote"
-MERKLE_PROOFS = os.getenv("MERKLE_PROOFS", "all")  # "none" or "all"
-MERKLE_TIMEOUT = int(os.getenv("MERKLE_TIMEOUT", "15"))
-MERKLE_MAX_RETRIES = int(os.getenv("MERKLE_MAX_RETRIES", "3"))
-MERKLE_INCLUDE_LEAF_HASHES = os.getenv("MERKLE_INCLUDE_LEAF_HASHES", "false").lower() in ("1", "true", "yes", "y")
 # When true, run a one-time Merkle generation at application startup
 MERKLE_RUN_ON_STARTUP = os.getenv("MERKLE_RUN_ON_STARTUP", "false").lower() in ("1", "true", "yes", "y")
+
+# Airdrop contract configuration
+AIRDROP_CONTRACT = "secret13yyyzlqn4wq7ue40axh09phufv6myej7qvtmkw"
+AIRDROP_HASH = "8c49bfc1c0d26ff8ecd7b1f85599a1e60fba8afbe41293313a4ddcedbc1fb9c3"

@@ -12,6 +12,9 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from secret_sdk.client.lcd import LCDClient
+from secret_sdk.key.mnemonic import MnemonicKey
+from secret_sdk.core.wasm import MsgExecuteContract
 
 import config
 
@@ -541,9 +544,75 @@ def get_current_claim(address: str):
 
 # Initialize DB schema at import time to ensure tables exist before first use
 init_db()
+
+def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
+    """
+    Submit the new airdrop merkle root to the airdrop contract via ResetAirdrop message.
+
+    Args:
+        merkle_root: The merkle root hex string (0x-prefixed)
+        total_stake: The total stake amount as a string
+
+    Returns:
+        Dict with transaction hash and status
+    """
+    try:
+        # Get contract details
+        contract_address = getattr(config, "AIRDROP_CONTRACT", "").strip()
+        contract_hash = getattr(config, "AIRDROP_HASH", "").strip()
+
+        if not contract_address or not contract_hash:
+            raise RuntimeError("AIRDROP_CONTRACT or AIRDROP_HASH not configured")
+
+        # Create LCD client and wallet
+        lcd_client = LCDClient(url=config.SECRET_LCD_URL, chain_id=config.SECRET_CHAIN_ID)
+        wallet = lcd_client.wallet(MnemonicKey(mnemonic=config.WALLET_KEY))
+
+        print(f"[AIRDROP] Submitting to contract {contract_address}", file=sys.stderr)
+        print(f"[AIRDROP] Merkle root: {merkle_root}", file=sys.stderr)
+        print(f"[AIRDROP] Total stake: {total_stake}", file=sys.stderr)
+
+        # Create the ResetAirdrop execute message
+        execute_msg = {
+            "reset_airdrop": {
+                "merkle_root": merkle_root,
+                "total_stake": total_stake
+            }
+        }
+
+        # Create the MsgExecuteContract
+        msg = MsgExecuteContract(
+            sender=wallet.key.acc_address,
+            contract=contract_address,
+            msg=execute_msg,
+            code_hash=contract_hash
+        )
+
+        # Broadcast transaction
+        tx = wallet.create_and_sign_tx(msgs=[msg], gas="300000")
+        result = lcd_client.tx.broadcast(tx)
+
+        if result.code != 0:
+            raise RuntimeError(f"Contract execution failed: {result.raw_log}")
+
+        print(f"[AIRDROP] Successfully submitted to contract. TX: {result.txhash}", file=sys.stderr)
+
+        return {
+            "success": True,
+            "txhash": result.txhash,
+            "merkle_root": merkle_root,
+            "total_stake": total_stake
+        }
+
+    except Exception as e:
+        print(f"[AIRDROP] Failed to submit to contract: {e}", file=sys.stderr)
+        raise
+
 def scheduled_weekly_job() -> None:
     """
     Safe wrapper for the APScheduler weekly job.
+    - Generates merkle tree from validator delegations
+    - Submits the new airdrop to the contract via ResetAirdrop
     - Skips execution when MERKLE_VALIDATOR is not configured.
     - Catches and logs exceptions so the scheduler does not bring down the app.
     """
@@ -552,7 +621,20 @@ def scheduled_weekly_job() -> None:
         if not validator:
             print("[AIRDROP] MERKLE_VALIDATOR not set; skipping scheduled Merkle job.", file=sys.stderr)
             return
-        run_merkle_job(verbose=True)
+
+        # Run merkle job and get metadata
+        print("[AIRDROP] Running merkle job...", file=sys.stderr)
+        meta = run_merkle_job(verbose=True)
+
+        # Submit to contract
+        print("[AIRDROP] Submitting airdrop to contract...", file=sys.stderr)
+        submit_airdrop_to_contract(
+            merkle_root=meta["merkle_root"],
+            total_stake=meta["total_amount"]
+        )
+
+        print("[AIRDROP] Weekly job completed successfully", file=sys.stderr)
+
     except Exception as e:
         # Keep the app running; log the failure for inspection
         print(f"[AIRDROP] Scheduled Merkle job failed: {e}", file=sys.stderr)
