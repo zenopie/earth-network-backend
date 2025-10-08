@@ -126,7 +126,7 @@ async def verify(
                 raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
 
             # Log successful registration without sensitive data
-            print(f"✅ Registration transaction successful | TX: {tx_info.txhash} | Address: {req.address}")
+            print(f"✅ Registration transaction successful | TX: {tx_info.txhash}")
 
             # Return verification result with registration info
             result["registration"] = {
