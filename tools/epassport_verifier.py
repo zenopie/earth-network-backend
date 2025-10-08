@@ -171,66 +171,66 @@ def _find_issuer_candidates(dsc_cert: x509.Certificate, csca_certs: List[x509.Ce
 
 
 def _verify_certificate_signature(
-    cert_to_verify: x509.Certificate, issuer_public_key: CertificatePublicKeyTypes
+    cert_to_verify: x509.Certificate, issuer_cert: x509.Certificate
 ) -> bool:
     """
-    WHY: This is the core cryptographic verification function. It takes a certificate
-    and the public key of its supposed issuer and confirms that the signature on the
-    certificate is valid. This function must support the different algorithms used
-    in ePassports (RSA with different paddings and ECDSA).
+    WHY: This is the core cryptographic verification function using OpenSSL.
+    It verifies that cert_to_verify was signed by issuer_cert.
+
+    Uses OpenSSL CLI because it supports ECDSA keys with explicit parameters
+    that the Python cryptography library does not support (like Nigeria CSCA certs).
     """
+    import subprocess
+    import tempfile
+
     try:
-        # Extract the necessary components from the certificate:
-        # - signature_hash_algorithm: e.g., SHA256, SHA1
-        # - signature: The raw bytes of the digital signature.
-        # - tbs_certificate_bytes: "To-Be-Signed" bytes, the actual data that was signed.
-        sig_hash_algo = cert_to_verify.signature_hash_algorithm
-        algo_oid = getattr(cert_to_verify, "signature_algorithm_oid", None)
-        # ... logging details ...
+        # Write both certificates to temporary PEM files (OpenSSL verify needs PEM)
+        from cryptography.hazmat.primitives.serialization import Encoding as SerEncoding
 
-        # --- ECDSA Path ---
-        # If the issuer's key is an Elliptic Curve key...
-        if isinstance(issuer_public_key, ec.EllipticCurvePublicKey):
-            # ...use the ECDSA verification method.
-            issuer_public_key.verify(
-                cert_to_verify.signature,
-                cert_to_verify.tbs_certificate_bytes,
-                ec.ECDSA(sig_hash_algo),
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pem', delete=False) as cert_file:
+            cert_file.write(cert_to_verify.public_bytes(SerEncoding.PEM))
+            cert_path = cert_file.name
+
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pem', delete=False) as issuer_file:
+            issuer_file.write(issuer_cert.public_bytes(SerEncoding.PEM))
+            issuer_path = issuer_file.name
+
+        try:
+            # Use OpenSSL to verify: does issuer_cert validate cert_to_verify?
+            # -CAfile: trusted CA certificate
+            # -no_check_time: we handle validity period checks separately
+            result = subprocess.run(
+                ['openssl', 'verify', '-CAfile', issuer_path,
+                 '-no_check_time', cert_path],
+                capture_output=True,
+                text=True,
+                timeout=5
             )
-            return True
 
-        # --- RSA Path ---
-        # If the issuer's key is an RSA key...
-        if isinstance(issuer_public_key, rsa.RSAPublicKey):
-            # The OID helps determine if RSA-PSS padding was used, which is more secure.
-            is_pss = (getattr(getattr(algo_oid, "dotted_string", None), "dotted_string", str(algo_oid)) == "1.2.840.113549.1.1.10")
+            # OpenSSL outputs "cert_path: OK" on success
+            success = result.returncode == 0 and 'OK' in result.stdout
 
-            if not is_pss:
-                # Use the older but still common PKCS1v15 padding for verification.
-                issuer_public_key.verify(
-                    cert_to_verify.signature,
-                    cert_to_verify.tbs_certificate_bytes,
-                    padding.PKCS1v15(),
-                    sig_hash_algo,
-                )
-                return True
-            else:
-                # Use the modern PSS padding for verification.
-                issuer_public_key.verify(
-                    cert_to_verify.signature,
-                    cert_to_verify.tbs_certificate_bytes,
-                    padding.PSS(mgf=padding.MGF1(sig_hash_algo), salt_length=padding.PSS.MAX_LENGTH),
-                    sig_hash_algo,
-                )
-                return True
+            if not success:
+                logger.debug(f"OpenSSL verify failed: {result.stdout} {result.stderr}")
 
+            return success
+
+        finally:
+            # Clean up temp files
+            try:
+                os.unlink(cert_path)
+                os.unlink(issuer_path)
+            except:
+                pass
+
+    except subprocess.TimeoutExpired:
+        logger.warning("OpenSSL verify timed out")
         return False
-
-    except InvalidSignature:
-        # This is the expected exception for a failed signature check.
+    except FileNotFoundError:
+        logger.error("OpenSSL binary not found - please install OpenSSL")
         return False
-    except Exception:
-        # Any other exception indicates a problem with the code or data.
+    except Exception as e:
+        logger.debug(f"OpenSSL verification exception: {e}")
         return False
 
 
@@ -346,14 +346,15 @@ class EPassportVerifier:
                 )
                 cand_valid = cand_not_before <= now_utc <= cand_not_after
                 
-                # Check 2: Does this candidate's public key successfully verify the DSC's signature?
-                if _verify_certificate_signature(dsc_cert, cand.public_key()):
+                # Check 2: Does this candidate CSCA certificate successfully verify the DSC's signature?
+                if _verify_certificate_signature(dsc_cert, cand):
                     # If YES, we have found our issuer!
                     issuer_csca = cand
                     dsc_signature_is_valid = True
                     csca_is_valid = cand_valid
                     break # Stop searching.
-            except Exception:
+            except Exception as e:
+                logger.debug(f"CSCA candidate verification failed: {e}")
                 continue
 
         def _to_aware(dt):
@@ -421,40 +422,102 @@ class EPassportVerifier:
                     raise ValueError(f"Unsupported digest algorithm: {digest_algo}")
 
                 # Get the DSC public key for verification
-                dsc_public_key = dsc_cert.public_key()
+                # Try to get public key - may fail for ECDSA explicit parameters
+                dsc_public_key = None
+                try:
+                    dsc_public_key = dsc_cert.public_key()
+                except ValueError as e:
+                    if "explicit parameters" in str(e):
+                        # DSC uses ECDSA explicit parameters - use OpenSSL fallback
+                        logger.info("DSC uses ECDSA explicit parameters - using OpenSSL for SOD verification")
+                        import subprocess
+                        import tempfile
 
-                # Verify based on key type
-                if isinstance(dsc_public_key, rsa.RSAPublicKey):
-                    is_pss = 'pss' in sig_algo.lower() or sig_algo == 'rsassa_pss'
+                        # Write public key and signed data to temp files
+                        with tempfile.NamedTemporaryFile(mode='wb', suffix='.der', delete=False) as cert_file:
+                            cert_file.write(dsc_cert.public_bytes(Encoding.DER))
+                            cert_path = cert_file.name
 
-                    if is_pss:
+                        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as data_file:
+                            data_file.write(signed_attrs_bytes)
+                            data_path = data_file.name
+
+                        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as sig_file:
+                            sig_file.write(signature_bytes)
+                            sig_path = sig_file.name
+
+                        try:
+                            # Extract public key from certificate
+                            pubkey_result = subprocess.run(
+                                ['openssl', 'x509', '-inform', 'DER', '-in', cert_path, '-pubkey', '-noout'],
+                                capture_output=True,
+                                timeout=5
+                            )
+
+                            with tempfile.NamedTemporaryFile(mode='wb', delete=False) as pub_file:
+                                pub_file.write(pubkey_result.stdout)
+                                pub_path = pub_file.name
+
+                            # Determine algorithm for OpenSSL
+                            openssl_hash = digest_algo if digest_algo != 'sha1' else 'sha1'
+
+                            # Verify signature
+                            verify_result = subprocess.run(
+                                ['openssl', 'dgst', f'-{openssl_hash}', '-verify', pub_path,
+                                 '-signature', sig_path, data_path],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+
+                            if verify_result.returncode == 0 and 'Verified OK' in verify_result.stdout:
+                                sod_signature_valid = True
+                                print("✅ SOD signature verified successfully (OpenSSL)")
+                            else:
+                                raise ValueError(f"OpenSSL verification failed: {verify_result.stderr}")
+
+                        finally:
+                            for path in [cert_path, data_path, sig_path, pub_path]:
+                                try:
+                                    os.unlink(path)
+                                except:
+                                    pass
+                    else:
+                        raise
+
+                # Verify based on key type (standard cryptography library path)
+                if dsc_public_key is not None:
+                    if isinstance(dsc_public_key, rsa.RSAPublicKey):
+                        is_pss = 'pss' in sig_algo.lower() or sig_algo == 'rsassa_pss'
+
+                        if is_pss:
+                            dsc_public_key.verify(
+                                signature_bytes,
+                                signed_attrs_bytes,
+                                padding.PSS(
+                                    mgf=padding.MGF1(hash_algo),
+                                    salt_length=padding.PSS.AUTO
+                                ),
+                                hash_algo
+                            )
+                        else:
+                            dsc_public_key.verify(
+                                signature_bytes,
+                                signed_attrs_bytes,
+                                padding.PKCS1v15(),
+                                hash_algo
+                            )
+                    elif isinstance(dsc_public_key, ec.EllipticCurvePublicKey):
                         dsc_public_key.verify(
                             signature_bytes,
                             signed_attrs_bytes,
-                            padding.PSS(
-                                mgf=padding.MGF1(hash_algo),
-                                salt_length=padding.PSS.AUTO
-                            ),
-                            hash_algo
+                            ec.ECDSA(hash_algo)
                         )
                     else:
-                        dsc_public_key.verify(
-                            signature_bytes,
-                            signed_attrs_bytes,
-                            padding.PKCS1v15(),
-                            hash_algo
-                        )
-                elif isinstance(dsc_public_key, ec.EllipticCurvePublicKey):
-                    dsc_public_key.verify(
-                        signature_bytes,
-                        signed_attrs_bytes,
-                        ec.ECDSA(hash_algo)
-                    )
-                else:
-                    raise ValueError(f"Unsupported public key type: {type(dsc_public_key)}")
+                        raise ValueError(f"Unsupported public key type: {type(dsc_public_key)}")
 
-                sod_signature_valid = True
-                print("✅ SOD signature verified successfully")
+                    sod_signature_valid = True
+                    print("✅ SOD signature verified successfully")
             except InvalidSignature:
                 logger.warning("❌ SOD signature verification failed: Invalid signature")
                 sod_signature_valid = False
