@@ -33,6 +33,7 @@ router = APIRouter()
 # Pre-load verifier with trust anchors from config.CSCA_DIR
 CSCA_CERTS = EPassportVerifier.load_csca_from_dir(config.CSCA_DIR)
 VERIFIER = EPassportVerifier(CSCA_CERTS)
+print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} CSCA certificates from {config.CSCA_DIR}")
 
 
 @router.post("/verify", summary="Verify DG1 and SOD from an ePassport and register user if valid")
@@ -156,4 +157,5 @@ async def verify(
         raise
     except Exception as e:
         logger.exception("Unexpected error during ePassport verification and registration")
-        raise HTTPException(status_code=500, detail="Internal server error during verification")
+        print(f"❌ VERIFY ERROR: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {type(e).__name__}")

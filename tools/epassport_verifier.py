@@ -310,10 +310,12 @@ class EPassportVerifier:
 
             # Load the raw DER bytes into a `cryptography` certificate object for analysis.
             dsc_cert = x509.load_der_x509_certificate(der)
-            
+
             logger.debug(
                 f"Extracted DSC: subject={dsc_cert.subject.rfc4514_string()}, serial={dsc_cert.serial_number}"
             )
+            print(f"📄 DSC Issuer (CSCA needed): {dsc_cert.issuer.rfc4514_string()}")
+            print(f"📄 DSC Subject: {dsc_cert.subject.rfc4514_string()}")
         except Exception as e:
             raise SODParseError(str(e))
 
@@ -363,6 +365,8 @@ class EPassportVerifier:
         if issuer_csca is None:
             chain_valid = False
             chain_failure_reason = "Issuing CSCA not found in trust store or signature mismatch."
+            print(f"❌ No matching CSCA found for DSC issuer: {dsc_cert.issuer.rfc4514_string()}")
+            print(f"❌ Total CSCA certs in trust store: {len(self.csca_certs)}")
             logger.warning(f"❌ Trust chain validation failed: {chain_failure_reason}")
         else:
             # The chain is valid only if all checks passed.
