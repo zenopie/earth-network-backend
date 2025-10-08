@@ -325,7 +325,8 @@ class EPassportVerifier:
 
         now_utc = datetime.now(timezone.utc) # Get the current time for validity checks.
         issuer_csca: Optional[x509.Certificate] = None
-        # ... initialize result flags ...
+        dsc_signature_is_valid = False
+        csca_is_valid = False
 
         # Find the potential issuing CSCA candidates from our trust store.
         issuer_candidates = _find_issuer_candidates(dsc_cert, self.csca_certs)
