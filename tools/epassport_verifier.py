@@ -257,7 +257,7 @@ class EPassportVerifier:
         if not csca_dir or not os.path.isdir(csca_dir):
             logger.error("CSCA_DIR is not set or not a directory. Passive Authentication will fail.")
             return certs
-        logger.info(f"Loading CSCA certificates from: {csca_dir}")
+        print(f"Loading CSCA certificates from: {csca_dir}")
         # Find all files in the directory.
         for cert_path in glob.glob(os.path.join(csca_dir, "*.*")):
             try:
@@ -266,7 +266,7 @@ class EPassportVerifier:
                     certs.append(x509.load_der_x509_certificate(f.read()))
             except Exception as e:
                 logger.warning(f"Could not load certificate {os.path.basename(cert_path)}: {e}")
-        logger.info(f"Loaded {len(certs)} CSCA certificates.")
+        print(f"Loaded {len(certs)} CSCA certificates.")
         return certs
 
     def verify(self, dg1_b64: str, sod_b64: str) -> dict:

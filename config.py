@@ -76,67 +76,65 @@ DG1_HASH_SECRET = get_dg1_hash_secret()
 logging.info("DG1 hash secret loaded from environment variable.")
 
 # --- CSCA Trust Store Configuration ---
-# This URL points to a Master List file containing trusted CSCA certificates.
-CSCA_URL = "https://raw.githubusercontent.com/zenopie/csca-trust-store/main/allowlist.ml"
-
-def _download_and_extract_csca(url: str, dest_dir: str) -> str:
-    """
-    Thin wrapper that delegates downloading and extraction to tools.extract_csca.download_and_extract_csca.
-    Kept for backward compatibility with existing callers/tests.
-    """
-    try:
-        from tools.extract_csca import download_and_extract_csca as _tool_download_and_extract_csca  # [`python.imports()`](tools/extract_csca.py:1)
-    except Exception as e:
-        raise RuntimeError(f"tools.extract_csca.download_and_extract_csca unavailable: {e}")
-    return _tool_download_and_extract_csca(url, dest_dir)
 def get_csca_dir() -> str:
     """
     Ensures CSCA certificates are available and returns the directory path.
-    Downloads and caches certificates from CSCA_URL on first run.
+    Extracts from bundled master list (csca_masterlist/allowlist.ml) on first run.
     Returns the path to the 'certs' subdirectory where individual certs are stored.
     """
-    if not CSCA_URL:
-        logging.warning("CSCA_URL not configured; chain validation will be disabled.")
-        return ""
-        
-    # Use a local cache directory within the project
     cache_dir = os.path.join(os.path.dirname(__file__), ".csca_cache")
     certs_subdir = os.path.join(cache_dir, "certs")
-    
-    # Download and extract only if the certs directory doesn't exist
-    if not os.path.isdir(certs_subdir):
-        logging.info(f"CSCA cache not found. Downloading from {CSCA_URL}...")
-        try:
-            _download_and_extract_csca(CSCA_URL, cache_dir)
-        except Exception as e:
-            raise RuntimeError(f"FATAL: Failed to download or process CSCA trust store: {e}")
 
+    # If certs already exist, return them
     if os.path.isdir(certs_subdir):
         return certs_subdir
-    
-    logging.warning(f"CSCA 'certs' subdirectory not found in {cache_dir}. Validation may fail.")
-    return cache_dir # Fallback to the root cache dir
 
-# --- CSCA Refresh Helper ---
-def refresh_csca_cache() -> str:
-    """
-    Re-downloads the CSCA trust store into the cache directory and returns the certs path.
-    """
-    if not CSCA_URL:
-        raise RuntimeError("CSCA_URL not configured; cannot refresh CSCA cache.")
-    cache_dir = os.path.join(os.path.dirname(__file__), ".csca_cache")
+    # Extract from bundled master list
+    bundled_ml = os.path.join(os.path.dirname(__file__), "csca_masterlist", "allowlist.ml")
+    if not os.path.isfile(bundled_ml):
+        raise RuntimeError(f"FATAL: Bundled CSCA master list not found at {bundled_ml}")
+
+    logging.info(f"Extracting CSCA certificates from bundled master list: {bundled_ml}")
     try:
-        _download_and_extract_csca(CSCA_URL, cache_dir)
+        from tools.extract_csca import extract_csca_ders, save_ders_to_dir
+        with open(bundled_ml, 'rb') as f:
+            ml_bytes = f.read()
+        ders = extract_csca_ders(ml_bytes)
+        os.makedirs(certs_subdir, exist_ok=True)
+        count = save_ders_to_dir(ders, certs_subdir, prefix="csca")
+        logging.info(f"Extracted {count} CSCA certificates from bundled master list")
+        return certs_subdir
     except Exception as e:
-        raise RuntimeError(f"Failed to refresh CSCA trust store: {e}")
-    # Return the directory containing certs (if available)
-    certs_subdir = os.path.join(cache_dir, "certs")
-    return certs_subdir if os.path.isdir(certs_subdir) else cache_dir
+        raise RuntimeError(f"FATAL: Failed to extract bundled CSCA master list: {e}")
 
 # --- Initialize CSCA Trust Store on Application Startup ---
 CSCA_DIR = get_csca_dir()
 if CSCA_DIR and os.path.isdir(CSCA_DIR):
     logging.info(f"CSCA Trust Store is ready at: {CSCA_DIR}")
+
+# --- Additional CSCA Certificates Directory ---
+# For manually added certificates (e.g., Israel, Nigeria, etc. not in master lists)
+ADDITIONAL_CSCA_DIR = os.path.join(os.path.dirname(__file__), "csca_additional")
+if not os.path.exists(ADDITIONAL_CSCA_DIR):
+    os.makedirs(ADDITIONAL_CSCA_DIR, exist_ok=True)
+    logging.info(f"Created additional CSCA directory at: {ADDITIONAL_CSCA_DIR}")
+    # Create README
+    readme_path = os.path.join(ADDITIONAL_CSCA_DIR, "README.md")
+    with open(readme_path, "w") as f:
+        f.write("""# Additional CSCA Certificates
+
+Place manually obtained CSCA certificates here in DER format (.der, .cer).
+
+These certificates will be loaded in addition to the ICAO master list certificates.
+
+**Usage:**
+1. Download CSCA certificate (DER or CER format)
+2. Save to this directory with a descriptive name (e.g., `csca_israel.der`)
+3. Restart the application
+
+**Format:** DER-encoded X.509 certificates
+**File extensions:** .der, .cer, or any extension (will attempt to load all files)
+""")
 
 # --- Airdrop / Merkle Settings ---
 # Configuration for weekly Merkle snapshot builder

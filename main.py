@@ -30,19 +30,13 @@ scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
 async def startup_event():
-    """Initializes analytics, refreshes CSCA cache (fatal on failure), and starts the scheduler."""
+    """Initializes analytics and starts the scheduler."""
     print("Application startup...")
-    # Strict behavior: downloading the CSCA bundle is required. If this raises, startup fails.
-    config.refresh_csca_cache()
-    print("CSCA cache refreshed successfully (from hard-coded CSCA_URL).")
 
     # Call init_analytics from the analytics router module
     analytics.init_analytics()
     # Schedule the job from the analytics router module to run every hour
     scheduler.add_job(analytics.update_analytics_job, 'interval', hours=1)
-    # Schedule periodic CSCA cache refresh if CSCA_URL (hard-coded) is configured
-    if getattr(config, "CSCA_URL", ""):
-        scheduler.add_job(config.refresh_csca_cache, 'interval', hours=24)
     # Schedule weekly Merkle generation every Sunday at 00:00 UTC
     scheduler.add_job(airdrop.scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc)
 

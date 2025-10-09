@@ -32,8 +32,16 @@ router = APIRouter()
 
 # Pre-load verifier with trust anchors from config.CSCA_DIR
 CSCA_CERTS = EPassportVerifier.load_csca_from_dir(config.CSCA_DIR)
+print(f"Loaded {len(CSCA_CERTS)} CSCA certificates from master list")
+
+# Load additional manually added certificates
+ADDITIONAL_CERTS = EPassportVerifier.load_csca_from_dir(config.ADDITIONAL_CSCA_DIR)
+if ADDITIONAL_CERTS:
+    print(f"Loaded {len(ADDITIONAL_CERTS)} additional CSCA certificates from {config.ADDITIONAL_CSCA_DIR}")
+    CSCA_CERTS.extend(ADDITIONAL_CERTS)
+
 VERIFIER = EPassportVerifier(CSCA_CERTS)
-print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} CSCA certificates from {config.CSCA_DIR}")
+print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} total CSCA certificates")
 
 
 @router.post("/verify", summary="Verify DG1 and SOD from an ePassport and register user if valid")
