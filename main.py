@@ -9,6 +9,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 # Import the individual router modules
 from routers import register, chat, analytics, verify, airdrop, secret_query, faucet, app_version
+# Import scheduled tasks
+from scheduled_tasks import (
+    update_pool_rewards,
+    update_analytics_job,
+    init_analytics,
+    scheduled_weekly_job
+)
 
 app = FastAPI(
     title="Erth Network API",
@@ -33,12 +40,14 @@ async def startup_event():
     """Initializes analytics and starts the scheduler."""
     print("Application startup...")
 
-    # Call init_analytics from the analytics router module
-    analytics.init_analytics()
-    # Schedule the job from the analytics router module to run every hour
-    scheduler.add_job(analytics.update_analytics_job, 'interval', hours=1)
+    # Initialize analytics data
+    init_analytics()
+    # Schedule analytics update to run every hour
+    scheduler.add_job(update_analytics_job, 'interval', hours=1)
     # Schedule weekly Merkle generation every Sunday at 00:00 UTC
-    scheduler.add_job(airdrop.scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc)
+    scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc)
+    # Schedule daily pool rewards update at 00:00 UTC
+    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc)
 
     # Optionally run Merkle job once on startup when enabled via env
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
@@ -46,7 +55,7 @@ async def startup_event():
             validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
             if validator:
                 print("MERKLE_RUN_ON_STARTUP enabled: running Merkle job and submitting to contract at startup...")
-                airdrop.scheduled_weekly_job()
+                scheduled_weekly_job()
             else:
                 print("MERKLE_RUN_ON_STARTUP set but MERKLE_VALIDATOR is not configured; skipping.")
         except Exception as e:
