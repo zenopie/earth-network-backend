@@ -1,12 +1,16 @@
 # /main.py
 import uvicorn
 import os
+import logging
 from datetime import timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
+from registry_loader import load_registry
+
+logger = logging.getLogger(__name__)
 # Import the individual router modules
 from routers import register, chat, analytics, verify, airdrop, secret_query, faucet, app_version
 # Import scheduled tasks
@@ -38,9 +42,29 @@ scheduler = AsyncIOScheduler()
 @app.on_event("startup")
 async def startup_event():
     """Initializes analytics and starts the scheduler."""
-    print("Application startup...")
+    import sys
+    print("=" * 80, flush=True)
+    print("APPLICATION STARTUP BEGINNING", flush=True)
+    print("=" * 80, flush=True)
+
+    # Load contract registry from on-chain
+    print("Loading contract registry from on-chain...", flush=True)
+    try:
+        registry_data = load_registry(config.SECRET_LCD_URL, config.SECRET_CHAIN_ID)
+        print(f"Registry data loaded: {len(registry_data.contracts)} contracts, {len(registry_data.tokens)} tokens", flush=True)
+        print(f"Contract names: {list(registry_data.contracts.keys())}", flush=True)
+        print(f"Token symbols: {list(registry_data.tokens.keys())}", flush=True)
+        config.init_contracts_from_registry(registry_data.contracts, registry_data.tokens)
+        print("Contract registry loaded successfully!", flush=True)
+    except Exception as e:
+        print(f"FATAL: Failed to load contract registry: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise
 
     # Initialize analytics data
+    print("Initializing analytics...", flush=True)
     init_analytics()
     # Schedule analytics update to run every hour
     scheduler.add_job(update_analytics_job, 'interval', hours=1)

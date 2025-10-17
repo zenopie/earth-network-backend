@@ -54,7 +54,7 @@ async def update_analytics_job():
     """
     print("[Analytics] Starting scheduled update...")
     try:
-        # 1. Fetch prices for sSCRT and FINA from CoinGecko
+        # 1. Fetch prices for SSCRT and FINA from CoinGecko
         token_ids_to_fetch = [t["coingeckoId"] for t in config.TOKENS.values() if "coingeckoId" in t]
         coingecko_ids_str = ",".join(token_ids_to_fetch)
         price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_ids_str}&vs_currencies=usd"
@@ -95,7 +95,7 @@ async def update_analytics_job():
             if token_symbol == "ANML":
                 anml_data = {"token_reserve": token_reserve, "erth_reserve": erth_reserve}
             else:
-                # This block is for sSCRT and FINA
+                # This block is for SSCRT and FINA
                 pool_erth_price = (token_reserve / erth_reserve) * prices[token_symbol] if erth_reserve > 0 else 0
                 pool_tvl = (token_reserve * prices[token_symbol]) + (erth_reserve * pool_erth_price)
 
@@ -134,7 +134,7 @@ async def update_analytics_job():
             "anmlPrice": anml_price_final,
             "anmlTotalSupply": anml_total_supply,
             "anmlMarketCap": anml_price_final * anml_total_supply,
-            "scrtPrice": prices.get("sSCRT", 0),
+            "scrtPrice": prices.get("SSCRT", 0),
         }
 
         if not any(p['timestamp'] == now_utc_hour_start for p in analytics_history):

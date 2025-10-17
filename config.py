@@ -14,34 +14,37 @@ ANALYTICS_FILE = "analyticsData.json"
 # --- Secret Network ---
 SECRET_LCD_URL = "https://lcd.erth.network"
 SECRET_CHAIN_ID = "secret-4"
-REGISTRATION_CONTRACT = "secret12q72eas34u8fyg68k6wnerk2nd6l5gaqppld6p"
-REGISTRATION_HASH = "e6f9a7a7a6060721b0cf511d78a423c216fb961668ceeb7289dc189a94a7b730"
+
+# Contract addresses and hashes - populated from registry on startup
+REGISTRATION_CONTRACT = None
+REGISTRATION_HASH = None
 
 # --- Secret AI / Ollama ---
 SECRET_AI_URL = "https://secretai-rytn.scrtlabs.com:21434"
 OLLAMA_MODEL = "gemma3:4b"
 
 # --- Analytics & DeFi Contracts ---
+# TOKENS - populated from registry on startup, with metadata
 TOKENS = {
     "ERTH": {
-        "contract": "secret16snu3lt8k9u0xr54j2hqyhvwnx9my7kq7ay8lp",
-        "hash": "72e7242ceb5e3e441243f5490fab2374df0d3e828ce33aa0f0b4aad226cfedd7",
+        "contract": None,
+        "hash": None,
         "decimals": 6,
     },
     "ANML": {
-        "contract": "secret14p6dhjznntlzw0yysl7p6z069nk0skv5e9qjut",
-        "hash": "72e7242ceb5e3e441243f5490fab2374df0d3e828ce33aa0f0b4aad226cfedd7",
+        "contract": None,
+        "hash": None,
         "decimals": 6,
     },
-    "sSCRT": {
-        "contract": "secret1k0jntykt7e4g3y88ltc60czgjuqdy4c9e8fzek",
-        "hash": "af74387e276be8874f07bec3a87023ee49b0e7ebe08178c49d0a49c3c98ed60e",
+    "SSCRT": {
+        "contract": None,
+        "hash": None,
         "decimals": 6,
         "coingeckoId": "secret",
     },
 }
-UNIFIED_POOL_CONTRACT = "secret1rj2phrf6x3v7526jrz60m2dcq58slyq2269kra"
-UNIFIED_POOL_HASH = "58c616e3736ccaecbdb7293a60ca1f8b4d64a75559a1dee941d1292a489ae0ec"
+UNIFIED_POOL_CONTRACT = None
+UNIFIED_POOL_HASH = None
 
 
 # --- Key Loading ---
@@ -143,11 +146,62 @@ MERKLE_VALIDATOR = os.getenv("MERKLE_VALIDATOR", "")
 # When true, run a one-time Merkle generation at application startup
 MERKLE_RUN_ON_STARTUP = os.getenv("MERKLE_RUN_ON_STARTUP", "false").lower() in ("1", "true", "yes", "y")
 
-# Airdrop contract configuration
-AIRDROP_CONTRACT = "secret13yyyzlqn4wq7ue40axh09phufv6myej7qvtmkw"
-AIRDROP_HASH = "8c49bfc1c0d26ff8ecd7b1f85599a1e60fba8afbe41293313a4ddcedbc1fb9c3"
+# Airdrop contract configuration - populated from registry on startup
+AIRDROP_CONTRACT = None
+AIRDROP_HASH = None
 
-# Staking contract configuration (for claiming allocations before airdrop)
-STAKING_CONTRACT = "secret10ea3ya578qnz02rmr7adhu2rq7g2qjg88ry2h5"
-STAKING_HASH = "62201f2b6e7d9d8c54621fff3dee39c33ad7074ae142b2ef4371dad6e0b386cb"
+# Staking contract configuration - populated from registry on startup
+STAKING_CONTRACT = None
+STAKING_HASH = None
 AIRDROP_ALLOCATION_ID = 4
+
+
+def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict):
+    """
+    Initialize contract addresses and hashes from the registry.
+    Called from main.py during startup.
+
+    Args:
+        registry_contracts: Dict of contract names to {contract, hash}
+        registry_tokens: Dict of token symbols to {contract, hash}
+    """
+    global REGISTRATION_CONTRACT, REGISTRATION_HASH
+    global UNIFIED_POOL_CONTRACT, UNIFIED_POOL_HASH
+    global AIRDROP_CONTRACT, AIRDROP_HASH
+    global STAKING_CONTRACT, STAKING_HASH
+    global TOKENS
+
+    # Update registration contract
+    if "registration" in registry_contracts:
+        REGISTRATION_CONTRACT = registry_contracts["registration"]["contract"]
+        REGISTRATION_HASH = registry_contracts["registration"]["hash"]
+        logging.info(f"Loaded registration contract: {REGISTRATION_CONTRACT}")
+
+    # Update unified pool contract (registry calls it "exchange")
+    if "exchange" in registry_contracts:
+        UNIFIED_POOL_CONTRACT = registry_contracts["exchange"]["contract"]
+        UNIFIED_POOL_HASH = registry_contracts["exchange"]["hash"]
+        logging.info(f"Loaded unified pool contract: {UNIFIED_POOL_CONTRACT}")
+
+    # Update airdrop contract
+    if "airdrop" in registry_contracts:
+        AIRDROP_CONTRACT = registry_contracts["airdrop"]["contract"]
+        AIRDROP_HASH = registry_contracts["airdrop"]["hash"]
+        logging.info(f"Loaded airdrop contract: {AIRDROP_CONTRACT}")
+
+    # Update staking contract
+    if "staking" in registry_contracts:
+        STAKING_CONTRACT = registry_contracts["staking"]["contract"]
+        STAKING_HASH = registry_contracts["staking"]["hash"]
+        logging.info(f"Loaded staking contract: {STAKING_CONTRACT}")
+
+    # Update token contracts
+    for symbol in TOKENS.keys():
+        if symbol in registry_tokens:
+            TOKENS[symbol]["contract"] = registry_tokens[symbol]["contract"]
+            TOKENS[symbol]["hash"] = registry_tokens[symbol]["hash"]
+            logging.info(f"Loaded {symbol} token: {TOKENS[symbol]['contract']}")
+        else:
+            logging.warning(f"Token {symbol} not found in registry")
+
+    logging.info("All contracts initialized from registry")
