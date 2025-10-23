@@ -44,6 +44,41 @@ VERIFIER = EPassportVerifier(CSCA_CERTS)
 print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} total CSCA certificates")
 
 
+@router.post("/test-verify", summary="Test ePassport verification without blockchain registration")
+async def test_verify(req: VerifyRequest):
+    """
+    Verifies ePassport DG1 and SOD but does NOT register on blockchain.
+    Returns full verification details for testing purposes.
+    """
+    if not req.dg1:
+        raise HTTPException(status_code=400, detail="Missing required field: dg1")
+    if not req.sod:
+        raise HTTPException(status_code=400, detail="Missing required field: sod")
+
+    if not VERIFIER.csca_certs:
+        raise HTTPException(
+            status_code=500,
+            detail="Server is misconfigured: No CSCA certificates loaded for trust validation.",
+        )
+
+    try:
+        # Verify the ePassport and return the result
+        result = VERIFIER.verify(req.dg1, req.sod)
+        result["note"] = "Test mode: No blockchain transaction performed"
+        return result
+
+    except InvalidBase64Error as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Base64 input: {e}")
+    except SODParseError as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse SOD or extract DSC: {e}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.exception("Unexpected error during ePassport test verification")
+        print(f"❌ TEST-VERIFY ERROR: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {type(e).__name__}")
+
+
 @router.post("/verify", summary="Verify DG1 and SOD from an ePassport and register user if valid")
 async def verify(
     req: VerifyRequest,
