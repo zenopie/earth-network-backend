@@ -12,7 +12,7 @@ from registry_loader import load_registry
 
 logger = logging.getLogger(__name__)
 # Import the individual router modules
-from routers import register, chat, analytics, verify, airdrop, secret_query, faucet, app_version
+from routers import chat, analytics, verify, airdrop, secret_query, faucet, app_version
 # Import scheduled tasks
 from scheduled_tasks import (
     update_pool_rewards,
@@ -95,7 +95,6 @@ def shutdown_event():
     print("Application shutdown.")
 
 # --- API Routers ---
-app.include_router(register.router, tags=["Registration"])
 app.include_router(chat.router, tags=["Chat"])
 app.include_router(analytics.router, tags=["Analytics"])
 app.include_router(verify.router, tags=["Verification"])
