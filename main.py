@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
 from registry_loader import load_registry
+from ip_anonymizer import IPAnonymizerMiddleware
 
 logger = logging.getLogger(__name__)
 # Import the individual router modules
@@ -35,6 +36,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# IP Anonymization Middleware (for privacy in logs)
+app.add_middleware(IPAnonymizerMiddleware)
 
 # --- Event Handlers & Scheduler ---
 scheduler = AsyncIOScheduler()
@@ -110,11 +114,9 @@ async def read_root():
 
 # --- Run Server ---
 if __name__ == "__main__":
-    from logging_config import LOGGING_CONFIG
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=config.WEBHOOK_PORT,
-        reload=True,
-        log_config=LOGGING_CONFIG
+        reload=True
     )
