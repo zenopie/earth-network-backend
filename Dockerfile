@@ -32,4 +32,5 @@ EXPOSE 8000
 
 # 8. Define the command to run the application
 #    --host 0.0.0.0 is crucial to make the server accessible from outside the container
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+#    --log-config enables IP address anonymization for privacy
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-config", "logging_config.py"]

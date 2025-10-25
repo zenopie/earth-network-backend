@@ -110,9 +110,11 @@ async def read_root():
 
 # --- Run Server ---
 if __name__ == "__main__":
+    from logging_config import LOGGING_CONFIG
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=config.WEBHOOK_PORT,
-        reload=True
+        reload=True,
+        log_config=LOGGING_CONFIG
     )
