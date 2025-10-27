@@ -67,11 +67,16 @@ async def startup_event():
     print("Initializing analytics...", flush=True)
     init_analytics()
     # Schedule analytics update to run every hour
-    scheduler.add_job(update_analytics_job, 'interval', hours=1)
+    scheduler.add_job(update_analytics_job, 'interval', hours=1, id='analytics_update')
+    print("✓ Scheduled analytics update job (every hour)", flush=True)
+
     # Schedule weekly Merkle generation every Sunday at 00:00 UTC
-    scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc)
+    scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
+    print("✓ Scheduled weekly Merkle job (Sunday 00:00 UTC)", flush=True)
+
     # Schedule daily pool rewards update at 00:00 UTC
-    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc)
+    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
+    print("✓ Scheduled daily pool rewards update (00:00 UTC)", flush=True)
 
     # Optionally run Merkle job once on startup when enabled via env
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
@@ -86,7 +91,9 @@ async def startup_event():
             print(f"[AIRDROP] Startup Merkle job failed: {e}")
 
     scheduler.start()
-    print("Startup complete. Analytics and airdrop schedulers are running.")
+    print("=" * 80, flush=True)
+    print("Startup complete. All scheduled jobs are running.", flush=True)
+    print("=" * 80, flush=True)
 
 @app.on_event("shutdown")
 def shutdown_event():
