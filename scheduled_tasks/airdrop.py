@@ -43,7 +43,7 @@ class LCDClient:
         while True:
             try:
                 if self.verbose:
-                    print(f"[HTTP] GET {url} params={params}", file=sys.stderr)
+                    print(f"[HTTP] GET {url} params={params}", flush=True)
                 resp = requests.get(url, params=params, timeout=self.timeout)
                 if resp.status_code >= 400:
                     raise requests.HTTPError(f"HTTP {resp.status_code}: {resp.text[:500]}")
@@ -53,7 +53,7 @@ class LCDClient:
                 if attempt > self.max_retries:
                     raise RuntimeError(f"HTTP GET failed after {self.max_retries} retries: {e}") from e
                 if self.verbose:
-                    print(f"[HTTP] error: {e}; retry {attempt}/{self.max_retries} in {backoff:.1f}s", file=sys.stderr)
+                    print(f"[HTTP] error: {e}; retry {attempt}/{self.max_retries} in {backoff:.1f}s", flush=True)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 10.0)
 
@@ -93,7 +93,7 @@ class LCDClient:
             height = int(height_str) if height_str is not None else None
             return height, time_str
         except Exception as e:
-            print(f"[WARN] Failed to fetch latest block info: {e}", file=sys.stderr)
+            print(f"[WARN] Failed to fetch latest block info: {e}", flush=True)
             return None, None
 
 
@@ -121,7 +121,7 @@ def aggregate_balances(delegation_responses: List[Dict], denom: str, verbose: bo
                 amount = int(amount_str.split(".", 1)[0] or "0")
             else:
                 if verbose:
-                    print(f"[WARN] Skipping non-integer amount for {delegator}: {amount_str}", file=sys.stderr)
+                    print(f"[WARN] Skipping non-integer amount for {delegator}: {amount_str}", flush=True)
                 continue
         if amount <= 0:
             continue
@@ -405,17 +405,17 @@ def run_merkle_job(verbose: bool = False) -> Dict:
     )
 
     if verbose:
-        print("[*] Fetching delegations...", file=sys.stderr)
+        print("[*] Fetching delegations...", flush=True)
     delegations = client.fetch_validator_delegations(validator, limit=limit)
     if verbose:
-        print(f"[*] Retrieved {len(delegations)} delegation entries", file=sys.stderr)
+        print(f"[*] Retrieved {len(delegations)} delegation entries", flush=True)
 
     balances, total_amount_int = aggregate_balances(delegations, denom=denom, verbose=verbose)
     if not balances:
         raise RuntimeError("No balances aggregated. Check validator, denom, and LCD endpoint.")
 
     if verbose:
-        print(f"[*] Aggregated {len(balances)} delegators; total {denom} = {total_amount_int}", file=sys.stderr)
+        print(f"[*] Aggregated {len(balances)} delegators; total {denom} = {total_amount_int}", flush=True)
 
     tree, ordered_addrs, leaf_hashes_list, index_map = build_merkle_from_balances(
         balances, odd_policy=odd_policy, pair_sorted=True
@@ -459,7 +459,7 @@ def run_merkle_job(verbose: bool = False) -> Dict:
     _insert_leaves(run_id, leaves_map, leaf_hashes_map, proofs_map)
 
     if verbose:
-        print(f"[*] Merkle run {run_id} stored with root {root_hex}", file=sys.stderr)
+        print(f"[*] Merkle run {run_id} stored with root {root_hex}", flush=True)
 
     return meta
 
@@ -480,7 +480,7 @@ def claim_allocation() -> Dict:
         if not staking_contract or not staking_hash:
             raise RuntimeError("STAKING_CONTRACT or STAKING_HASH not configured")
 
-        print(f"[AIRDROP] Claiming allocation {allocation_id} from staking contract {staking_contract}", file=sys.stderr)
+        print(f"[AIRDROP] Claiming allocation {allocation_id} from staking contract {staking_contract}", flush=True)
 
         # Create the claim_allocation execute message
         execute_msg = {
@@ -504,7 +504,7 @@ def claim_allocation() -> Dict:
         if tx.code != 0:
             raise RuntimeError(f"Claim allocation broadcast failed: {tx.raw_log}")
 
-        print(f"[AIRDROP] Claim allocation transaction broadcast successful. TX: {tx.txhash}", file=sys.stderr)
+        print(f"[AIRDROP] Claim allocation transaction broadcast successful. TX: {tx.txhash}", flush=True)
 
         # Poll for transaction confirmation
         tx_info = None
@@ -515,17 +515,17 @@ def claim_allocation() -> Dict:
                     break
             except Exception as e:
                 if "not found" in str(e).lower():
-                    print(f"[AIRDROP] Polling for claim tx... attempt {i+1}/15", file=sys.stderr)
+                    print(f"[AIRDROP] Polling for claim tx... attempt {i+1}/15", flush=True)
                     time.sleep(1)
                     continue
                 # For other errors, log but don't fail
-                print(f"[AIRDROP] Error polling claim transaction: {e}", file=sys.stderr)
+                print(f"[AIRDROP] Error polling claim transaction: {e}", flush=True)
                 break
 
         if tx_info and tx_info.code != 0:
             raise RuntimeError(f"Claim allocation transaction failed on-chain: {tx_info.logs}")
 
-        print(f"[AIRDROP] Successfully claimed allocation. TX: {tx.txhash}", file=sys.stderr)
+        print(f"[AIRDROP] Successfully claimed allocation. TX: {tx.txhash}", flush=True)
 
         return {
             "success": True,
@@ -534,7 +534,7 @@ def claim_allocation() -> Dict:
         }
 
     except Exception as e:
-        print(f"[AIRDROP] Failed to claim allocation: {e}", file=sys.stderr)
+        print(f"[AIRDROP] Failed to claim allocation: {e}", flush=True)
         raise
 
 
@@ -557,9 +557,9 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         if not contract_address or not contract_hash:
             raise RuntimeError("AIRDROP_CONTRACT or AIRDROP_HASH not configured")
 
-        print(f"[AIRDROP] Submitting to contract {contract_address}", file=sys.stderr)
-        print(f"[AIRDROP] Merkle root: {merkle_root}", file=sys.stderr)
-        print(f"[AIRDROP] Total stake: {total_stake}", file=sys.stderr)
+        print(f"[AIRDROP] Submitting to contract {contract_address}", flush=True)
+        print(f"[AIRDROP] Merkle root: {merkle_root}", flush=True)
+        print(f"[AIRDROP] Total stake: {total_stake}", flush=True)
 
         # Create the ResetAirdrop execute message
         execute_msg = {
@@ -584,7 +584,7 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         if tx.code != 0:
             raise RuntimeError(f"Broadcast failed: {tx.raw_log}")
 
-        print(f"[AIRDROP] Transaction broadcast successful. TX: {tx.txhash}", file=sys.stderr)
+        print(f"[AIRDROP] Transaction broadcast successful. TX: {tx.txhash}", flush=True)
 
         # Poll for transaction confirmation
         tx_info = None
@@ -595,17 +595,17 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
                     break
             except Exception as e:
                 if "not found" in str(e).lower():
-                    print(f"[AIRDROP] Polling for tx... attempt {i+1}/15", file=sys.stderr)
+                    print(f"[AIRDROP] Polling for tx... attempt {i+1}/15", flush=True)
                     time.sleep(1)
                     continue
                 # For other errors, log but don't fail
-                print(f"[AIRDROP] Error polling transaction: {e}", file=sys.stderr)
+                print(f"[AIRDROP] Error polling transaction: {e}", flush=True)
                 break
 
         if tx_info and tx_info.code != 0:
             raise RuntimeError(f"Transaction failed on-chain: {tx_info.logs}")
 
-        print(f"[AIRDROP] Successfully submitted to contract. TX: {tx.txhash}", file=sys.stderr)
+        print(f"[AIRDROP] Successfully submitted to contract. TX: {tx.txhash}", flush=True)
 
         return {
             "success": True,
@@ -615,7 +615,7 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         }
 
     except Exception as e:
-        print(f"[AIRDROP] Failed to submit to contract: {e}", file=sys.stderr)
+        print(f"[AIRDROP] Failed to submit to contract: {e}", flush=True)
         raise
 
 
@@ -631,29 +631,29 @@ def scheduled_weekly_job() -> None:
     try:
         validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
         if not validator:
-            print("[AIRDROP] MERKLE_VALIDATOR not set; skipping scheduled Merkle job.", file=sys.stderr)
+            print("[AIRDROP] MERKLE_VALIDATOR not set; skipping scheduled Merkle job.", flush=True)
             return
 
         # Run merkle job and get metadata
-        print("[AIRDROP] Running merkle job...", file=sys.stderr)
+        print("[AIRDROP] Running merkle job...", flush=True)
         meta = run_merkle_job(verbose=True)
 
         # Claim allocation from staking contract
-        print("[AIRDROP] Claiming allocation from staking contract...", file=sys.stderr)
+        print("[AIRDROP] Claiming allocation from staking contract...", flush=True)
         claim_allocation()
 
         # Submit to contract
-        print("[AIRDROP] Submitting airdrop to contract...", file=sys.stderr)
+        print("[AIRDROP] Submitting airdrop to contract...", flush=True)
         submit_airdrop_to_contract(
             merkle_root=meta["merkle_root"],
             total_stake=meta["total_amount"]
         )
 
-        print("[AIRDROP] Weekly job completed successfully", file=sys.stderr)
+        print("[AIRDROP] Weekly job completed successfully", flush=True)
 
     except Exception as e:
         # Keep the app running; log the failure for inspection
-        print(f"[AIRDROP] Scheduled Merkle job failed: {e}", file=sys.stderr)
+        print(f"[AIRDROP] Scheduled Merkle job failed: {e}", flush=True)
 
 
 # Initialize DB schema at import time to ensure tables exist before first use
