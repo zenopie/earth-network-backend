@@ -8,6 +8,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from secret_sdk.client.lcd import AsyncLCDClient
 from secret_sdk.exceptions import LCDResponseError
@@ -29,6 +31,60 @@ logging.basicConfig(level=logging.INFO)
 logger.setLevel(logging.INFO)
 
 router = APIRouter()
+
+
+# Validation functions
+def is_valid_secret_address(address: str) -> bool:
+    """
+    Validate that an address is a properly formatted Secret Network address.
+
+    Secret Network addresses:
+    - Start with "secret1"
+    - Are bech32 encoded
+    - Typically 45 characters long
+    - Contain only lowercase alphanumeric characters (excluding '1', 'b', 'i', 'o')
+    """
+    if not address or not isinstance(address, str):
+        return False
+
+    # Basic format check: starts with "secret1" and has reasonable length
+    if not address.startswith("secret1"):
+        return False
+
+    # Check length (bech32 addresses are typically 39-90 characters)
+    if len(address) < 39 or len(address) > 90:
+        return False
+
+    # Bech32 character set (excludes '1', 'b', 'i', 'o' after the separator '1')
+    bech32_pattern = r'^secret1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$'
+    if not re.match(bech32_pattern, address):
+        return False
+
+    return True
+
+
+async def check_referrer_registered(
+    referrer_address: str,
+    secret_async_client: AsyncLCDClient
+) -> bool:
+    """Check if a referrer address is registered on-chain."""
+    try:
+        query_msg = {"query_registration_status": {"address": referrer_address}}
+        result = await secret_async_client.wasm.contract_query(
+            config.REGISTRATION_CONTRACT,
+            query_msg,
+            config.REGISTRATION_HASH
+        )
+        is_registered = result.get("registration_status", False)
+
+        if not is_registered:
+            print(f"⚠️  Referrer address {referrer_address} is not registered", flush=True)
+
+        return is_registered
+
+    except Exception as e:
+        print(f"❌ Error checking referrer registration status: {e}", flush=True)
+        return False
 
 # Pre-load verifier with trust anchors from config.CSCA_DIR
 CSCA_CERTS = EPassportVerifier.load_csca_from_dir(config.CSCA_DIR)
@@ -91,6 +147,29 @@ async def verify(
     if not req.address:
         raise HTTPException(status_code=400, detail="Missing required field: address")
 
+    # Validate user address format
+    if not is_valid_secret_address(req.address):
+        raise HTTPException(status_code=400, detail=f"Invalid address format: {req.address}")
+
+    # Validate referral address if provided
+    if req.referredBy:
+        # Check referrer address format
+        if not is_valid_secret_address(req.referredBy):
+            raise HTTPException(status_code=400, detail=f"Invalid referrer address format: {req.referredBy}")
+
+        # Check for self-referral
+        if req.address.lower() == req.referredBy.lower():
+            raise HTTPException(status_code=400, detail="Self-referral is not allowed")
+
+        # Check if referrer is registered on-chain
+        is_referrer_registered = await check_referrer_registered(req.referredBy, secret_async_client)
+        if not is_referrer_registered:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Referrer address {req.referredBy} is not registered. Only registered users can refer others."
+            )
+        print(f"✅ Referral validated: {req.address} referred by {req.referredBy}", flush=True)
+
     if not VERIFIER.csca_certs:
         raise HTTPException(
             status_code=500,
@@ -138,7 +217,17 @@ async def verify(
                 raise HTTPException(status_code=400, detail="Insufficient wallet balance for transaction fee.")
 
             # Create and broadcast the transaction
-            message_object = {"register": {"address": req.address, "id_hash": identity_hash, "affiliate": req.referredBy}}
+            # Build message object with optional affiliate field
+            message_object = {
+                "register": {
+                    "address": req.address,
+                    "id_hash": identity_hash
+                }
+            }
+            # Only include affiliate field if referredBy is provided
+            if req.referredBy:
+                message_object["register"]["affiliate"] = req.referredBy
+
             msg = MsgExecuteContract(
                 sender=async_wallet.key.acc_address, contract=config.REGISTRATION_CONTRACT,
                 msg=message_object, code_hash=config.REGISTRATION_HASH,
