@@ -642,6 +642,10 @@ def scheduled_weekly_job() -> None:
         print("[AIRDROP] Claiming allocation from staking contract...", flush=True)
         claim_allocation()
 
+        # Wait for sequence to update before next transaction
+        print("[AIRDROP] Waiting 3 seconds for account sequence to update...", flush=True)
+        time.sleep(3)
+
         # Submit to contract
         print("[AIRDROP] Submitting airdrop to contract...", flush=True)
         submit_airdrop_to_contract(

@@ -74,9 +74,9 @@ async def startup_event():
     scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
     print("✓ Scheduled weekly Merkle job (Sunday 00:00 UTC)", flush=True)
 
-    # Schedule daily pool rewards update at 00:00 UTC
-    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
-    print("✓ Scheduled daily pool rewards update (00:00 UTC)", flush=True)
+    # Schedule daily pool rewards update at 23:00 UTC (1 hour before merkle job to avoid sequence conflicts)
+    scheduler.add_job(update_pool_rewards, 'cron', hour=23, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
+    print("✓ Scheduled daily pool rewards update (23:00 UTC)", flush=True)
 
     # Optionally run Merkle job once on startup when enabled via env
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
