@@ -148,14 +148,14 @@ async def update_analytics_job():
         traceback.print_exc()
 
 
-def init_analytics():
+async def init_analytics():
     """Initialize analytics on application startup."""
     print("[Analytics] Initializing...")
     load_analytics_data()
     is_stale = not analytics_history or (time.time() - analytics_history[-1]["timestamp"] / 1000) >= 3600
     if is_stale:
         print("[Analytics] Data is stale or missing. Running initial update now.")
-        asyncio.run(update_analytics_job())
+        await update_analytics_job()
     else:
         print("[Analytics] Data is up-to-date. Next update will be scheduled.")
 

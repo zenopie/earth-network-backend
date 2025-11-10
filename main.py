@@ -65,7 +65,7 @@ async def startup_event():
 
     # Initialize analytics data
     print("Initializing analytics...", flush=True)
-    init_analytics()
+    await init_analytics()
     # Schedule analytics update to run every hour
     scheduler.add_job(update_analytics_job, 'interval', hours=1, id='analytics_update')
     print("✓ Scheduled analytics update job (every hour)", flush=True)
