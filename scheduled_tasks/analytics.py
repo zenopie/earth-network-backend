@@ -52,7 +52,7 @@ async def update_analytics_job():
     The main job to be run by the scheduler. It fetches all necessary data
     to build and save a new analytics data point using the correct logic.
     """
-    print("[Analytics] Starting scheduled update...")
+    print("[Analytics] Starting scheduled update...", flush=True)
     try:
         # 1. Fetch prices for SSCRT and FINA from CoinGecko
         token_ids_to_fetch = [t["coingeckoId"] for t in config.TOKENS.values() if "coingeckoId" in t]
@@ -68,7 +68,7 @@ async def update_analytics_job():
                     if "coingeckoId" in token_info and token_info["coingeckoId"] in price_data:
                         prices[symbol] = price_data[token_info["coingeckoId"]]["usd"]
 
-        print(f"[Analytics] Fetched prices (USD): {prices}")
+        print(f"[Analytics] Fetched prices (USD): {prices}", flush=True)
 
         # 2. Query token total supplies
         erth_info = secret_client.wasm.contract_query(config.TOKENS['ERTH']['contract'], {"token_info": {}})
@@ -106,7 +106,7 @@ async def update_analytics_job():
 
         # 5. Calculate the global ERTH price
         global_erth_price = total_weighted_price / total_liquidity if total_liquidity > 0 else 0
-        print(f"[Analytics] Global ERTH Price calculated: ${global_erth_price:.6f}")
+        print(f"[Analytics] Global ERTH Price calculated: ${global_erth_price:.6f}", flush=True)
 
         # 6. Second Pass: Now calculate ANML price and TVL using the global ERTH price
         anml_price_final = 0
@@ -119,7 +119,7 @@ async def update_analytics_job():
             # The ERTH price in the ANML pool is the global ERTH price
             all_pool_data.append({"token": "ANML", "erthPrice": global_erth_price, "tvl": anml_tvl})
 
-        print(f"[Analytics] Final ANML Price calculated: ${anml_price_final:.6f}")
+        print(f"[Analytics] Final ANML Price calculated: ${anml_price_final:.6f}", flush=True)
 
         # 7. Assemble the final data point
         now_utc_hour_start = int(time.time() // 3600 * 3600 * 1000)
@@ -141,23 +141,23 @@ async def update_analytics_job():
             analytics_history.append(data_point)
             save_analytics_data()
         else:
-            print(f"[Analytics] Data for timestamp {now_utc_hour_start} already exists. Skipping add.")
+            print(f"[Analytics] Data for timestamp {now_utc_hour_start} already exists. Skipping add.", flush=True)
 
     except Exception as e:
-        print(f"[Analytics] FATAL ERROR during analytics update: {e}")
+        print(f"[Analytics] FATAL ERROR during analytics update: {e}", flush=True)
         traceback.print_exc()
 
 
 async def init_analytics():
     """Initialize analytics on application startup."""
-    print("[Analytics] Initializing...")
+    print("[Analytics] Initializing...", flush=True)
     load_analytics_data()
     is_stale = not analytics_history or (time.time() - analytics_history[-1]["timestamp"] / 1000) >= 3600
     if is_stale:
-        print("[Analytics] Data is stale or missing. Running initial update now.")
+        print("[Analytics] Data is stale or missing. Running initial update now.", flush=True)
         await update_analytics_job()
     else:
-        print("[Analytics] Data is up-to-date. Next update will be scheduled.")
+        print("[Analytics] Data is up-to-date. Next update will be scheduled.", flush=True)
 
 
 def get_analytics_history():
