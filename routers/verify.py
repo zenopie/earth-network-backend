@@ -88,16 +88,16 @@ async def check_referrer_registered(
 
 # Pre-load verifier with trust anchors from config.CSCA_DIR
 CSCA_CERTS = EPassportVerifier.load_csca_from_dir(config.CSCA_DIR)
-print(f"Loaded {len(CSCA_CERTS)} CSCA certificates from master list")
+print(f"Loaded {len(CSCA_CERTS)} CSCA certificates from master list", flush=True)
 
 # Load additional manually added certificates
 ADDITIONAL_CERTS = EPassportVerifier.load_csca_from_dir(config.ADDITIONAL_CSCA_DIR)
 if ADDITIONAL_CERTS:
-    print(f"Loaded {len(ADDITIONAL_CERTS)} additional CSCA certificates from {config.ADDITIONAL_CSCA_DIR}")
+    print(f"Loaded {len(ADDITIONAL_CERTS)} additional CSCA certificates from {config.ADDITIONAL_CSCA_DIR}", flush=True)
     CSCA_CERTS.extend(ADDITIONAL_CERTS)
 
 VERIFIER = EPassportVerifier(CSCA_CERTS)
-print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} total CSCA certificates")
+print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} total CSCA certificates", flush=True)
 
 
 @router.post("/test-verify", summary="Test ePassport verification without blockchain registration")
@@ -131,7 +131,7 @@ async def test_verify(req: VerifyRequest):
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.exception("Unexpected error during ePassport test verification")
-        print(f"❌ TEST-VERIFY ERROR: {type(e).__name__}: {str(e)}")
+        print(f"❌ TEST-VERIFY ERROR: {type(e).__name__}: {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {type(e).__name__}")
 
 
@@ -258,7 +258,7 @@ async def verify(
                 raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
 
             # Log successful registration without sensitive data
-            print(f"✅ Registration transaction successful | TX: {tx_info.txhash}")
+            print(f"✅ Registration transaction successful | TX: {tx_info.txhash}", flush=True)
 
             # Return verification result with registration info
             result["registration"] = {
@@ -289,5 +289,5 @@ async def verify(
         raise
     except Exception as e:
         logger.exception("Unexpected error during ePassport verification and registration")
-        print(f"❌ VERIFY ERROR: {type(e).__name__}: {str(e)}")
+        print(f"❌ VERIFY ERROR: {type(e).__name__}: {str(e)}", flush=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {type(e).__name__}")
