@@ -56,4 +56,5 @@ nohup.out
 # Project-specific
 .csca_cache/
 merkle_data.db
+analytics.db
 analyticsData.json

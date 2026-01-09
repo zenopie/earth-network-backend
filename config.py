@@ -6,10 +6,8 @@ import logging
 WEBHOOK_PORT = 8000
 ALLOWED_ORIGINS = [
     "https://erth.network",
+    "http://localhost:3000",
 ]
-
-# --- File Paths ---
-ANALYTICS_FILE = "analyticsData.json"
 
 # --- Secret Network ---
 SECRET_LCD_URL = "https://lcd.erth.network"

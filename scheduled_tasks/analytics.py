@@ -2,48 +2,134 @@
 """
 Scheduled task to update analytics data hourly.
 Fetches token prices, pool reserves, and calculates ERTH price and TVL.
+Uses SQLite for persistent storage.
 """
 import os
 import json
 import time
-import asyncio
 import aiohttp
+import sqlite3
 import traceback
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import config
 from dependencies import secret_client
 
-# Module-level variable for analytics history
-analytics_history: List[Dict[str, Any]] = []
+# --- Database Configuration ---
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "analytics.db")
 
-# --- File Handling ---
 
-def load_analytics_data():
-    """
-    Loads historical analytics data from the JSON file into the in-memory cache.
-    """
-    global analytics_history
+def _get_conn() -> sqlite3.Connection:
+    """Get a database connection."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_analytics_db() -> None:
+    """Initialize the analytics database schema."""
+    conn = _get_conn()
     try:
-        if os.path.exists(config.ANALYTICS_FILE):
-            with open(config.ANALYTICS_FILE, "r") as f:
-                analytics_history = json.load(f)
-                print(f"[Analytics] Loaded {len(analytics_history)} historical data points from {config.ANALYTICS_FILE}")
-        else:
-            analytics_history = []
-            print(f"[Analytics] No analytics file found at {config.ANALYTICS_FILE}. Starting fresh.")
-    except Exception as e:
-        analytics_history = []
-        print(f"[Analytics] ERROR: Could not load analytics data: {e}. Starting fresh.")
+        cur = conn.cursor()
+        # Main analytics data points table
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analytics_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER UNIQUE NOT NULL,
+                erth_price REAL NOT NULL,
+                erth_total_supply REAL NOT NULL,
+                erth_market_cap REAL NOT NULL,
+                tvl REAL NOT NULL,
+                anml_price REAL NOT NULL,
+                anml_total_supply REAL NOT NULL,
+                anml_market_cap REAL NOT NULL,
+                scrt_price REAL NOT NULL,
+                pools_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_timestamp ON analytics_data(timestamp)")
+        conn.commit()
+        print(f"[Analytics] Database initialized at {DB_PATH}", flush=True)
+    finally:
+        conn.close()
 
-def save_analytics_data():
-    """Saves the current in-memory analytics history to the JSON file."""
+
+def _insert_data_point(data_point: Dict[str, Any]) -> bool:
+    """
+    Insert a new analytics data point into the database.
+    Returns True if inserted, False if duplicate timestamp exists.
+    """
+    conn = _get_conn()
     try:
-        with open(config.ANALYTICS_FILE, "w") as f:
-            json.dump(analytics_history, f, indent=2)
-            print(f"[Analytics] Successfully saved {len(analytics_history)} data points to {config.ANALYTICS_FILE}")
-    except Exception as e:
-        print(f"[Analytics] ERROR: Could not save analytics data: {e}")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO analytics_data (
+                timestamp, erth_price, erth_total_supply, erth_market_cap,
+                tvl, anml_price, anml_total_supply, anml_market_cap,
+                scrt_price, pools_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data_point["timestamp"],
+                data_point["erthPrice"],
+                data_point["erthTotalSupply"],
+                data_point["erthMarketCap"],
+                data_point["tvl"],
+                data_point["anmlPrice"],
+                data_point["anmlTotalSupply"],
+                data_point["anmlMarketCap"],
+                data_point["scrtPrice"],
+                json.dumps(data_point["pools"]),
+            ),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _row_to_data_point(row: sqlite3.Row) -> Dict[str, Any]:
+    """Convert a database row to an analytics data point dict."""
+    return {
+        "timestamp": row["timestamp"],
+        "erthPrice": row["erth_price"],
+        "erthTotalSupply": row["erth_total_supply"],
+        "erthMarketCap": row["erth_market_cap"],
+        "tvl": row["tvl"],
+        "pools": json.loads(row["pools_json"]),
+        "anmlPrice": row["anml_price"],
+        "anmlTotalSupply": row["anml_total_supply"],
+        "anmlMarketCap": row["anml_market_cap"],
+        "scrtPrice": row["scrt_price"],
+    }
+
+
+def get_analytics_history() -> List[Dict[str, Any]]:
+    """Returns the full analytics history from the database."""
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM analytics_data ORDER BY timestamp ASC")
+        rows = cur.fetchall()
+        return [_row_to_data_point(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_latest_data_point() -> Optional[Dict[str, Any]]:
+    """Returns the most recent analytics data point, or None if no data."""
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM analytics_data ORDER BY timestamp DESC LIMIT 1")
+        row = cur.fetchone()
+        return _row_to_data_point(row) if row else None
+    finally:
+        conn.close()
 
 # --- Core Analytics Logic ---
 
@@ -137,9 +223,9 @@ async def update_analytics_job():
             "scrtPrice": prices.get("SSCRT", 0),
         }
 
-        if not any(p['timestamp'] == now_utc_hour_start for p in analytics_history):
-            analytics_history.append(data_point)
-            save_analytics_data()
+        # Insert into database (INSERT OR IGNORE handles duplicates)
+        if _insert_data_point(data_point):
+            print(f"[Analytics] Successfully saved data point for timestamp {now_utc_hour_start}", flush=True)
         else:
             print(f"[Analytics] Data for timestamp {now_utc_hour_start} already exists. Skipping add.", flush=True)
 
@@ -151,15 +237,12 @@ async def update_analytics_job():
 async def init_analytics():
     """Initialize analytics on application startup."""
     print("[Analytics] Initializing...", flush=True)
-    load_analytics_data()
-    is_stale = not analytics_history or (time.time() - analytics_history[-1]["timestamp"] / 1000) >= 3600
+    init_analytics_db()
+
+    latest = get_latest_data_point()
+    is_stale = not latest or (time.time() - latest["timestamp"] / 1000) >= 3600
     if is_stale:
         print("[Analytics] Data is stale or missing. Running initial update now.", flush=True)
         await update_analytics_job()
     else:
         print("[Analytics] Data is up-to-date. Next update will be scheduled.", flush=True)
-
-
-def get_analytics_history():
-    """Returns the analytics history for the API endpoint."""
-    return analytics_history
