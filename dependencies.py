@@ -7,7 +7,6 @@ import config
 # --- Secret Network Client ---
 secret_client = LCDClient(url=config.SECRET_LCD_URL, chain_id=config.SECRET_CHAIN_ID)
 wallet = secret_client.wallet(MnemonicKey(mnemonic=config.WALLET_KEY))
-print(f"Secret Wallet Initialized. Address: {wallet.key.acc_address}")
 
 # --- Async Secret Network Client ---
 async def get_async_secret_client():
@@ -28,5 +27,3 @@ ollama_async_client = AsyncClient(
     host=config.SECRET_AI_URL,
     headers={"Authorization": f"Bearer {config.SECRET_AI_API_KEY}"}
 )
-
-print("Ollama Client Initialized.")

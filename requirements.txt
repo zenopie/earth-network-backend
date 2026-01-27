@@ -15,4 +15,5 @@ apscheduler
 asn1crypto
 cryptography
 git+https://github.com/ZeroPass/pymrtd.git@master#egg=pymrtd
+monero
 pytest

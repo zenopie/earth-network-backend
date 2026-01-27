@@ -86,18 +86,13 @@ async def check_referrer_registered(
         print(f"❌ Error checking referrer registration status: {e}", flush=True)
         return False
 
-# Pre-load verifier with trust anchors from config.CSCA_DIR
+# Pre-load verifier with trust anchors
 CSCA_CERTS = EPassportVerifier.load_csca_from_dir(config.CSCA_DIR)
-print(f"Loaded {len(CSCA_CERTS)} CSCA certificates from master list", flush=True)
-
-# Load additional manually added certificates
 ADDITIONAL_CERTS = EPassportVerifier.load_csca_from_dir(config.ADDITIONAL_CSCA_DIR)
 if ADDITIONAL_CERTS:
-    print(f"Loaded {len(ADDITIONAL_CERTS)} additional CSCA certificates from {config.ADDITIONAL_CSCA_DIR}", flush=True)
     CSCA_CERTS.extend(ADDITIONAL_CERTS)
-
 VERIFIER = EPassportVerifier(CSCA_CERTS)
-print(f"🔐 Passport verifier initialized with {len(CSCA_CERTS)} total CSCA certificates", flush=True)
+print(f"[Startup] Passport Verifier: {len(CSCA_CERTS)} CSCA certificates loaded", flush=True)
 
 
 @router.post("/test-verify", summary="Test ePassport verification without blockchain registration")

@@ -40,9 +40,19 @@ TOKENS = {
         "decimals": 6,
         "coingeckoId": "secret",
     },
+    "XMR": {
+        "contract": "secret1uahwhw3rk2x8vx4963yxqw6nl8h9drk79kasfx",
+        "hash": "83d3a35e92363d3ef743dec1e9f2e8b3a18f2c761fe44169f11b436648a21078",
+        "decimals": 12,
+        "coingeckoId": "monero",
+    },
 }
 UNIFIED_POOL_CONTRACT = None
 UNIFIED_POOL_HASH = None
+
+# XMR bridge manager contract (handles mint/burn with on-chain tracking)
+XMR_MINTER_CONTRACT = "secret130nl6yfwuzjmnuknwfccq7jl8qekl4kcz0ppap"
+XMR_MINTER_HASH = "91bed2b7eac8ba8e29c89efc32fcf0d0d0352d75f945da9035bc2ac4fa1ac14d"
 
 
 # --- Key Loading ---
@@ -173,33 +183,53 @@ def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict
     if "registration" in registry_contracts:
         REGISTRATION_CONTRACT = registry_contracts["registration"]["contract"]
         REGISTRATION_HASH = registry_contracts["registration"]["hash"]
-        logging.info(f"Loaded registration contract: {REGISTRATION_CONTRACT}")
 
     # Update unified pool contract (registry calls it "exchange")
     if "exchange" in registry_contracts:
         UNIFIED_POOL_CONTRACT = registry_contracts["exchange"]["contract"]
         UNIFIED_POOL_HASH = registry_contracts["exchange"]["hash"]
-        logging.info(f"Loaded unified pool contract: {UNIFIED_POOL_CONTRACT}")
 
     # Update airdrop contract
     if "airdrop" in registry_contracts:
         AIRDROP_CONTRACT = registry_contracts["airdrop"]["contract"]
         AIRDROP_HASH = registry_contracts["airdrop"]["hash"]
-        logging.info(f"Loaded airdrop contract: {AIRDROP_CONTRACT}")
 
     # Update staking contract
     if "staking" in registry_contracts:
         STAKING_CONTRACT = registry_contracts["staking"]["contract"]
         STAKING_HASH = registry_contracts["staking"]["hash"]
-        logging.info(f"Loaded staking contract: {STAKING_CONTRACT}")
 
     # Update token contracts
     for symbol in TOKENS.keys():
         if symbol in registry_tokens:
             TOKENS[symbol]["contract"] = registry_tokens[symbol]["contract"]
             TOKENS[symbol]["hash"] = registry_tokens[symbol]["hash"]
-            logging.info(f"Loaded {symbol} token: {TOKENS[symbol]['contract']}")
-        else:
-            logging.warning(f"Token {symbol} not found in registry")
 
-    logging.info("All contracts initialized from registry")
+
+# --- Monero Bridge Configuration ---
+# Remote Monero daemon (for wallet-rpc to connect to)
+MONERO_DAEMON_HOST = os.getenv("MONERO_DAEMON_HOST", "node.moneroworld.com")
+MONERO_DAEMON_PORT = os.getenv("MONERO_DAEMON_PORT", "18089")
+
+# Monero wallet-rpc URL (runs in same container, managed by supervisord)
+MONERO_WALLET_RPC_URL = os.getenv("MONERO_WALLET_RPC_URL", "http://127.0.0.1:18083")
+
+# Wallet mnemonic (25 words)
+MONERO_MNEMONIC = os.getenv("MONERO_MNEMONIC", "")
+
+# Wallet password (for wallet file encryption)
+MONERO_WALLET_PASSWORD = os.getenv("MONERO_WALLET_PASSWORD", "bridge123")
+
+# Bridge settings
+XMR_CONFIRMATION_THRESHOLD = int(os.getenv("XMR_CONFIRMATION_THRESHOLD", "20"))
+# Restore height for wallet sync (set to recent block height for faster sync)
+# Current mainnet height is ~3.3M, use a recent height for new wallets
+MONERO_RESTORE_HEIGHT = int(os.getenv("MONERO_RESTORE_HEIGHT", "3300000"))
+
+# Check if bridge is configured
+MONERO_BRIDGE_ENABLED = bool(MONERO_MNEMONIC)
+
+if MONERO_BRIDGE_ENABLED:
+    logging.info(f"Monero bridge configured: wallet-rpc at {MONERO_WALLET_RPC_URL}")
+else:
+    logging.info("Monero bridge not configured (missing MONERO_MNEMONIC)")

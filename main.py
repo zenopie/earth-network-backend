@@ -12,7 +12,7 @@ from registry_loader import load_registry
 
 logger = logging.getLogger(__name__)
 # Import the individual router modules
-from routers import chat, analytics, verify, airdrop, secret_query, faucet, app_version
+from routers import chat, analytics, verify, airdrop, secret_query, faucet, monero_bridge
 # Import scheduled tasks
 from scheduled_tasks import (
     update_pool_rewards,
@@ -20,6 +20,7 @@ from scheduled_tasks import (
     init_analytics,
     scheduled_weekly_job
 )
+from scheduled_tasks.monero_bridge import init_monero_bridge, poll_deposits
 
 app = FastAPI(
     title="Erth Network API",
@@ -43,57 +44,45 @@ scheduler = AsyncIOScheduler()
 async def startup_event():
     """Initializes analytics and starts the scheduler."""
     import sys
-    print("=" * 80, flush=True)
-    print("APPLICATION STARTUP BEGINNING", flush=True)
-    print("=" * 80, flush=True)
+    print("\n[Startup] ERTH Network Backend starting...", flush=True)
 
     # Load contract registry from on-chain
-    print("Loading contract registry from on-chain...", flush=True)
     try:
         registry_data = load_registry(config.SECRET_LCD_URL, config.SECRET_CHAIN_ID)
-        print(f"Registry data loaded: {len(registry_data.contracts)} contracts, {len(registry_data.tokens)} tokens", flush=True)
-        print(f"Contract names: {list(registry_data.contracts.keys())}", flush=True)
-        print(f"Token symbols: {list(registry_data.tokens.keys())}", flush=True)
         config.init_contracts_from_registry(registry_data.contracts, registry_data.tokens)
-        print("Contract registry loaded successfully!", flush=True)
+        print(f"[Startup] Registry: {len(registry_data.contracts)} contracts, {len(registry_data.tokens)} tokens", flush=True)
     except Exception as e:
-        print(f"FATAL: Failed to load contract registry: {e}", flush=True)
+        print(f"[Startup] FATAL: Registry load failed: {e}", flush=True)
         import traceback
         traceback.print_exc()
         sys.stdout.flush()
         raise
 
-    # Initialize analytics data
-    print("Initializing analytics...", flush=True)
+    # Initialize analytics
     await init_analytics()
-    # Schedule analytics update to run every hour
     scheduler.add_job(update_analytics_job, 'interval', hours=1, id='analytics_update')
-    print("✓ Scheduled analytics update job (every hour)", flush=True)
 
-    # Schedule weekly Merkle generation every Sunday at 00:00 UTC
+    # Schedule other jobs
     scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
-    print("✓ Scheduled weekly Merkle job (Sunday 00:00 UTC)", flush=True)
-
-    # Schedule daily pool rewards update at 23:00 UTC (1 hour before merkle job to avoid sequence conflicts)
     scheduler.add_job(update_pool_rewards, 'cron', hour=23, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
-    print("✓ Scheduled daily pool rewards update (23:00 UTC)", flush=True)
 
-    # Optionally run Merkle job once on startup when enabled via env
+    # Initialize Monero bridge
+    await init_monero_bridge()
+    if config.MONERO_BRIDGE_ENABLED:
+        scheduler.add_job(poll_deposits, 'interval', seconds=30, id='monero_deposit_poll')
+
+    # Optionally run Merkle job once on startup
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
         try:
             validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
             if validator:
-                print("MERKLE_RUN_ON_STARTUP enabled: running Merkle job and submitting to contract at startup...")
+                print("[Startup] Running Merkle job...", flush=True)
                 scheduled_weekly_job()
-            else:
-                print("MERKLE_RUN_ON_STARTUP set but MERKLE_VALIDATOR is not configured; skipping.")
         except Exception as e:
-            print(f"[AIRDROP] Startup Merkle job failed: {e}")
+            print(f"[Startup] Merkle failed: {e}", flush=True)
 
     scheduler.start()
-    print("=" * 80, flush=True)
-    print("Startup complete. All scheduled jobs are running.", flush=True)
-    print("=" * 80, flush=True)
+    print("[Startup] Ready\n", flush=True)
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -108,7 +97,7 @@ app.include_router(verify.router, tags=["Verification"])
 app.include_router(airdrop.router, tags=["Airdrop"])
 app.include_router(secret_query.router, tags=["SecretQuery"])
 app.include_router(faucet.router, tags=["Faucet"])
-app.include_router(app_version.router, tags=["App Version"])
+app.include_router(monero_bridge.router, tags=["Monero Bridge"])
 
 
 @app.get("/", tags=["Health Check"])
