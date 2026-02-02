@@ -6,12 +6,11 @@ queue to prevent account sequence mismatch errors.
 """
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import dataclass
 
 from secret_sdk.client.lcd import AsyncLCDClient
 from secret_sdk.key.mnemonic import MnemonicKey
-from secret_sdk.core import Msg
 from secret_sdk.exceptions import LCDResponseError
 
 import config
@@ -98,7 +97,7 @@ class TransactionQueue:
 
     async def submit(
         self,
-        msg_list: List[Msg],
+        msg_list: List[Any],
         gas: int = 500000,
         memo: str = "",
         wait_for_confirmation: bool = True,
@@ -131,7 +130,7 @@ class TransactionQueue:
 
     async def _submit_with_retry(
         self,
-        msg_list: List[Msg],
+        msg_list: List[Any],
         gas: int,
         memo: str,
         wait_for_confirmation: bool,
