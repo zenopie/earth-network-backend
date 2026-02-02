@@ -3,12 +3,11 @@
 Scheduled task to update pool rewards daily.
 This task calls the update_pool_rewards function on the unified pool contract.
 """
-from secret_sdk.client.lcd import AsyncLCDClient
-from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.wasm import MsgExecuteContract
 
 import config
-from dependencies import secret_client
+from services.tx_queue import get_tx_queue
+
 
 async def update_pool_rewards():
     """
@@ -19,34 +18,29 @@ async def update_pool_rewards():
     try:
         print("[PoolRewards] Starting daily update_pool_rewards job...", flush=True)
 
-        # Create async client
-        async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as secret_async_client:
-            # Create wallet
-            async_wallet = secret_async_client.wallet(MnemonicKey(config.WALLET_KEY))
+        tx_queue = get_tx_queue()
 
-            # Create the MsgExecuteContract instance
-            execute_msg = MsgExecuteContract(
-                sender=async_wallet.key.acc_address,
-                contract=config.UNIFIED_POOL_CONTRACT,
-                msg={"update_pool_rewards": {}},
-                code_hash=config.UNIFIED_POOL_HASH,
-                encryption_utils=secret_client.encrypt_utils,
-            )
+        execute_msg = MsgExecuteContract(
+            sender=tx_queue.wallet_address,
+            contract=config.UNIFIED_POOL_CONTRACT,
+            msg={"update_pool_rewards": {}},
+            code_hash=config.UNIFIED_POOL_HASH,
+            encryption_utils=tx_queue.encryption_utils,
+        )
 
-            # Broadcast the transaction
-            tx = await async_wallet.create_and_broadcast_tx(
-                msg_list=[execute_msg],
-                gas=1_000_000,
-                memo="Scheduled pool rewards update"
-            )
+        tx_result = await tx_queue.submit(
+            msg_list=[execute_msg],
+            gas=1_000_000,
+            memo="Scheduled pool rewards update"
+        )
 
-            if tx.code != 0:
-                print(f"[PoolRewards] ❌ Transaction failed: {tx.raw_log}", flush=True)
-                raise Exception(f"Transaction failed: {tx.raw_log}")
+        if not tx_result.success:
+            print(f"[PoolRewards] Transaction failed: {tx_result.error}", flush=True)
+            raise Exception(f"Transaction failed: {tx_result.error}")
 
-            print(f"[PoolRewards] ✅ Successfully updated pool rewards. Tx hash: {tx.txhash}", flush=True)
-            return {"success": True, "tx_hash": tx.txhash}
+        print(f"[PoolRewards] Successfully updated pool rewards. Tx hash: {tx_result.tx_hash}", flush=True)
+        return {"success": True, "tx_hash": tx_result.tx_hash}
 
     except Exception as e:
-        print(f"[PoolRewards] ❌ Error updating pool rewards: {e}", flush=True)
+        print(f"[PoolRewards] Error updating pool rewards: {e}", flush=True)
         raise

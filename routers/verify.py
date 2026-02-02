@@ -4,7 +4,6 @@ FastAPI endpoint for ePassport Passive Authentication.
 The heavy verification logic is extracted to tools.epassport_verifier.
 When verification passes, registers the user with DG1 hash as identity.
 """
-import asyncio
 import hashlib
 import json
 import logging
@@ -12,14 +11,13 @@ import re
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from secret_sdk.client.lcd import AsyncLCDClient
-from secret_sdk.exceptions import LCDResponseError
-from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.wasm import MsgExecuteContract
 from secret_sdk.core.coins import Coins
 
 import config
 from models import VerifyRequest
-from dependencies import get_async_secret_client, secret_client
+from dependencies import get_async_secret_client
+from services.tx_queue import get_tx_queue
 from tools.epassport_verifier import (
     EPassportVerifier,
     InvalidBase64Error,
@@ -202,16 +200,15 @@ async def verify(
                 logger.info("Registration rejected: passport already registered")
                 raise HTTPException(status_code=409, detail="This ePassport has already been registered.")
 
-            # Execute the registration transaction
-            async_wallet = secret_async_client.wallet(MnemonicKey(config.WALLET_KEY))
+            # Execute the registration transaction via unified queue
+            tx_queue = get_tx_queue()
 
             # Check balance before proceeding
-            balance = await secret_async_client.bank.balance(async_wallet.key.acc_address)
+            balance = await secret_async_client.bank.balance(tx_queue.wallet_address)
             uscrt_coin = (balance[0] if balance else Coins()).get("uscrt")
-            if not uscrt_coin or int(uscrt_coin.amount) < 1000000: # Example fee
+            if not uscrt_coin or int(uscrt_coin.amount) < 1000000:
                 raise HTTPException(status_code=400, detail="Insufficient wallet balance for transaction fee.")
 
-            # Create and broadcast the transaction
             # Build message object with optional affiliate field
             message_object = {
                 "register": {
@@ -219,48 +216,33 @@ async def verify(
                     "id_hash": identity_hash
                 }
             }
-            # Only include affiliate field if referredBy is provided
             if req.referredBy:
                 message_object["register"]["affiliate"] = req.referredBy
 
             msg = MsgExecuteContract(
-                sender=async_wallet.key.acc_address, contract=config.REGISTRATION_CONTRACT,
-                msg=message_object, code_hash=config.REGISTRATION_HASH,
-                encryption_utils=secret_client.encrypt_utils
+                sender=tx_queue.wallet_address,
+                contract=config.REGISTRATION_CONTRACT,
+                msg=message_object,
+                code_hash=config.REGISTRATION_HASH,
+                encryption_utils=tx_queue.encryption_utils
             )
-            tx = await async_wallet.create_and_broadcast_tx(msg_list=[msg], gas=500000, memo="")
-            if tx.code != 0:
-                raise HTTPException(status_code=500, detail=f"Transaction broadcast failed: {tx.raw_log}")
 
-            # Poll for transaction confirmation
-            tx_info = None
-            for i in range(30):  # Poll for ~30 seconds
-                try:
-                    tx_info = await secret_async_client.tx.tx_info(tx.txhash)
-                    if tx_info:
-                        break
-                except LCDResponseError as e:
-                    if "tx not found" in str(e).lower():
-                        logger.info(f"Waiting for transaction confirmation... attempt {i+1}")
-                        await asyncio.sleep(1)
-                        continue
-                    raise HTTPException(status_code=500, detail=f"Error polling for transaction: {e}")
-
-            if not tx_info:
-                raise HTTPException(status_code=504, detail="Transaction polling timed out. The transaction may have failed or is still pending.")
-
-            if tx_info.code != 0:
-                raise HTTPException(status_code=400, detail=f"Transaction failed on-chain: {tx_info.logs}")
+            # Submit through the transaction queue (handles sequencing and confirmation)
+            tx_result = await tx_queue.submit(msg_list=[msg], gas=500000, memo="")
+            if not tx_result.success:
+                if "timed out" in (tx_result.error or "").lower():
+                    raise HTTPException(status_code=504, detail="Transaction polling timed out. The transaction may have failed or is still pending.")
+                raise HTTPException(status_code=500, detail=f"Transaction failed: {tx_result.error}")
 
             # Log successful registration without sensitive data
-            print(f"✅ Registration transaction successful | TX: {tx_info.txhash}", flush=True)
+            print(f"✅ Registration transaction successful | TX: {tx_result.tx_hash}", flush=True)
 
             # Return verification result with registration info
             result["registration"] = {
                 "success": True,
                 "identity_hash": identity_hash,
-                "tx_hash": tx_info.txhash,
-                "logs": tx_info.logs
+                "tx_hash": tx_result.tx_hash,
+                "logs": tx_result.logs
             }
         else:
             # Registration disabled for testing

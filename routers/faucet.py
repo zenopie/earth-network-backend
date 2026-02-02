@@ -6,7 +6,6 @@ import os
 import time
 from fastapi import APIRouter, HTTPException, Depends
 from secret_sdk.client.lcd import AsyncLCDClient
-from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.feegrant import MsgGrantAllowance, BasicAllowance
 from secret_sdk.core.coins import Coins, Coin
 from datetime import datetime
@@ -14,6 +13,7 @@ from datetime import datetime
 import config
 from dependencies import get_async_secret_client
 from models import FaucetGasRequest
+from services.tx_queue import get_tx_queue
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -137,23 +137,22 @@ async def faucet_gas(
                 detail=f"Gas faucet can only be used once every {FAUCET_COOLDOWN_SECONDS} seconds"
             )
         
-        # Step 3: Create wallet and grant gas allowance
-        async_wallet = secret_async_client.wallet(MnemonicKey(config.WALLET_KEY))
-        
+        # Step 3: Grant gas allowance via transaction queue
+        tx_queue = get_tx_queue()
+
         # Check granter balance
-        balance = await secret_async_client.bank.balance(async_wallet.key.acc_address)
+        balance = await secret_async_client.bank.balance(tx_queue.wallet_address)
         uscrt_coin = (balance[0] if balance else Coins()).get("uscrt")
-        if not uscrt_coin or int(uscrt_coin.amount) < 2000000:  # Need enough for grant + fees
+        if not uscrt_coin or int(uscrt_coin.amount) < 2000000:
             raise HTTPException(
-                status_code=503, 
+                status_code=503,
                 detail="Faucet temporarily unavailable due to insufficient balance"
             )
-        
+
         # Grant allowance: 0.2 SCRT (200000 uscrt) for gas with 1 hour expiration
         now_in_seconds = int(time.time())
         expiration_time_in_seconds = now_in_seconds + (1 * 3600)  # 1 hour
-        
-        # Create a BasicAllowance with spend limit and expiration
+
         expiration_datetime = datetime.fromtimestamp(expiration_time_in_seconds).isoformat() + "Z"
         allowance = BasicAllowance(
             spend_limit=Coins([Coin(denom="uscrt", amount="200000")]),
@@ -161,33 +160,34 @@ async def faucet_gas(
         )
 
         grant_msg = MsgGrantAllowance(
-            granter=async_wallet.key.acc_address,
+            granter=tx_queue.wallet_address,
             grantee=address,
             allowance=allowance
         )
-        
-        # Broadcast the grant transaction
-        tx = await async_wallet.create_and_broadcast_tx(
-            msg_list=[grant_msg], 
-            gas=200000, 
-            memo="Gas faucet grant"
+
+        # Submit through transaction queue (no need to wait for confirmation)
+        tx_result = await tx_queue.submit(
+            msg_list=[grant_msg],
+            gas=200000,
+            memo="Gas faucet grant",
+            wait_for_confirmation=False
         )
-        
-        if tx.code != 0:
+
+        if not tx_result.success:
             raise HTTPException(
-                status_code=500, 
-                detail=f"Grant transaction failed: {tx.raw_log}"
+                status_code=500,
+                detail=f"Grant transaction failed: {tx_result.error}"
             )
         
         # Mark faucet as used for this address
         mark_faucet_used(address)
-        
-        logger.info(f"Gas allowance granted to {address}, tx: {tx.txhash}")
-        
+
+        logger.info(f"Gas allowance granted to {address}, tx: {tx_result.tx_hash}")
+
         return {
             "success": True,
             "message": "Gas allowance granted successfully",
-            "tx_hash": tx.txhash,
+            "tx_hash": tx_result.tx_hash,
             "allowance_amount": "0.2 SCRT",
             "expires_at": datetime.fromtimestamp(expiration_time_in_seconds).isoformat(),
             "next_faucet_available": time.time() + FAUCET_COOLDOWN_SECONDS

@@ -213,6 +213,7 @@ async def update_analytics_job():
                 "erthPrice": pool["erthPrice"],
                 "tvl": pool["tvl"],
                 "arbDepth": arb_depth,
+                "tokenPrice": pool["token_usd_price"],
             })
 
         # 7. Calculate ANML price and TVL using the global ERTH price
@@ -221,7 +222,7 @@ async def update_analytics_job():
             anml_price_final = (anml_data["erth_reserve"] / anml_data["token_reserve"]) * global_erth_price if anml_data["token_reserve"] > 0 else 0
             anml_tvl = (anml_data["token_reserve"] * anml_price_final) + (anml_data["erth_reserve"] * global_erth_price)
             total_tvl += anml_tvl
-            all_pool_data.append({"token": "ANML", "erthPrice": global_erth_price, "tvl": anml_tvl, "arbDepth": 0})
+            all_pool_data.append({"token": "ANML", "erthPrice": global_erth_price, "tvl": anml_tvl, "arbDepth": 0, "tokenPrice": anml_price_final})
 
         # 8. Assemble the final data point
         now_utc_hour_start = int(time.time() // 3600 * 3600 * 1000)

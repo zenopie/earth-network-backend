@@ -17,10 +17,6 @@ SECRET_CHAIN_ID = "secret-4"
 REGISTRATION_CONTRACT = None
 REGISTRATION_HASH = None
 
-# --- Secret AI / Ollama ---
-SECRET_AI_URL = "https://secretai-rytn.scrtlabs.com:21434"
-OLLAMA_MODEL = "gemma3:4b"
-
 # --- Analytics & DeFi Contracts ---
 # TOKENS - populated from registry on startup, with metadata
 TOKENS = {
@@ -63,13 +59,6 @@ def get_wallet_key() -> str:
         raise ValueError("FATAL: WALLET_KEY environment variable not set or is empty.")
     return key
 
-def get_secret_ai_api_key() -> str:
-    """Loads the Secret AI API key from the 'SECRET_AI_API_KEY' environment variable."""
-    api_key = os.getenv("SECRET_AI_API_KEY")
-    if not api_key:
-        raise ValueError("FATAL: SECRET_AI_API_KEY environment variable not set or is empty.")
-    return api_key
-
 def get_dg1_hash_secret() -> str:
     """Loads the DG1 hash secret from the 'DG1_HASH_SECRET' environment variable."""
     secret = os.getenv("DG1_HASH_SECRET")
@@ -79,9 +68,6 @@ def get_dg1_hash_secret() -> str:
 
 WALLET_KEY = get_wallet_key()
 logging.info("Wallet key loaded from environment variable.")
-
-SECRET_AI_API_KEY = get_secret_ai_api_key()
-logging.info("Secret AI API key loaded from environment variable.")
 
 DG1_HASH_SECRET = get_dg1_hash_secret()
 logging.info("DG1 hash secret loaded from environment variable.")

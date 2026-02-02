@@ -1,7 +1,6 @@
 # /dependencies.py (Corrected)
 from secret_sdk.client.lcd import LCDClient, AsyncLCDClient # Add AsyncLCDClient here
 from secret_sdk.key.mnemonic import MnemonicKey
-from ollama import Client, AsyncClient
 import config
 
 # --- Secret Network Client ---
@@ -16,14 +15,3 @@ async def get_async_secret_client():
     """
     async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as client:
         yield client
-
-# --- Ollama Client ---
-ollama_client = Client(
-    host=config.SECRET_AI_URL,
-    headers={"Authorization": f"Bearer {config.SECRET_AI_API_KEY}"}
-)
-
-ollama_async_client = AsyncClient(
-    host=config.SECRET_AI_URL,
-    headers={"Authorization": f"Bearer {config.SECRET_AI_API_KEY}"}
-)

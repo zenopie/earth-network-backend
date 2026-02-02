@@ -17,7 +17,7 @@ import requests
 from secret_sdk.core.wasm import MsgExecuteContract
 
 import config
-from dependencies import secret_client, wallet
+from services.tx_queue import get_tx_queue
 
 
 # ------------- Merkle Builder -------------
@@ -464,7 +464,7 @@ def run_merkle_job(verbose: bool = False) -> Dict:
     return meta
 
 
-def claim_allocation() -> Dict:
+async def claim_allocation() -> Dict:
     """
     Claim the allocation from the staking contract before submitting the airdrop.
 
@@ -472,7 +472,6 @@ def claim_allocation() -> Dict:
         Dict with transaction hash and status
     """
     try:
-        # Get staking contract details
         staking_contract = getattr(config, "STAKING_CONTRACT", "").strip()
         staking_hash = getattr(config, "STAKING_HASH", "").strip()
         allocation_id = getattr(config, "AIRDROP_ALLOCATION_ID", 4)
@@ -482,54 +481,31 @@ def claim_allocation() -> Dict:
 
         print(f"[AIRDROP] Claiming allocation {allocation_id} from staking contract {staking_contract}", flush=True)
 
-        # Create the claim_allocation execute message
-        execute_msg = {
-            "claim_allocation": {
-                "allocation_id": allocation_id,
-            }
-        }
+        tx_queue = get_tx_queue()
 
-        # Create MsgExecuteContract
         msg = MsgExecuteContract(
-            sender=wallet.key.acc_address,
+            sender=tx_queue.wallet_address,
             contract=staking_contract,
-            msg=execute_msg,
+            msg={"claim_allocation": {"allocation_id": allocation_id}},
             code_hash=staking_hash,
-            encryption_utils=secret_client.encrypt_utils
+            encryption_utils=tx_queue.encryption_utils
         )
 
-        # Broadcast transaction
-        tx = wallet.create_and_broadcast_tx(msg_list=[msg], gas=1_000_000, memo="Claim airdrop allocation")
+        tx_result = await tx_queue.submit(
+            msg_list=[msg],
+            gas=1_000_000,
+            memo="Claim airdrop allocation",
+            confirmation_timeout=15
+        )
 
-        if tx.code != 0:
-            raise RuntimeError(f"Claim allocation broadcast failed: {tx.raw_log}")
+        if not tx_result.success:
+            raise RuntimeError(f"Claim allocation failed: {tx_result.error}")
 
-        print(f"[AIRDROP] Claim allocation transaction broadcast successful. TX: {tx.txhash}", flush=True)
-
-        # Poll for transaction confirmation
-        tx_info = None
-        for i in range(15):  # Poll for ~15 seconds
-            try:
-                tx_info = secret_client.tx.tx_info(tx.txhash)
-                if tx_info:
-                    break
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    print(f"[AIRDROP] Polling for claim tx... attempt {i+1}/15", flush=True)
-                    time.sleep(1)
-                    continue
-                # For other errors, log but don't fail
-                print(f"[AIRDROP] Error polling claim transaction: {e}", flush=True)
-                break
-
-        if tx_info and tx_info.code != 0:
-            raise RuntimeError(f"Claim allocation transaction failed on-chain: {tx_info.logs}")
-
-        print(f"[AIRDROP] Successfully claimed allocation. TX: {tx.txhash}", flush=True)
+        print(f"[AIRDROP] Successfully claimed allocation. TX: {tx_result.tx_hash}", flush=True)
 
         return {
             "success": True,
-            "txhash": tx.txhash,
+            "txhash": tx_result.tx_hash,
             "allocation_id": allocation_id
         }
 
@@ -538,7 +514,7 @@ def claim_allocation() -> Dict:
         raise
 
 
-def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
+async def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
     """
     Submit the new airdrop merkle root to the airdrop contract via ResetAirdrop message.
 
@@ -550,7 +526,6 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         Dict with transaction hash and status
     """
     try:
-        # Get contract details
         contract_address = getattr(config, "AIRDROP_CONTRACT", "").strip()
         contract_hash = getattr(config, "AIRDROP_HASH", "").strip()
 
@@ -561,55 +536,31 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         print(f"[AIRDROP] Merkle root: {merkle_root}", flush=True)
         print(f"[AIRDROP] Total stake: {total_stake}", flush=True)
 
-        # Create the ResetAirdrop execute message
-        execute_msg = {
-            "reset_airdrop": {
-                "merkle_root": merkle_root,
-                "total_stake": total_stake
-            }
-        }
+        tx_queue = get_tx_queue()
 
-        # Create MsgExecuteContract
         msg = MsgExecuteContract(
-            sender=wallet.key.acc_address,
+            sender=tx_queue.wallet_address,
             contract=contract_address,
-            msg=execute_msg,
+            msg={"reset_airdrop": {"merkle_root": merkle_root, "total_stake": total_stake}},
             code_hash=contract_hash,
-            encryption_utils=secret_client.encrypt_utils
+            encryption_utils=tx_queue.encryption_utils
         )
 
-        # Broadcast transaction
-        tx = wallet.create_and_broadcast_tx(msg_list=[msg], gas=500000, memo="Weekly airdrop reset")
+        tx_result = await tx_queue.submit(
+            msg_list=[msg],
+            gas=500000,
+            memo="Weekly airdrop reset",
+            confirmation_timeout=15
+        )
 
-        if tx.code != 0:
-            raise RuntimeError(f"Broadcast failed: {tx.raw_log}")
+        if not tx_result.success:
+            raise RuntimeError(f"Submit airdrop failed: {tx_result.error}")
 
-        print(f"[AIRDROP] Transaction broadcast successful. TX: {tx.txhash}", flush=True)
-
-        # Poll for transaction confirmation
-        tx_info = None
-        for i in range(15):  # Poll for ~15 seconds
-            try:
-                tx_info = secret_client.tx.tx_info(tx.txhash)
-                if tx_info:
-                    break
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    print(f"[AIRDROP] Polling for tx... attempt {i+1}/15", flush=True)
-                    time.sleep(1)
-                    continue
-                # For other errors, log but don't fail
-                print(f"[AIRDROP] Error polling transaction: {e}", flush=True)
-                break
-
-        if tx_info and tx_info.code != 0:
-            raise RuntimeError(f"Transaction failed on-chain: {tx_info.logs}")
-
-        print(f"[AIRDROP] Successfully submitted to contract. TX: {tx.txhash}", flush=True)
+        print(f"[AIRDROP] Successfully submitted to contract. TX: {tx_result.tx_hash}", flush=True)
 
         return {
             "success": True,
-            "txhash": tx.txhash,
+            "txhash": tx_result.tx_hash,
             "merkle_root": merkle_root,
             "total_stake": total_stake
         }
@@ -619,7 +570,7 @@ def submit_airdrop_to_contract(merkle_root: str, total_stake: str) -> Dict:
         raise
 
 
-def scheduled_weekly_job() -> None:
+async def scheduled_weekly_job() -> None:
     """
     Safe wrapper for the APScheduler weekly job.
     - Generates merkle tree from validator delegations
@@ -634,21 +585,17 @@ def scheduled_weekly_job() -> None:
             print("[AIRDROP] MERKLE_VALIDATOR not set; skipping scheduled Merkle job.", flush=True)
             return
 
-        # Run merkle job and get metadata
+        # Run merkle job and get metadata (sync, CPU-bound)
         print("[AIRDROP] Running merkle job...", flush=True)
         meta = run_merkle_job(verbose=True)
 
-        # Claim allocation from staking contract
+        # Claim allocation from staking contract (via tx_queue)
         print("[AIRDROP] Claiming allocation from staking contract...", flush=True)
-        claim_allocation()
+        await claim_allocation()
 
-        # Wait for sequence to update before next transaction
-        print("[AIRDROP] Waiting 3 seconds for account sequence to update...", flush=True)
-        time.sleep(3)
-
-        # Submit to contract
+        # Submit to contract (via tx_queue - no manual sleep needed, queue handles sequencing)
         print("[AIRDROP] Submitting airdrop to contract...", flush=True)
-        submit_airdrop_to_contract(
+        await submit_airdrop_to_contract(
             merkle_root=meta["merkle_root"],
             total_stake=meta["total_amount"]
         )

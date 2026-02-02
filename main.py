@@ -9,10 +9,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
 from registry_loader import load_registry
+from services.tx_queue import get_tx_queue
 
 logger = logging.getLogger(__name__)
 # Import the individual router modules
-from routers import chat, analytics, verify, airdrop, secret_query, faucet, monero_bridge
+from routers import analytics, verify, airdrop, secret_query, faucet, monero_bridge
 # Import scheduled tasks
 from scheduled_tasks import (
     update_pool_rewards,
@@ -58,6 +59,11 @@ async def startup_event():
         sys.stdout.flush()
         raise
 
+    # Initialize transaction queue
+    tx_queue = get_tx_queue()
+    await tx_queue.initialize()
+    print(f"[Startup] TX Queue ready: {tx_queue.wallet_address}", flush=True)
+
     # Initialize analytics
     await init_analytics()
     scheduler.add_job(update_analytics_job, 'interval', hours=1, id='analytics_update')
@@ -77,7 +83,7 @@ async def startup_event():
             validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
             if validator:
                 print("[Startup] Running Merkle job...", flush=True)
-                scheduled_weekly_job()
+                await scheduled_weekly_job()
         except Exception as e:
             print(f"[Startup] Merkle failed: {e}", flush=True)
 
@@ -85,13 +91,13 @@ async def startup_event():
     print("[Startup] Ready\n", flush=True)
 
 @app.on_event("shutdown")
-def shutdown_event():
-    """Shuts down the scheduler."""
+async def shutdown_event():
+    """Shuts down the scheduler and transaction queue."""
     scheduler.shutdown()
+    await get_tx_queue().close()
     print("Application shutdown.")
 
 # --- API Routers ---
-app.include_router(chat.router, tags=["Chat"])
 app.include_router(analytics.router, tags=["Analytics"])
 app.include_router(verify.router, tags=["Verification"])
 app.include_router(airdrop.router, tags=["Airdrop"])

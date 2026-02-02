@@ -14,13 +14,11 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from secret_sdk.client.lcd import AsyncLCDClient
-from secret_sdk.key.mnemonic import MnemonicKey
 from secret_sdk.core.wasm import MsgExecuteContract
-from secret_sdk.exceptions import LCDResponseError
 
 import config
 from services.monero_wallet import MoneroWallet, MoneroWalletError
+from services.tx_queue import get_tx_queue
 
 logger = logging.getLogger(__name__)
 
@@ -587,19 +585,16 @@ async def _process_ready_deposits():
 
     print(f"[MoneroBridge] Processing {len(ready_deposits)} ready deposits for minting", flush=True)
 
-    # Create async Secret client for minting
-    async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as secret_async_client:
-        for deposit in ready_deposits:
-            await _mint_tokens(secret_async_client, deposit)
+    for deposit in ready_deposits:
+        await _mint_tokens(deposit)
 
 
-async def _mint_tokens(secret_async_client, deposit: Dict[str, Any]):
+async def _mint_tokens(deposit: Dict[str, Any]):
     """Mint SNIP-20 tokens for a confirmed deposit via the minter contract."""
     txid = deposit["txid"]
     secret_address = deposit["secret_address"]
     amount_atomic = deposit["amount_atomic"]
 
-    # Check if minter contract is configured
     if not config.XMR_MINTER_CONTRACT:
         print(f"[MoneroBridge] ERROR: XMR_MINTER_CONTRACT not configured, cannot mint", flush=True)
         mark_deposit_failed(txid, "Minter contract not configured")
@@ -608,10 +603,12 @@ async def _mint_tokens(secret_async_client, deposit: Dict[str, Any]):
     print(f"[MoneroBridge] Processing deposit {txid[:16]}... for {secret_address}", flush=True)
 
     try:
+        tx_queue = get_tx_queue()
+
         # First check if this deposit was already processed on-chain (prevents double-mint on restart)
         try:
             is_processed_query = {"is_processed": {"monero_tx_id": txid}}
-            is_processed = await secret_async_client.wasm.contract_query(
+            is_processed = await tx_queue.client.wasm.contract_query(
                 config.XMR_MINTER_CONTRACT,
                 is_processed_query,
                 config.XMR_MINTER_HASH,
@@ -619,27 +616,19 @@ async def _mint_tokens(secret_async_client, deposit: Dict[str, Any]):
 
             if is_processed.get("is_processed", False):
                 print(f"[MoneroBridge] Deposit {txid[:16]}... already processed on-chain, updating local DB", flush=True)
-                # Get the on-chain deposit details to mark as minted
                 deposit_query = {"get_deposit": {"monero_tx_id": txid}}
-                deposit_response = await secret_async_client.wasm.contract_query(
+                deposit_response = await tx_queue.client.wasm.contract_query(
                     config.XMR_MINTER_CONTRACT,
                     deposit_query,
                     config.XMR_MINTER_HASH,
                 )
-                # Response is wrapped: { deposit: Option<ProcessedDeposit> }
                 deposit_info = deposit_response.get("deposit") if deposit_response else None
-                # Mark as minted in local DB (use empty string if no tx hash available)
                 mint_tx = deposit_info.get("mint_tx_hash", "") if deposit_info else ""
                 mark_deposit_minted(txid, mint_tx)
                 return
         except Exception as e:
-            # If query fails, continue with minting attempt (contract might reject duplicate)
             print(f"[MoneroBridge] Warning: Could not check IsProcessed: {e}", flush=True)
 
-        async_wallet = secret_async_client.wallet(MnemonicKey(config.WALLET_KEY))
-
-        # ProcessDeposit message for the minter contract
-        # Amount is in XMR atomic units (12 decimals) - contract handles conversion
         process_deposit_msg = {
             "process_deposit": {
                 "recipient": secret_address,
@@ -651,48 +640,21 @@ async def _mint_tokens(secret_async_client, deposit: Dict[str, Any]):
         print(f"[MoneroBridge] Calling ProcessDeposit: {amount_atomic} atomic XMR to {secret_address}", flush=True)
 
         msg = MsgExecuteContract(
-            sender=async_wallet.key.acc_address,
+            sender=tx_queue.wallet_address,
             contract=config.XMR_MINTER_CONTRACT,
             msg=process_deposit_msg,
             code_hash=config.XMR_MINTER_HASH,
-            encryption_utils=secret_async_client.encrypt_utils
+            encryption_utils=tx_queue.encryption_utils
         )
 
-        tx = await async_wallet.create_and_broadcast_tx(msg_list=[msg], gas=400000, memo="XMR bridge deposit")
+        tx_result = await tx_queue.submit(msg_list=[msg], gas=400000, memo="XMR bridge deposit")
 
-        if tx.code != 0:
-            mark_deposit_failed(txid, f"Broadcast failed: {tx.raw_log}")
+        if not tx_result.success:
+            mark_deposit_failed(txid, tx_result.error or "Transaction failed")
             return
 
-        # Poll for confirmation
-        tx_info = None
-        for i in range(30):
-            try:
-                tx_info = await secret_async_client.tx.tx_info(tx.txhash)
-                if tx_info:
-                    break
-            except LCDResponseError as e:
-                if "tx not found" in str(e).lower():
-                    await asyncio.sleep(1)
-                    continue
-                raise
-
-        if not tx_info:
-            mark_deposit_failed(txid, "Transaction polling timed out")
-            return
-
-        if tx_info.code != 0:
-            # Print all available attributes for debugging
-            print(f"[MoneroBridge] TX FAILED - txhash: {tx_info.txhash}", flush=True)
-            print(f"[MoneroBridge] TX FAILED - code: {tx_info.code}", flush=True)
-            print(f"[MoneroBridge] TX FAILED - rawlog: {getattr(tx_info, 'rawlog', 'N/A')}", flush=True)
-            print(f"[MoneroBridge] TX FAILED - logs: {tx_info.logs}", flush=True)
-            error_msg = getattr(tx_info, 'rawlog', None) or str(tx_info.logs)
-            mark_deposit_failed(txid, f"Transaction failed: {error_msg}")
-            return
-
-        mark_deposit_minted(txid, tx_info.txhash)
-        print(f"[MoneroBridge] Successfully minted for deposit {txid[:16]}..., tx: {tx_info.txhash}", flush=True)
+        mark_deposit_minted(txid, tx_result.tx_hash)
+        print(f"[MoneroBridge] Successfully minted for deposit {txid[:16]}..., tx: {tx_result.tx_hash}", flush=True)
 
     except Exception as e:
         mark_deposit_failed(txid, str(e))
@@ -708,56 +670,53 @@ async def _process_pending_withdrawals():
     print(f"[MoneroBridge] Processing {len(pending)} pending withdrawals", flush=True)
     loop = asyncio.get_event_loop()
 
-    # Create async Secret client for calling CompleteWithdrawal
-    async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as secret_async_client:
-        for withdrawal in pending:
-            try:
-                # Check wallet has sufficient balance
-                balance = await loop.run_in_executor(_executor, get_balance_sync)
-                if balance["unlocked_balance"] < withdrawal["amount_atomic"]:
-                    print(f"[MoneroBridge] Insufficient balance for withdrawal {withdrawal['id']}", flush=True)
-                    continue
+    for withdrawal in pending:
+        try:
+            # Check wallet has sufficient balance
+            balance = await loop.run_in_executor(_executor, get_balance_sync)
+            if balance["unlocked_balance"] < withdrawal["amount_atomic"]:
+                print(f"[MoneroBridge] Insufficient balance for withdrawal {withdrawal['id']}", flush=True)
+                continue
 
-                # Send XMR (run in thread)
-                result = await loop.run_in_executor(
-                    _executor,
-                    send_transfer_sync,
-                    withdrawal["monero_address"],
-                    withdrawal["amount_atomic"]
-                )
+            # Send XMR (run in thread)
+            result = await loop.run_in_executor(
+                _executor,
+                send_transfer_sync,
+                withdrawal["monero_address"],
+                withdrawal["amount_atomic"]
+            )
 
-                print(f"[MoneroBridge] Withdrawal {withdrawal['id']} XMR sent: {result['tx_hash']}", flush=True)
+            print(f"[MoneroBridge] Withdrawal {withdrawal['id']} XMR sent: {result['tx_hash']}", flush=True)
 
-                # Call CompleteWithdrawal on the minter contract
-                contract_withdrawal_id = withdrawal.get("contract_withdrawal_id")
-                if contract_withdrawal_id is not None and config.XMR_MINTER_CONTRACT:
-                    try:
-                        await _complete_withdrawal_on_contract(
-                            secret_async_client,
-                            contract_withdrawal_id,
-                            result["tx_hash"]
-                        )
-                    except Exception as e:
-                        # Log but don't fail - XMR was already sent
-                        print(f"[MoneroBridge] Warning: Failed to call CompleteWithdrawal: {e}", flush=True)
+            # Call CompleteWithdrawal on the minter contract
+            contract_withdrawal_id = withdrawal.get("contract_withdrawal_id")
+            if contract_withdrawal_id is not None and config.XMR_MINTER_CONTRACT:
+                try:
+                    await _complete_withdrawal_on_contract(
+                        contract_withdrawal_id,
+                        result["tx_hash"]
+                    )
+                except Exception as e:
+                    # Log but don't fail - XMR was already sent
+                    print(f"[MoneroBridge] Warning: Failed to call CompleteWithdrawal: {e}", flush=True)
 
-                mark_withdrawal_sent(
-                    withdrawal["id"],
-                    monero_txid=result["tx_hash"],
-                    monero_tx_key="",  # monero-wallet-rpc doesn't return tx_key by default
-                    fee_atomic=result.get("fee", 0)
-                )
+            mark_withdrawal_sent(
+                withdrawal["id"],
+                monero_txid=result["tx_hash"],
+                monero_tx_key="",
+                fee_atomic=result.get("fee", 0)
+            )
 
-                print(f"[MoneroBridge] Withdrawal {withdrawal['id']} completed", flush=True)
+            print(f"[MoneroBridge] Withdrawal {withdrawal['id']} completed", flush=True)
 
-            except Exception as e:
-                mark_withdrawal_failed(withdrawal["id"], str(e))
-                traceback.print_exc()
+        except Exception as e:
+            mark_withdrawal_failed(withdrawal["id"], str(e))
+            traceback.print_exc()
 
 
-async def _complete_withdrawal_on_contract(secret_async_client, withdrawal_id: int, monero_txid: str):
+async def _complete_withdrawal_on_contract(withdrawal_id: int, monero_txid: str):
     """Call CompleteWithdrawal on the minter contract."""
-    async_wallet = secret_async_client.wallet(MnemonicKey(config.WALLET_KEY))
+    tx_queue = get_tx_queue()
 
     complete_msg = {
         "complete_withdrawal": {
@@ -768,38 +727,23 @@ async def _complete_withdrawal_on_contract(secret_async_client, withdrawal_id: i
     print(f"[MoneroBridge] Calling CompleteWithdrawal for #{withdrawal_id}", flush=True)
 
     msg = MsgExecuteContract(
-        sender=async_wallet.key.acc_address,
+        sender=tx_queue.wallet_address,
         contract=config.XMR_MINTER_CONTRACT,
         msg=complete_msg,
         code_hash=config.XMR_MINTER_HASH,
-        encryption_utils=secret_async_client.encrypt_utils
+        encryption_utils=tx_queue.encryption_utils
     )
 
-    tx = await async_wallet.create_and_broadcast_tx(
+    tx_result = await tx_queue.submit(
         msg_list=[msg],
         gas=200000,
         memo=f"XMR withdrawal complete: {monero_txid[:16]}"
     )
 
-    if tx.code != 0:
-        raise Exception(f"CompleteWithdrawal broadcast failed: {tx.raw_log}")
+    if not tx_result.success:
+        raise Exception(f"CompleteWithdrawal failed: {tx_result.error}")
 
-    # Wait for confirmation
-    for i in range(30):
-        try:
-            tx_info = await secret_async_client.tx.tx_info(tx.txhash)
-            if tx_info:
-                if tx_info.code != 0:
-                    raise Exception(f"CompleteWithdrawal failed: {getattr(tx_info, 'rawlog', tx_info.logs)}")
-                print(f"[MoneroBridge] CompleteWithdrawal confirmed: {tx_info.txhash}", flush=True)
-                return
-        except LCDResponseError as e:
-            if "tx not found" in str(e).lower():
-                await asyncio.sleep(1)
-                continue
-            raise
-
-    print(f"[MoneroBridge] Warning: CompleteWithdrawal tx not confirmed in time: {tx.txhash}", flush=True)
+    print(f"[MoneroBridge] CompleteWithdrawal confirmed: {tx_result.tx_hash}", flush=True)
 
 
 # --- Contract Sync Functions ---
@@ -820,27 +764,27 @@ async def sync_deposit_indices_from_contract() -> int:
 
     all_indices = []
     start_after = None
+    tx_queue = get_tx_queue()
 
-    async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as client:
-        while True:
-            query_msg = {
-                "get_all_deposit_indices": {
-                    "start_after": start_after,
-                    "limit": 100
-                }
+    while True:
+        query_msg = {
+            "get_all_deposit_indices": {
+                "start_after": start_after,
+                "limit": 100
             }
-            result = await client.wasm.contract_query(
-                config.XMR_MINTER_CONTRACT,
-                query_msg,
-                config.XMR_MINTER_HASH
-            )
+        }
+        result = await tx_queue.client.wasm.contract_query(
+            config.XMR_MINTER_CONTRACT,
+            query_msg,
+            config.XMR_MINTER_HASH
+        )
 
-            indices = result.get("indices", [])
-            all_indices.extend(indices)
+        indices = result.get("indices", [])
+        all_indices.extend(indices)
 
-            if len(indices) < 100:
-                break
-            start_after = indices[-1][0]  # Last address for pagination
+        if len(indices) < 100:
+            break
+        start_after = indices[-1][0]  # Last address for pagination
 
     # Sync each index to local database
     loop = asyncio.get_event_loop()
@@ -881,14 +825,14 @@ async def get_deposit_index_from_contract(secret_address: str) -> Optional[int]:
     if not config.XMR_MINTER_CONTRACT:
         return None
 
-    async with AsyncLCDClient(chain_id=config.SECRET_CHAIN_ID, url=config.SECRET_LCD_URL) as client:
-        query_msg = {"get_deposit_index": {"address": secret_address}}
-        result = await client.wasm.contract_query(
-            config.XMR_MINTER_CONTRACT,
-            query_msg,
-            config.XMR_MINTER_HASH
-        )
-        return result.get("index")
+    tx_queue = get_tx_queue()
+    query_msg = {"get_deposit_index": {"address": secret_address}}
+    result = await tx_queue.client.wasm.contract_query(
+        config.XMR_MINTER_CONTRACT,
+        query_msg,
+        config.XMR_MINTER_HASH
+    )
+    return result.get("index")
 
 
 # --- Initialization ---
