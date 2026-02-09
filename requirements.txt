@@ -5,6 +5,7 @@ aiofiles
 python-dotenv
 schedule
 aiohttp
+httpx
 requests
 setuptools
 secp256k1
