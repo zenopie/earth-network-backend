@@ -23,5 +23,6 @@ class VerifyRequest(BaseModel):
     address: str
     referredBy: Optional[str] = None
 
-class FaucetGasRequest(BaseModel):
+class AdsForGasRequest(BaseModel):
     address: str
+    reward_token: str  # The verification token from AdMob reward callback

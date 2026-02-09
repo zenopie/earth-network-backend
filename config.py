@@ -192,6 +192,10 @@ def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict
             TOKENS[symbol]["hash"] = registry_tokens[symbol]["hash"]
 
 
+# --- AdMob Ads for Gas Configuration ---
+ADMOB_APP_ID = "ca-app-pub-8662126294069074~6689630767"
+ADMOB_AD_UNIT_ID = "ca-app-pub-8662126294069074/9040854138"
+
 # --- Monero Bridge Configuration ---
 # Remote Monero daemon (for wallet-rpc to connect to)
 MONERO_DAEMON_HOST = os.getenv("MONERO_DAEMON_HOST", "node.moneroworld.com")

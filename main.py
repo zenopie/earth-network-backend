@@ -70,7 +70,7 @@ async def startup_event():
 
     # Schedule other jobs
     scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
-    scheduler.add_job(update_pool_rewards, 'cron', hour=23, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
+    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
 
     # Initialize Monero bridge
     await init_monero_bridge()
@@ -102,7 +102,7 @@ app.include_router(analytics.router, tags=["Analytics"])
 app.include_router(verify.router, tags=["Verification"])
 app.include_router(airdrop.router, tags=["Airdrop"])
 app.include_router(secret_query.router, tags=["SecretQuery"])
-app.include_router(faucet.router, tags=["Faucet"])
+app.include_router(faucet.router, tags=["Ads for Gas"])
 app.include_router(monero_bridge.router, tags=["Monero Bridge"])
 
 
