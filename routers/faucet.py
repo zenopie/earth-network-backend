@@ -1,13 +1,9 @@
 # /routers/faucet.py - Ads for Gas implementation
 
 import base64
-import hashlib
 import json
-import logging
 import os
 import time
-from typing import Optional
-from urllib.parse import parse_qs, urlparse
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
@@ -15,7 +11,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.exceptions import InvalidSignature
 import httpx
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from fastapi import APIRouter, HTTPException, Depends, Request
 from secret_sdk.client.lcd import AsyncLCDClient
 from secret_sdk.core.feegrant import MsgGrantAllowance, BasicAllowance
 from secret_sdk.core.coins import Coins, Coin
@@ -26,8 +22,6 @@ from dependencies import get_async_secret_client
 from models import AdsForGasRequest
 from services.tx_queue import get_tx_queue
 
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Cache for pending rewards (address -> list of transaction_ids)
@@ -51,9 +45,8 @@ def load_rewards_cache():
         if os.path.exists(REWARDS_CACHE_FILE):
             with open(REWARDS_CACHE_FILE, 'r') as f:
                 PENDING_REWARDS_CACHE = json.load(f)
-                logger.info(f"Loaded rewards cache with {len(PENDING_REWARDS_CACHE)} entries")
     except Exception as e:
-        logger.warning(f"Could not load rewards cache: {e}")
+        print(f"[AdsForGas] Could not load rewards cache: {e}", flush=True)
         PENDING_REWARDS_CACHE = {}
 
 
@@ -63,7 +56,7 @@ def save_rewards_cache():
         with open(REWARDS_CACHE_FILE, 'w') as f:
             json.dump(PENDING_REWARDS_CACHE, f)
     except Exception as e:
-        logger.warning(f"Could not save rewards cache: {e}")
+        print(f"[AdsForGas] Could not save rewards cache: {e}", flush=True)
 
 
 def load_used_tx_ids():
@@ -73,9 +66,8 @@ def load_used_tx_ids():
         if os.path.exists(USED_TX_FILE):
             with open(USED_TX_FILE, 'r') as f:
                 USED_TRANSACTION_IDS = set(json.load(f))
-                logger.info(f"Loaded {len(USED_TRANSACTION_IDS)} used transaction IDs")
     except Exception as e:
-        logger.warning(f"Could not load used tx IDs: {e}")
+        print(f"[AdsForGas] Could not load used tx IDs: {e}", flush=True)
         USED_TRANSACTION_IDS = set()
 
 
@@ -85,7 +77,7 @@ def save_used_tx_ids():
         with open(USED_TX_FILE, 'w') as f:
             json.dump(list(USED_TRANSACTION_IDS), f)
     except Exception as e:
-        logger.warning(f"Could not save used tx IDs: {e}")
+        print(f"[AdsForGas] Could not save used tx IDs: {e}", flush=True)
 
 
 async def fetch_google_keys() -> dict:
@@ -111,10 +103,10 @@ async def fetch_google_keys() -> dict:
                     keys[str(key_id)] = pem
 
             GOOGLE_KEYS_CACHE = {"keys": keys, "fetched_at": now}
-            logger.info(f"Fetched {len(keys)} Google verification keys")
+            print(f"[AdsForGas] Fetched {len(keys)} Google verification keys", flush=True)
             return keys
     except Exception as e:
-        logger.error(f"Failed to fetch Google keys: {e}")
+        print(f"[AdsForGas] Failed to fetch Google keys: {e}", flush=True)
         # Return cached keys if available
         return GOOGLE_KEYS_CACHE.get("keys", {})
 
@@ -124,7 +116,7 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
     try:
         pem_key = keys.get(key_id)
         if not pem_key:
-            logger.error(f"Key ID {key_id} not found in Google keys")
+            print(f"[AdsForGas] Key ID {key_id} not found in Google keys", flush=True)
             return False
 
         # Load the public key
@@ -143,10 +135,10 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
         return True
 
     except InvalidSignature:
-        logger.warning("Invalid SSV signature")
+        print(f"[AdsForGas] Invalid SSV signature", flush=True)
         return False
     except Exception as e:
-        logger.error(f"SSV verification error: {e}")
+        print(f"[AdsForGas] SSV verification error: {e}", flush=True)
         return False
 
 
@@ -159,7 +151,7 @@ async def check_registration_status(address: str, secret_async_client: AsyncLCDC
         )
         return result.get("registration_status", False)
     except Exception as e:
-        logger.error(f"Error checking registration status: {e}")
+        print(f"[AdsForGas] Error checking registration status: {e}", flush=True)
         return False
 
 
@@ -171,11 +163,15 @@ async def admob_ssv_callback(request: Request):
     The custom_data parameter should contain the user's wallet address.
     """
     try:
+        # Log that callback was received
+        print(f"[AdsForGas] SSV callback received: {request.url}", flush=True)
+
         # Get the full query string for signature verification
         query_string = str(request.url.query)
 
         # Parse query parameters
         params = dict(request.query_params)
+        print(f"[AdsForGas] Params: {params}", flush=True)
 
         ad_unit = params.get("ad_unit", "")
         custom_data = params.get("custom_data", "")  # User's wallet address
@@ -188,24 +184,24 @@ async def admob_ssv_callback(request: Request):
 
         # Validate required parameters
         if not all([custom_data, transaction_id, signature, key_id]):
-            logger.warning("Missing required SSV parameters")
+            print(f"[AdsForGas] Missing required SSV parameters", flush=True)
             return {"status": "error", "message": "Missing parameters"}
 
         # Check for replay attack
         load_used_tx_ids()
         if transaction_id in USED_TRANSACTION_IDS:
-            logger.warning(f"Replay attack detected: {transaction_id}")
+            print(f"[AdsForGas] Replay attack detected: {transaction_id}", flush=True)
             return {"status": "error", "message": "Transaction already processed"}
 
         # Verify the ad unit matches our configuration
         if ad_unit and ad_unit != config.ADMOB_AD_UNIT_ID:
-            logger.warning(f"Invalid ad unit: {ad_unit}")
+            print(f"[AdsForGas] Invalid ad unit: {ad_unit}", flush=True)
             return {"status": "error", "message": "Invalid ad unit"}
 
         # Fetch Google's public keys and verify signature
         keys = await fetch_google_keys()
         if not verify_ssv_signature(query_string, signature, key_id, keys):
-            logger.warning("SSV signature verification failed")
+            print(f"[AdsForGas] SSV signature verification failed", flush=True)
             return {"status": "error", "message": "Invalid signature"}
 
         # Mark transaction as used
@@ -227,11 +223,11 @@ async def admob_ssv_callback(request: Request):
         })
         save_rewards_cache()
 
-        logger.info(f"Ad reward verified for {address}, tx: {transaction_id}")
+        print(f"[AdsForGas] Reward verified for {address}, tx: {transaction_id}", flush=True)
         return {"status": "success"}
 
     except Exception as e:
-        logger.error(f"SSV callback error: {e}", exc_info=True)
+        print(f"[AdsForGas] SSV callback error: {e}", flush=True)
         return {"status": "error", "message": str(e)}
 
 
@@ -261,7 +257,7 @@ async def check_ads_eligibility(
         }
 
     except Exception as e:
-        logger.error(f"Error checking ads eligibility: {e}", exc_info=True)
+        print(f"[AdsForGas] Error checking eligibility: {e}", flush=True)
         raise HTTPException(
             status_code=500,
             detail=f"Error checking eligibility: {str(e)}"
@@ -359,7 +355,7 @@ async def claim_gas_from_ad(
                 detail=f"Grant transaction failed: {tx_result.error}"
             )
 
-        logger.info(f"Gas allowance granted to {address} from ad reward, tx: {tx_result.tx_hash}")
+        print(f"[AdsForGas] Gas allowance granted to {address}, tx: {tx_result.tx_hash}", flush=True)
 
         return {
             "success": True,
@@ -373,7 +369,7 @@ async def claim_gas_from_ad(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in claim_gas_from_ad: {e}", exc_info=True)
+        print(f"[AdsForGas] Error claiming gas: {e}", flush=True)
         raise HTTPException(
             status_code=500,
             detail=f"An internal server error occurred: {str(e)}"
