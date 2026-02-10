@@ -11,22 +11,15 @@ from ecdsa import VerifyingKey, BadSignatureError
 from ecdsa.util import sigdecode_der
 import httpx
 
-from fastapi import APIRouter, HTTPException, Depends, Request
-from secret_sdk.client.lcd import AsyncLCDClient
+from fastapi import APIRouter, Request
 from secret_sdk.core.feegrant import MsgGrantAllowance, BasicAllowance
 from secret_sdk.core.coins import Coins, Coin
 from datetime import datetime
 
 import config
-from dependencies import get_async_secret_client
-from models import AdsForGasRequest
 from services.tx_queue import get_tx_queue
 
 router = APIRouter()
-
-# Cache for pending rewards (address -> list of transaction_ids)
-PENDING_REWARDS_CACHE = {}
-REWARDS_CACHE_FILE = "ads_rewards.json"
 
 # Cache for used transaction IDs to prevent replay attacks
 USED_TRANSACTION_IDS = set()
@@ -36,27 +29,6 @@ USED_TX_FILE = "used_tx_ids.json"
 GOOGLE_KEYS_CACHE = {}
 GOOGLE_KEYS_URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"
 GOOGLE_KEYS_CACHE_DURATION = 86400  # 24 hours
-
-
-def load_rewards_cache():
-    """Load pending rewards cache from file."""
-    global PENDING_REWARDS_CACHE
-    try:
-        if os.path.exists(REWARDS_CACHE_FILE):
-            with open(REWARDS_CACHE_FILE, 'r') as f:
-                PENDING_REWARDS_CACHE = json.load(f)
-    except Exception as e:
-        print(f"[AdsForGas] Could not load rewards cache: {e}", flush=True)
-        PENDING_REWARDS_CACHE = {}
-
-
-def save_rewards_cache():
-    """Save pending rewards cache to file."""
-    try:
-        with open(REWARDS_CACHE_FILE, 'w') as f:
-            json.dump(PENDING_REWARDS_CACHE, f)
-    except Exception as e:
-        print(f"[AdsForGas] Could not save rewards cache: {e}", flush=True)
 
 
 def load_used_tx_ids():
@@ -160,19 +132,6 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
         return False
 
 
-async def check_registration_status(address: str, secret_async_client: AsyncLCDClient) -> bool:
-    """Check if an address is registered on-chain."""
-    try:
-        query_msg = {"query_registration_status": {"address": address}}
-        result = await secret_async_client.wasm.contract_query(
-            config.REGISTRATION_CONTRACT, query_msg, config.REGISTRATION_HASH
-        )
-        return result.get("registration_status", False)
-    except Exception as e:
-        print(f"[AdsForGas] Error checking registration status: {e}", flush=True)
-        return False
-
-
 @router.get("/ads-callback", summary="AdMob SSV callback endpoint")
 async def admob_ssv_callback(request: Request):
     """
@@ -195,9 +154,6 @@ async def admob_ssv_callback(request: Request):
 
         ad_unit = params.get("ad_unit", "")
         custom_data = params.get("custom_data", "")  # User's wallet address
-        reward_amount = params.get("reward_amount", "1")
-        reward_item = params.get("reward_item", "gas")
-        timestamp = params.get("timestamp", "")
         transaction_id = params.get("transaction_id", "")
         signature = params.get("signature", "")
         key_id = params.get("key_id", "")
@@ -230,122 +186,11 @@ async def admob_ssv_callback(request: Request):
         USED_TRANSACTION_IDS.add(transaction_id)
         save_used_tx_ids()
 
-        # Add reward to pending rewards for this address
-        load_rewards_cache()
         address = custom_data.strip()
-
-        if address not in PENDING_REWARDS_CACHE:
-            PENDING_REWARDS_CACHE[address] = []
-
-        PENDING_REWARDS_CACHE[address].append({
-            "transaction_id": transaction_id,
-            "timestamp": timestamp,
-            "reward_amount": reward_amount,
-            "created_at": time.time()
-        })
-        save_rewards_cache()
-
         print(f"[AdsForGas] Reward verified for {address}, tx: {transaction_id}", flush=True)
-        return {"status": "success"}
 
-    except Exception as e:
-        print(f"[AdsForGas] SSV callback error: {e}", flush=True)
-        return {"status": "error", "message": str(e)}
-
-
-@router.get("/ads-eligibility/{address}", summary="Check if user can claim gas from ads")
-async def check_ads_eligibility(
-    address: str,
-    secret_async_client: AsyncLCDClient = Depends(get_async_secret_client)
-):
-    """
-    Check if a user is eligible to claim gas (registered and has pending rewards).
-    """
-    try:
-        load_rewards_cache()
-
-        # Check if user is registered
-        is_registered = await check_registration_status(address, secret_async_client)
-
-        # Check for pending rewards
-        pending_rewards = PENDING_REWARDS_CACHE.get(address, [])
-        has_pending_rewards = len(pending_rewards) > 0
-
-        return {
-            "eligible": is_registered and has_pending_rewards,
-            "registered": is_registered,
-            "pending_rewards": len(pending_rewards),
-            "ad_unit_id": config.ADMOB_AD_UNIT_ID
-        }
-
-    except Exception as e:
-        print(f"[AdsForGas] Error checking eligibility: {e}", flush=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error checking eligibility: {str(e)}"
-        )
-
-
-@router.post("/ads-claim-gas", summary="Claim gas after watching an ad")
-async def claim_gas_from_ad(
-    req: AdsForGasRequest,
-    secret_async_client: AsyncLCDClient = Depends(get_async_secret_client)
-):
-    """
-    Claims gas allowance after a user has watched a rewarded ad.
-    Requires the user to be registered and have a pending verified reward.
-    """
-    try:
-        address = req.address
-        reward_token = req.reward_token  # Transaction ID from the ad callback
-
-        load_rewards_cache()
-
-        # Check if user is registered
-        is_registered = await check_registration_status(address, secret_async_client)
-        if not is_registered:
-            raise HTTPException(
-                status_code=403,
-                detail="User must be registered to claim gas"
-            )
-
-        # Check for pending rewards
-        pending_rewards = PENDING_REWARDS_CACHE.get(address, [])
-        if not pending_rewards:
-            raise HTTPException(
-                status_code=400,
-                detail="No pending rewards. Please watch an ad first."
-            )
-
-        # Find and remove the matching reward
-        reward_found = None
-        for i, reward in enumerate(pending_rewards):
-            if reward["transaction_id"] == reward_token:
-                reward_found = pending_rewards.pop(i)
-                break
-
-        if not reward_found:
-            # If no specific token match, use the oldest reward
-            reward_found = pending_rewards.pop(0)
-
-        # Update cache
-        if pending_rewards:
-            PENDING_REWARDS_CACHE[address] = pending_rewards
-        else:
-            del PENDING_REWARDS_CACHE[address]
-        save_rewards_cache()
-
-        # Grant gas allowance via transaction queue
+        # Grant gas allowance directly
         tx_queue = get_tx_queue()
-
-        # Check granter balance
-        balance = await secret_async_client.bank.balance(tx_queue.wallet_address)
-        uscrt_coin = (balance[0] if balance else Coins()).get("uscrt")
-        if not uscrt_coin or int(uscrt_coin.amount) < 2000000:
-            raise HTTPException(
-                status_code=503,
-                detail="Service temporarily unavailable due to insufficient balance"
-            )
 
         # Grant allowance: 0.2 SCRT (200000 uscrt) for gas with 1 hour expiration
         now_in_seconds = int(time.time())
@@ -363,7 +208,7 @@ async def claim_gas_from_ad(
             allowance=allowance
         )
 
-        # Submit through transaction queue
+        # Submit through transaction queue (don't wait for confirmation)
         tx_result = await tx_queue.submit(
             msg_list=[grant_msg],
             gas=200000,
@@ -372,32 +217,16 @@ async def claim_gas_from_ad(
         )
 
         if not tx_result.success:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Grant transaction failed: {tx_result.error}"
-            )
+            print(f"[AdsForGas] Grant transaction failed: {tx_result.error}", flush=True)
+            return {"status": "error", "message": "Grant transaction failed"}
 
         print(f"[AdsForGas] Gas allowance granted to {address}, tx: {tx_result.tx_hash}", flush=True)
+        return {"status": "success"}
 
-        return {
-            "success": True,
-            "message": "Gas allowance granted successfully",
-            "tx_hash": tx_result.tx_hash,
-            "allowance_amount": "0.2 SCRT",
-            "expires_at": datetime.fromtimestamp(expiration_time_in_seconds).isoformat(),
-            "remaining_rewards": len(PENDING_REWARDS_CACHE.get(address, []))
-        }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"[AdsForGas] Error claiming gas: {e}", flush=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"An internal server error occurred: {str(e)}"
-        )
+        print(f"[AdsForGas] SSV callback error: {e}", flush=True)
+        return {"status": "error", "message": str(e)}
 
 
-# Initialize caches on module load
-load_rewards_cache()
+# Initialize cache on module load
 load_used_tx_ids()
