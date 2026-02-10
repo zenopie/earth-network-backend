@@ -194,8 +194,10 @@ async def admob_ssv_callback(request: Request):
             return {"status": "error", "message": "Transaction already processed"}
 
         # Verify the ad unit matches our configuration
-        if ad_unit and ad_unit != config.ADMOB_AD_UNIT_ID:
-            print(f"[AdsForGas] Invalid ad unit: {ad_unit}", flush=True)
+        # Google sends just the numeric ID, not the full ca-app-pub format
+        expected_ad_unit = config.ADMOB_AD_UNIT_ID.split("/")[-1] if "/" in config.ADMOB_AD_UNIT_ID else config.ADMOB_AD_UNIT_ID
+        if ad_unit and ad_unit != expected_ad_unit:
+            print(f"[AdsForGas] Invalid ad unit: {ad_unit} (expected {expected_ad_unit})", flush=True)
             return {"status": "error", "message": "Invalid ad unit"}
 
         # Fetch Google's public keys and verify signature
