@@ -120,23 +120,28 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
             return False
 
         # Content is everything BEFORE &signature= in the exact order it appears
-        # Do NOT sort, do NOT modify - use raw query string
+        # IMPORTANT: Google signs the URL-DECODED content, not the raw encoded string
         content_str = query_string.split("&signature=")[0]
+        content_str = unquote(content_str)  # URL decode the content
         content = content_str.encode('utf-8')
 
-        print(f"[AdsForGas] Verifying content: {content[:100]}...", flush=True)
+        print(f"[AdsForGas] FULL content to verify: {content_str}", flush=True)
+        print(f"[AdsForGas] Content bytes length: {len(content)}", flush=True)
 
         # Decode the signature (URL-safe base64)
         sig_decoded = unquote(signature_b64)
+        print(f"[AdsForGas] Raw signature param: {signature_b64}", flush=True)
         # Add padding if needed
         padding = 4 - len(sig_decoded) % 4
         if padding != 4:
             sig_decoded += "=" * padding
+        print(f"[AdsForGas] Signature with padding: {sig_decoded}", flush=True)
         signature = base64.urlsafe_b64decode(sig_decoded)
 
-        print(f"[AdsForGas] Signature length: {len(signature)} bytes", flush=True)
+        print(f"[AdsForGas] Decoded signature length: {len(signature)} bytes", flush=True)
 
         # Verify using ecdsa library
+        print(f"[AdsForGas] Using key ID: {key_id}, PEM starts with: {pem_key[:50]}...", flush=True)
         verifying_key = VerifyingKey.from_pem(pem_key)
         return verifying_key.verify(
             signature,
