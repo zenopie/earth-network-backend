@@ -179,8 +179,10 @@ async def admob_ssv_callback(request: Request):
         # Log that callback was received
         print(f"[AdsForGas] SSV callback received: {request.url}", flush=True)
 
-        # Get the full query string for signature verification
-        query_string = str(request.url.query)
+        # Get the RAW query string bytes - this preserves URL encoding exactly as sent
+        raw_query_bytes = request.scope.get('query_string', b'')
+        query_string = raw_query_bytes.decode('utf-8')
+        print(f"[AdsForGas] Raw query string: {query_string[:150]}...", flush=True)
 
         # Parse query parameters
         params = dict(request.query_params)
