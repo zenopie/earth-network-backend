@@ -1,14 +1,14 @@
 # /routers/faucet.py - Ads for Gas implementation
 
 import base64
+import hashlib
 import json
 import os
 import time
+from urllib.parse import parse_qs, urlencode, unquote
 
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from cryptography.exceptions import InvalidSignature
+from ecdsa import VerifyingKey, BadSignatureError
+from ecdsa.util import sigdecode_der
 import httpx
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -119,26 +119,44 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
             print(f"[AdsForGas] Key ID {key_id} not found in Google keys", flush=True)
             return False
 
-        # Load the public key
-        public_key = load_pem_public_key(pem_key.encode())
+        # Parse query string, remove signature and key_id, sort alphabetically, re-encode
+        params = parse_qs(query_string, keep_blank_values=True)
+        params.pop('signature', None)
+        params.pop('key_id', None)
 
-        # The message to verify is the query string up to &signature=
-        # Remove signature and key_id from the query string for verification
-        parts = query_string.split("&signature=")[0]
-        message = parts.encode()
+        # Sort by key and flatten (each value is a list, take first)
+        sorted_params = sorted(params.items())
+        content_str = urlencode([(k, v[0]) for k, v in sorted_params])
+        content = unquote(content_str).encode('utf-8')
 
-        # Decode the signature
-        signature = base64.urlsafe_b64decode(signature_b64 + "==")  # Add padding
+        print(f"[AdsForGas] Verifying content: {content[:100]}...", flush=True)
 
-        # Verify using ECDSA with SHA256
-        public_key.verify(signature, message, ec.ECDSA(hashes.SHA256()))
-        return True
+        # Decode the signature (URL-safe base64)
+        sig_decoded = unquote(signature_b64)
+        # Add padding if needed
+        padding = 4 - len(sig_decoded) % 4
+        if padding != 4:
+            sig_decoded += "=" * padding
+        signature = base64.urlsafe_b64decode(sig_decoded)
 
-    except InvalidSignature:
-        print(f"[AdsForGas] Invalid SSV signature", flush=True)
+        print(f"[AdsForGas] Signature length: {len(signature)} bytes", flush=True)
+
+        # Verify using ecdsa library
+        verifying_key = VerifyingKey.from_pem(pem_key)
+        return verifying_key.verify(
+            signature,
+            content,
+            hashfunc=hashlib.sha256,
+            sigdecode=sigdecode_der,
+        )
+
+    except BadSignatureError:
+        print(f"[AdsForGas] Invalid SSV signature (cryptographic verification failed)", flush=True)
         return False
     except Exception as e:
         print(f"[AdsForGas] SSV verification error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return False
 
 
