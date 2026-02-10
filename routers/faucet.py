@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import time
-from urllib.parse import parse_qs, urlencode, unquote
+from urllib.parse import unquote
 
 from ecdsa import VerifyingKey, BadSignatureError
 from ecdsa.util import sigdecode_der
@@ -119,15 +119,10 @@ def verify_ssv_signature(query_string: str, signature_b64: str, key_id: str, key
             print(f"[AdsForGas] Key ID {key_id} not found in Google keys", flush=True)
             return False
 
-        # Parse query string, remove signature and key_id, sort alphabetically, re-encode
-        params = parse_qs(query_string, keep_blank_values=True)
-        params.pop('signature', None)
-        params.pop('key_id', None)
-
-        # Sort by key and flatten (each value is a list, take first)
-        sorted_params = sorted(params.items())
-        content_str = urlencode([(k, v[0]) for k, v in sorted_params])
-        content = unquote(content_str).encode('utf-8')
+        # Content is everything BEFORE &signature= in the exact order it appears
+        # Do NOT sort, do NOT modify - use raw query string
+        content_str = query_string.split("&signature=")[0]
+        content = content_str.encode('utf-8')
 
         print(f"[AdsForGas] Verifying content: {content[:100]}...", flush=True)
 
