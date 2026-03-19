@@ -8,7 +8,7 @@ Earth Exchange is a decentralized exchange (AMM DEX) on Secret Network. All trad
 
 ## Endpoints
 
-### GET /tickers
+### GET https://api.erth.network/tickers
 
 CoinGecko-compliant DEX ticker endpoint. Returns 24-hour pricing, volume, and liquidity data for all trading pairs.
 
@@ -24,9 +24,7 @@ CoinGecko-compliant DEX ticker endpoint. Returns 24-hour pricing, volume, and li
     "last_price": "0.5",
     "base_volume": "1000",
     "target_volume": "500",
-    "liquidity_in_usd": "50000",
-    "bid": "0.4975",
-    "ask": "0.5025"
+    "liquidity_in_usd": "50000"
   }
 ]
 ```
@@ -41,8 +39,6 @@ CoinGecko-compliant DEX ticker endpoint. Returns 24-hour pricing, volume, and li
 | `base_volume` | decimal string | 24-hour trading volume in ERTH |
 | `target_volume` | decimal string | 24-hour trading volume in target token |
 | `liquidity_in_usd` | decimal string | Total pool liquidity in USD |
-| `bid` | decimal string | Effective bid price (fee-adjusted) |
-| `ask` | decimal string | Effective ask price (fee-adjusted) |
 
 **Trading Pairs:**
 
@@ -53,13 +49,13 @@ CoinGecko-compliant DEX ticker endpoint. Returns 24-hour pricing, volume, and li
 | ERTH/XMR | ERTH | sXMR (wrapped Monero) |
 
 **Notes:**
-- This is an AMM DEX; bid/ask are derived from the 0.5% protocol fee spread.
-- Volume is a rolling 24-hour approximation from on-chain daily volume buckets.
+- This is an AMM DEX; there is no order book.
+- Volume is derived from on-chain daily volume buckets.
 - Liquidity in USD is calculated from pool reserves and latest price data.
 
 ---
 
-### GET /supply/erth
+### GET https://api.erth.network/supply/erth
 
 Returns the current ERTH total supply as a plain number.
 
@@ -71,7 +67,7 @@ Returns the current ERTH total supply as a plain number.
 
 ---
 
-### GET /supply/anml
+### GET https://api.erth.network/supply/anml
 
 Returns the current ANML total supply as a plain number.
 
@@ -83,7 +79,7 @@ Returns the current ANML total supply as a plain number.
 
 ---
 
-### GET /analytics
+### GET https://api.erth.network/analytics
 
 Returns full analytics history and latest snapshot including ERTH/ANML prices, market caps, TVL, and per-pool data.
 
@@ -117,7 +113,7 @@ Returns full analytics history and latest snapshot including ERTH/ANML prices, m
 
 ---
 
-### GET /erth-price
+### GET https://api.erth.network/erth-price
 
 Returns the current ERTH price in USD.
 
@@ -133,7 +129,7 @@ Returns the current ERTH price in USD.
 
 ---
 
-### GET /anml-price
+### GET https://api.erth.network/anml-price
 
 Returns the current ANML price in USD.
 
