@@ -81,23 +81,15 @@ async def get_tickers(
     pool_tokens = {k: v for k, v in config.TOKENS.items() if k != "ERTH"}
     pool_addresses = [t["contract"] for t in pool_tokens.values()]
 
-    # Query contract for current pool state and contract config
+    # Query contract for current pool state
     try:
         pool_info_list = await secret_async_client.wasm.contract_query(
             config.UNIFIED_POOL_CONTRACT,
             {"query_pool_info": {"pools": pool_addresses}},
         )
-        contract_config = await secret_async_client.wasm.contract_query(
-            config.UNIFIED_POOL_CONTRACT,
-            {"query_config": {}},
-        )
     except Exception as e:
         logger.error("Failed to query exchange contract: %s", e)
         raise HTTPException(status_code=502, detail="Failed to query exchange contract")
-
-    # Protocol fee for bid/ask spread (e.g. 50 = 0.5%)
-    protocol_fee = int(contract_config.get("protocol_fee", "50"))
-    fee_rate = protocol_fee / 10000
 
     # Get USD prices from latest analytics snapshot
     latest = get_latest_data_point()
@@ -136,10 +128,6 @@ async def get_tickers(
         token_usd = token_prices_usd.get(symbol, 0)
         liquidity_usd = (erth_reserve * erth_price_usd) + (token_b_reserve * token_usd)
 
-        # Bid/Ask approximation for AMM (spread = protocol fee)
-        bid = last_price * (1 - fee_rate)
-        ask = last_price * (1 + fee_rate)
-
         tickers.append({
             "ticker_id": f"{erth_contract}_{token_b_contract}",
             "base_currency": erth_contract,
@@ -149,8 +137,6 @@ async def get_tickers(
             "base_volume": _format_decimal(base_volume),
             "target_volume": _format_decimal(target_volume),
             "liquidity_in_usd": _format_decimal(liquidity_usd),
-            "bid": _format_decimal(bid),
-            "ask": _format_decimal(ask),
         })
 
     return tickers
