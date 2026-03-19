@@ -4,7 +4,6 @@ Analytics API endpoints for ERTH Network.
 Includes general analytics, pricing, CoinGecko-compliant DEX tickers, and supply data.
 The scheduled analytics update job is in scheduled_tasks/analytics.py
 """
-import time
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -108,12 +107,6 @@ async def get_tickers(
         for pool_data in latest["pools"]:
             token_prices_usd[pool_data["token"]] = pool_data.get("tokenPrice", 0)
 
-    # Time calculations for 24h rolling volume approximation
-    now = int(time.time())
-    seconds_in_day = 86400
-    current_day = now // seconds_in_day
-    fraction_of_day = (now % seconds_in_day) / seconds_in_day
-
     tickers = []
 
     for i, (symbol, token_info) in enumerate(pool_tokens.items()):
@@ -131,22 +124,9 @@ async def get_tickers(
         # Last price: price of 1 ERTH in Token_B terms
         last_price = token_b_reserve / erth_reserve
 
-        # 24h rolling volume approximation from on-chain daily buckets.
-        # daily_volumes[0] = current day (partial), [1] = previous day.
-        # The array only rotates on swap, so check staleness.
+        # 24h volume: sum of current and previous daily buckets
         daily_volumes = [int(v) for v in state["daily_volumes"]]
-        last_updated_day = int(state["last_updated_day"])
-        days_stale = current_day - last_updated_day
-
-        if days_stale == 0:
-            # Current: today's partial + yesterday's remaining fraction
-            volume_24h_raw = daily_volumes[0] + daily_volumes[1] * (1 - fraction_of_day)
-        elif days_stale == 1:
-            # Last swap was yesterday: use yesterday's volume for remaining fraction
-            volume_24h_raw = daily_volumes[0] * (1 - fraction_of_day)
-        else:
-            # No swaps in 2+ days
-            volume_24h_raw = 0
+        volume_24h_raw = daily_volumes[0] + daily_volumes[1]
 
         # Volume is tracked in ERTH equivalent (raw units)
         base_volume = volume_24h_raw / (10**erth_decimals)
