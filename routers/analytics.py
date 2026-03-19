@@ -116,12 +116,12 @@ async def get_tickers(
         # Last price: price of 1 ERTH in Token_B terms
         last_price = token_b_reserve / erth_reserve
 
-        # 24h volume: sum of current and previous daily buckets
+        # 7-day volume: sum all daily buckets
         daily_volumes = [int(v) for v in state["daily_volumes"]]
-        volume_24h_raw = daily_volumes[0] + daily_volumes[1]
+        volume_7d_raw = sum(daily_volumes)
 
         # Volume is tracked in ERTH equivalent (raw units)
-        base_volume = volume_24h_raw / (10**erth_decimals)
+        base_volume = volume_7d_raw / (10**erth_decimals)
         target_volume = base_volume * last_price
 
         # Pool liquidity in USD
