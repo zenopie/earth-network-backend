@@ -46,6 +46,10 @@ TOKENS = {
 UNIFIED_POOL_CONTRACT = None
 UNIFIED_POOL_HASH = None
 
+# XMR bridge manager contract (handles mint/burn with on-chain tracking)
+XMR_MINTER_CONTRACT = "secret130nl6yfwuzjmnuknwfccq7jl8qekl4kcz0ppap"
+XMR_MINTER_HASH = "91bed2b7eac8ba8e29c89efc32fcf0d0d0352d75f945da9035bc2ac4fa1ac14d"
+
 
 # --- Key Loading ---
 def get_wallet_key() -> str:
@@ -192,3 +196,30 @@ def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict
 ADMOB_APP_ID = "ca-app-pub-8662126294069074~6689630767"
 ADMOB_AD_UNIT_ID = "ca-app-pub-8662126294069074/9040854138"
 
+# --- Monero Bridge Configuration ---
+# Remote Monero daemon (for wallet-rpc to connect to)
+MONERO_DAEMON_HOST = os.getenv("MONERO_DAEMON_HOST", "node.moneroworld.com")
+MONERO_DAEMON_PORT = os.getenv("MONERO_DAEMON_PORT", "18089")
+
+# Monero wallet-rpc URL (runs in same container, managed by supervisord)
+MONERO_WALLET_RPC_URL = os.getenv("MONERO_WALLET_RPC_URL", "http://127.0.0.1:18083")
+
+# Wallet mnemonic (25 words)
+MONERO_MNEMONIC = os.getenv("MONERO_MNEMONIC", "")
+
+# Wallet password (for wallet file encryption)
+MONERO_WALLET_PASSWORD = os.getenv("MONERO_WALLET_PASSWORD", "bridge123")
+
+# Bridge settings
+XMR_CONFIRMATION_THRESHOLD = int(os.getenv("XMR_CONFIRMATION_THRESHOLD", "20"))
+# Restore height for wallet sync (set to recent block height for faster sync)
+# Current mainnet height is ~3.3M, use a recent height for new wallets
+MONERO_RESTORE_HEIGHT = int(os.getenv("MONERO_RESTORE_HEIGHT", "3300000"))
+
+# Check if bridge is configured
+MONERO_BRIDGE_ENABLED = bool(MONERO_MNEMONIC)
+
+if MONERO_BRIDGE_ENABLED:
+    logging.info(f"Monero bridge configured: wallet-rpc at {MONERO_WALLET_RPC_URL}")
+else:
+    logging.info("Monero bridge not configured (missing MONERO_MNEMONIC)")

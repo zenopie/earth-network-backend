@@ -13,7 +13,7 @@ from services.tx_queue import get_tx_queue
 
 logger = logging.getLogger(__name__)
 # Import the individual router modules
-from routers import analytics, verify, airdrop, secret_query, faucet
+from routers import analytics, verify, airdrop, secret_query, faucet, monero_bridge
 # Import scheduled tasks
 from scheduled_tasks import (
     update_pool_rewards,
@@ -21,6 +21,7 @@ from scheduled_tasks import (
     init_analytics,
     scheduled_weekly_job
 )
+from scheduled_tasks.monero_bridge import init_monero_bridge, poll_deposits
 
 app = FastAPI(
     title="Erth Network API",
@@ -71,6 +72,11 @@ async def startup_event():
     scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
     scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
 
+    # Initialize Monero bridge
+    await init_monero_bridge()
+    if config.MONERO_BRIDGE_ENABLED:
+        scheduler.add_job(poll_deposits, 'interval', seconds=30, id='monero_deposit_poll')
+
     # Optionally run Merkle job once on startup
     if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
         try:
@@ -97,6 +103,7 @@ app.include_router(verify.router, tags=["Verification"])
 app.include_router(airdrop.router, tags=["Airdrop"])
 app.include_router(secret_query.router, tags=["SecretQuery"])
 app.include_router(faucet.router, tags=["Ads for Gas"])
+app.include_router(monero_bridge.router, tags=["Monero Bridge"])
 
 
 @app.get("/", tags=["Health Check"])
