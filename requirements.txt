@@ -14,5 +14,4 @@ asn1crypto
 cryptography
 ecdsa
 git+https://github.com/ZeroPass/pymrtd.git@master#egg=pymrtd
-monero
 pytest
