@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Registry contract constants
 REGISTRY_CONTRACT = "secret1ql943kl7fd7pyv9njf7rmngxhzljncgx6eyw5j"
-REGISTRY_HASH = "2a53df1dc1d8f37ecddd9463930c9caa4940fed94f9a8cd113d6285eef09445b"
+REGISTRY_HASH = "a14ffee004b6be0bbd9d52574bc809b4071e85847a30a4c2981ef10c4d3c6e1b"
 
 
 class RegistryData:
