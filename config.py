@@ -46,9 +46,9 @@ TOKENS = {
 UNIFIED_POOL_CONTRACT = None
 UNIFIED_POOL_HASH = None
 
-# XMR bridge manager contract (handles mint/burn with on-chain tracking)
-XMR_MINTER_CONTRACT = "secret130nl6yfwuzjmnuknwfccq7jl8qekl4kcz0ppap"
-XMR_MINTER_HASH = "91bed2b7eac8ba8e29c89efc32fcf0d0d0352d75f945da9035bc2ac4fa1ac14d"
+# XMR bridge manager contract - populated from registry on startup
+XMR_MINTER_CONTRACT = None
+XMR_MINTER_HASH = None
 
 
 # --- Key Loading ---
@@ -163,6 +163,7 @@ def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict
     global UNIFIED_POOL_CONTRACT, UNIFIED_POOL_HASH
     global AIRDROP_CONTRACT, AIRDROP_HASH
     global STAKING_CONTRACT, STAKING_HASH
+    global XMR_MINTER_CONTRACT, XMR_MINTER_HASH
     global TOKENS
 
     # Update registration contract
@@ -184,6 +185,11 @@ def init_contracts_from_registry(registry_contracts: dict, registry_tokens: dict
     if "staking" in registry_contracts:
         STAKING_CONTRACT = registry_contracts["staking"]["contract"]
         STAKING_HASH = registry_contracts["staking"]["hash"]
+
+    # Update XMR bridge contract
+    if "xmr_bridge" in registry_contracts:
+        XMR_MINTER_CONTRACT = registry_contracts["xmr_bridge"]["contract"]
+        XMR_MINTER_HASH = registry_contracts["xmr_bridge"]["hash"]
 
     # Update token contracts
     for symbol in TOKENS.keys():
