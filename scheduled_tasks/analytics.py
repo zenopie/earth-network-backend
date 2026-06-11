@@ -169,8 +169,15 @@ async def update_analytics_job():
         external_price_pools = []  # Pools with coingecko prices (SSCRT, XMR, etc.)
         anml_data = None
 
-        for i, pool_state in enumerate(unified_pool_res):
-            token_symbol = list(config.TOKENS.keys())[i + 1]  # Skips ERTH
+        # Map pools by token contract address; the contract omits unknown pools
+        # from its response, so positional matching against the request is unsafe.
+        addr_to_symbol = {t["contract"]: sym for sym, t in config.TOKENS.items() if sym != "ERTH"}
+
+        for pool_state in unified_pool_res:
+            token_symbol = addr_to_symbol.get(pool_state["config"]["token_b_contract"])
+            if token_symbol is None:
+                print(f"[Analytics] Skipping unknown pool token: {pool_state['config'].get('token_b_contract')}", flush=True)
+                continue
             token_meta = config.TOKENS[token_symbol]
             erth_reserve = int(pool_state["state"]["erth_reserve"]) / (10**config.TOKENS['ERTH']['decimals'])
             token_reserve = int(pool_state["state"]["token_b_reserve"]) / (10**token_meta['decimals'])
