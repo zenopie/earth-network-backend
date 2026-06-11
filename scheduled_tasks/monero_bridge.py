@@ -396,6 +396,40 @@ def mark_withdrawal_sent(
         conn.close()
 
 
+def get_withdrawals_by_status(statuses: List[str]) -> List[Dict[str, Any]]:
+    """Get all withdrawals in any of the given statuses."""
+    if not statuses:
+        return []
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join("?" for _ in statuses)
+        cur.execute(f"SELECT * FROM withdrawals WHERE status IN ({placeholders})", statuses)
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def reset_withdrawal_to_pending(withdrawal_id: int) -> bool:
+    """
+    Reset a withdrawal back to 'pending' so it is retried by the poller.
+    Only applies to 'sending' rows (claimed but confirmed NOT sent on-chain);
+    never auto-reopens a 'failed' row, since those may have failed for reasons
+    that should not be retried automatically.
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE withdrawals SET status = 'pending', error = NULL WHERE id = ? AND status = 'sending'",
+            (withdrawal_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def mark_withdrawal_failed(withdrawal_id: int, error: str) -> None:
     """Mark a withdrawal as failed."""
     conn = _get_conn()
@@ -499,6 +533,16 @@ def get_incoming_transfers_sync() -> List:
 def get_balance_sync() -> Dict[str, int]:
     """Get wallet balance (synchronous, for use with executor)."""
     return get_wallet().get_balance()
+
+
+def get_outgoing_transfers_sync() -> List[Dict[str, Any]]:
+    """Get outgoing transfers (synchronous, for use with executor)."""
+    return get_wallet().get_outgoing_transfers()
+
+
+def refresh_wallet_sync() -> None:
+    """Block until the wallet is synced to the daemon (synchronous, for executor)."""
+    get_wallet().refresh()
 
 
 def send_transfer_sync(address: str, amount_atomic: int) -> Dict[str, Any]:
@@ -776,6 +820,119 @@ async def _complete_withdrawal_on_contract(withdrawal_id: int, monero_txid: str)
     print(f"[MoneroBridge] CompleteWithdrawal confirmed: {tx_result.tx_hash}", flush=True)
 
 
+async def reconcile_inflight_withdrawals() -> None:
+    """
+    Reconcile withdrawals left in an ambiguous state by a previous crash/restart.
+
+    Two cases are dangerous to guess at:
+      - 'sending': the row was claimed but we crashed before recording the
+        result, so we don't know whether the XMR went out.
+      - 'failed':  the row was marked failed, but the send may have actually
+        broadcast (e.g. the RPC response timed out after the daemon accepted
+        the tx), in which case the XMR really left the wallet.
+
+    We resolve both by matching against the wallet's own outgoing transfers
+    (destination address + exact amount). A match means the XMR went out:
+    mark the row 'sent' with the real txid and attempt CompleteWithdrawal. A
+    'sending' row with no match means nothing was sent: reset it to 'pending'
+    for a normal retry. A 'failed' row with no match is left untouched.
+
+    Each on-chain destination is consumed at most once so two identical
+    withdrawals can't both match the same single send.
+    """
+    inflight = get_withdrawals_by_status(["sending", "failed"])
+    if not inflight:
+        return
+
+    loop = asyncio.get_event_loop()
+
+    # Refresh first so the wallet's outgoing-transfer view is current. Marking a
+    # matched row 'sent' is safe regardless, but resetting an unmatched 'sending'
+    # row back to 'pending' triggers a re-send, so we only allow that when the
+    # wallet is confirmed synced. If refresh fails, we stay conservative and
+    # leave unmatched 'sending' rows alone.
+    refreshed = False
+    try:
+        await loop.run_in_executor(_executor, refresh_wallet_sync)
+        refreshed = True
+    except Exception as e:
+        print(f"[MoneroBridge] Reconcile: wallet refresh failed, will not reset any rows: {e}", flush=True)
+
+    try:
+        outgoing = await loop.run_in_executor(_executor, get_outgoing_transfers_sync)
+    except Exception as e:
+        print(f"[MoneroBridge] Reconcile: could not fetch outgoing transfers: {e}", flush=True)
+        return
+
+    # Flatten to consumable (txid, address, amount, fee) destination entries.
+    sent_entries: List[Dict[str, Any]] = []
+    for tx in outgoing:
+        dests = tx.get("destinations") or []
+        if dests:
+            for d in dests:
+                sent_entries.append({
+                    "txid": tx["txid"],
+                    "address": d.get("address", ""),
+                    "amount": d.get("amount", 0),
+                    "fee": tx.get("fee", 0),
+                    "used": False,
+                })
+        else:
+            # Wallet didn't record destinations (e.g. single-dest tx): fall back
+            # to the top-level address/amount.
+            sent_entries.append({
+                "txid": tx["txid"],
+                "address": tx.get("address", ""),
+                "amount": tx.get("amount", 0),
+                "fee": tx.get("fee", 0),
+                "used": False,
+            })
+
+    for w in inflight:
+        match = None
+        for entry in sent_entries:
+            if entry["used"]:
+                continue
+            if entry["address"] == w["monero_address"] and entry["amount"] == w["amount_atomic"]:
+                match = entry
+                break
+
+        if match:
+            match["used"] = True
+            mark_withdrawal_sent(
+                w["id"],
+                monero_txid=match["txid"],
+                monero_tx_key="",
+                fee_atomic=match["fee"],
+            )
+            print(
+                f"[MoneroBridge] Reconcile: withdrawal {w['id']} (was '{w['status']}') "
+                f"found on-chain as {match['txid'][:16]}..., marked sent",
+                flush=True,
+            )
+            contract_withdrawal_id = w.get("contract_withdrawal_id")
+            if contract_withdrawal_id is not None and config.XMR_MINTER_CONTRACT:
+                try:
+                    await _complete_withdrawal_on_contract(contract_withdrawal_id, match["txid"])
+                except Exception as e:
+                    print(f"[MoneroBridge] Reconcile: CompleteWithdrawal failed for {w['id']}: {e}", flush=True)
+        elif w["status"] == "sending":
+            if not refreshed:
+                # Can't trust "not found" without a synced wallet; leave it for
+                # the next startup / manual handling rather than risk a re-send.
+                print(
+                    f"[MoneroBridge] Reconcile: withdrawal {w['id']} unresolved "
+                    f"(wallet not refreshed), left in 'sending'",
+                    flush=True,
+                )
+            elif reset_withdrawal_to_pending(w["id"]):
+                print(
+                    f"[MoneroBridge] Reconcile: withdrawal {w['id']} not found on-chain, reset to pending",
+                    flush=True,
+                )
+        # 'failed' with no match: leave untouched for manual inspection.
+
+
 # --- Contract Sync Functions ---
 
 def get_subaddress_at_index_sync(index: int) -> str:
@@ -891,6 +1048,12 @@ async def init_monero_bridge():
                 await loop.run_in_executor(_executor, _monero_wallet.connect)
 
                 balance = await loop.run_in_executor(_executor, get_balance_sync)
+
+                # Reconcile any withdrawals left in-flight by a previous crash
+                try:
+                    await reconcile_inflight_withdrawals()
+                except Exception as e:
+                    print(f"[MoneroBridge] Reconcile failed: {e}", flush=True)
 
                 # Sync deposit indices from contract
                 synced = await sync_deposit_indices_from_contract()

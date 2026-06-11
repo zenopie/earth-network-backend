@@ -214,6 +214,32 @@ class MoneroWallet:
 
         return transfers
 
+    def get_outgoing_transfers(self) -> List[Dict[str, Any]]:
+        """
+        Get outgoing transfers (sent + still-pending) recorded by this wallet,
+        including per-destination address/amount. Used for crash reconciliation:
+        the wallet persists an outgoing tx as soon as it broadcasts, so this
+        reflects sends even if the caller never recorded the result.
+        """
+        result = self._rpc_call("get_transfers", {
+            "out": True,
+            "pending": True,
+            "account_index": 0,
+        })
+
+        transfers: List[Dict[str, Any]] = []
+        for tx in (result.get("out", []) + result.get("pending", [])):
+            transfers.append({
+                "txid": tx.get("txid", ""),
+                "amount": tx.get("amount", 0),
+                "fee": tx.get("fee", 0),
+                "address": tx.get("address", ""),
+                "destinations": tx.get("destinations", []) or [],
+                "timestamp": tx.get("timestamp", 0),
+                "confirmations": tx.get("confirmations", 0),
+            })
+        return transfers
+
     def get_height(self) -> int:
         """Get current wallet height."""
         result = self._rpc_call("get_height")
