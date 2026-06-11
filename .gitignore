@@ -58,4 +58,6 @@ nohup.out
 .csca_cache/
 merkle_data.db
 analytics.db
+monero_bridge.db
 analyticsData.json
+used_tx_ids.json

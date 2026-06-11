@@ -353,6 +353,29 @@ def get_pending_withdrawals() -> List[Dict[str, Any]]:
         conn.close()
 
 
+def mark_withdrawal_sending(withdrawal_id: int) -> bool:
+    """
+    Atomically claim a pending withdrawal for sending.
+
+    Transitions 'pending' -> 'sending' in a single UPDATE so the row is no
+    longer picked up by get_pending_withdrawals(). If the process crashes
+    after this point but before the XMR send completes, the row is left in
+    'sending' and is NOT auto-resent (avoids double-spend); it must be
+    reconciled manually. Returns True only if this caller won the claim.
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE withdrawals SET status = 'sending' WHERE id = ? AND status = 'pending'",
+            (withdrawal_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def mark_withdrawal_sent(
     withdrawal_id: int,
     monero_txid: str,
@@ -676,6 +699,13 @@ async def _process_pending_withdrawals():
             balance = await loop.run_in_executor(_executor, get_balance_sync)
             if balance["unlocked_balance"] < withdrawal["amount_atomic"]:
                 print(f"[MoneroBridge] Insufficient balance for withdrawal {withdrawal['id']}", flush=True)
+                continue
+
+            # Atomically claim this row before sending. If we lose the claim
+            # (already taken by a concurrent run), skip it. Once claimed, a
+            # crash before mark_withdrawal_sent leaves it in 'sending' and it
+            # will NOT be auto-resent, preventing a double XMR transfer.
+            if not mark_withdrawal_sending(withdrawal["id"]):
                 continue
 
             # Send XMR (run in thread)
