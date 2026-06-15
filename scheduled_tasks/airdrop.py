@@ -269,10 +269,15 @@ def init_db() -> None:
                 block_time TEXT,
                 total_addresses INTEGER NOT NULL,
                 total_amount TEXT NOT NULL,
-                merkle_root TEXT NOT NULL
+                merkle_root TEXT NOT NULL,
+                onchain_confirmed INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        # Migrate older DBs that predate the onchain_confirmed column.
+        existing_cols = {r[1] for r in cur.execute("PRAGMA table_info(merkle_runs)").fetchall()}
+        if "onchain_confirmed" not in existing_cols:
+            cur.execute("ALTER TABLE merkle_runs ADD COLUMN onchain_confirmed INTEGER NOT NULL DEFAULT 0")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS merkle_leaves (
@@ -348,13 +353,33 @@ def _insert_leaves(run_id: int, leaves: Dict[str, str], leaf_hashes: Optional[Di
 
 
 def latest_run_row() -> Optional[sqlite3.Row]:
-    """Public function to get latest run row (used by router)."""
+    """
+    Latest run whose merkle root has been confirmed on-chain (used by router).
+
+    Serving only confirmed runs guarantees the proofs handed to the frontend
+    verify against the root the airdrop contract actually holds. A run that was
+    generated but never successfully submitted (e.g. submit tx failed) is
+    intentionally invisible here, so claimers keep getting the previous,
+    on-chain root instead of an "Invalid merkle proof" error.
+    """
     conn = _get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM merkle_runs ORDER BY id DESC LIMIT 1")
+        cur.execute("SELECT * FROM merkle_runs WHERE onchain_confirmed = 1 ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         return row
+    finally:
+        conn.close()
+
+
+def mark_run_confirmed(run_id: int) -> None:
+    """Mark a run's merkle root as confirmed on-chain. Call only after the
+    ResetAirdrop tx for this run's root has succeeded."""
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE merkle_runs SET onchain_confirmed = 1 WHERE id = ?", (run_id,))
+        conn.commit()
     finally:
         conn.close()
 
@@ -457,9 +482,10 @@ def run_merkle_job(verbose: bool = False) -> Dict:
 
     run_id = _insert_run(meta)
     _insert_leaves(run_id, leaves_map, leaf_hashes_map, proofs_map)
+    meta["run_id"] = run_id
 
     if verbose:
-        print(f"[*] Merkle run {run_id} stored with root {root_hex}", flush=True)
+        print(f"[*] Merkle run {run_id} stored (unconfirmed) with root {root_hex}", flush=True)
 
     return meta
 
@@ -585,7 +611,9 @@ async def scheduled_weekly_job() -> None:
             print("[AIRDROP] MERKLE_VALIDATOR not set; skipping scheduled Merkle job.", flush=True)
             return
 
-        # Run merkle job and get metadata (sync, CPU-bound)
+        # Run merkle job and get metadata (sync, CPU-bound).
+        # The run is stored as unconfirmed; the API will not serve its proofs
+        # until the root is confirmed on-chain below.
         print("[AIRDROP] Running merkle job...", flush=True)
         meta = run_merkle_job(verbose=True)
 
@@ -593,12 +621,17 @@ async def scheduled_weekly_job() -> None:
         print("[AIRDROP] Claiming allocation from staking contract...", flush=True)
         await claim_allocation()
 
-        # Submit to contract (via tx_queue - no manual sleep needed, queue handles sequencing)
+        # Submit to contract (via tx_queue - no manual sleep needed, queue handles sequencing).
+        # Raises if the tx does not succeed, leaving the run unconfirmed.
         print("[AIRDROP] Submitting airdrop to contract...", flush=True)
         await submit_airdrop_to_contract(
             merkle_root=meta["merkle_root"],
             total_stake=meta["total_amount"]
         )
+
+        # Only now is the on-chain root the one matching this run's proofs.
+        mark_run_confirmed(meta["run_id"])
+        print(f"[AIRDROP] Run {meta['run_id']} confirmed on-chain (root {meta['merkle_root']})", flush=True)
 
         print("[AIRDROP] Weekly job completed successfully", flush=True)
 
