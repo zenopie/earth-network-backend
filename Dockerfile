@@ -1,41 +1,32 @@
 # Dockerfile
+#
+# The service is one FastAPI app now, so this is a plain uvicorn image: no
+# monero-wallet-rpc to fetch and no supervisor multiplexing processes.
 
-# Use x86 platform for wallet-rpc compatibility
 FROM --platform=linux/amd64 python:3.11-slim
 
 WORKDIR /app
 
 COPY requirements.txt .
 
-# Install system dependencies + supervisor + wget for wallet-rpc
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    pkg-config \
-    git \
-    libsecp256k1-dev \
-    supervisor \
-    wget \
-    bzip2 \
+# build-essential stays: cosmpy's crypto dependencies fall back to building from
+# source when there is no wheel for the platform. It is removed again in the same
+# layer so it does not ship in the image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-# Download monero-wallet-rpc
-ARG MONERO_VERSION=v0.18.3.4
-RUN wget -q https://downloads.getmonero.org/cli/monero-linux-x64-${MONERO_VERSION}.tar.bz2 \
-    && tar -xjf monero-linux-x64-${MONERO_VERSION}.tar.bz2 \
-    && mv monero-x86_64-linux-gnu-${MONERO_VERSION}/monero-wallet-rpc /usr/local/bin/ \
-    && rm -rf monero-linux-x64-${MONERO_VERSION}.tar.bz2 monero-x86_64-linux-gnu-${MONERO_VERSION}
-
-# Create wallet directory
-RUN mkdir -p /wallet
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Copy supervisord config
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# Replay-protection state. Mount a volume here: a redeployed container with a
+# fresh filesystem forgets which SSV transaction ids it has already honoured,
+# and every one of them becomes replayable.
+ENV STATE_DB=/app/state/ads_for_gas.db
+RUN mkdir -p /app/state
+VOLUME ["/app/state"]
 
 EXPOSE 8000
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

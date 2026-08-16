@@ -1,121 +1,45 @@
-# /main.py
-import uvicorn
-import os
+"""earth ads-for-gas service.
+
+One job: turn a verified rewarded-ad view into enough ERTH for a new human to
+make their first transaction. Everything else the old Secret-era backend did is
+gone — registration is proved on-device and verified on-chain now, and the CSCA
+trust store moved to the chain repo where it is enforced.
+"""
 import logging
-from datetime import timezone
+
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
-from registry_loader import load_registry
-from services.tx_queue import get_tx_queue
+from routers import ads
+from services import chain
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-# Import the individual router modules
-from routers import analytics, verify, airdrop, secret_query, faucet, monero_bridge
-# Import scheduled tasks
-from scheduled_tasks import (
-    update_pool_rewards,
-    update_analytics_job,
-    init_analytics,
-    scheduled_weekly_job
-)
-from scheduled_tasks.monero_bridge import init_monero_bridge, poll_deposits
 
-app = FastAPI(
-    title="Erth Network API",
-    description="Backend services for Erth Network applications.",
-    version="1.4.0" # Version bump to reflect change
-)
+app = FastAPI(title="earth ads-for-gas", version="1.0.0")
+app.include_router(ads.router)
 
-# --- Middleware ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-# --- Event Handlers & Scheduler ---
-scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
-async def startup_event():
-    """Initializes analytics and starts the scheduler."""
-    import sys
-    print("\n[Startup] ERTH Network Backend starting...", flush=True)
+def startup() -> None:
+    chain.init()
 
-    # Load contract registry from on-chain
+
+@app.get("/health")
+def health():
+    """Reports the hot wallet's balance — the thing that silently stops onboarding.
+
+    When this runs dry every ad view is wasted: the callback verifies, the id is
+    consumed, and the send fails. Worth alerting on.
+    """
     try:
-        registry_data = load_registry(config.SECRET_LCD_URL, config.SECRET_CHAIN_ID)
-        config.init_contracts_from_registry(registry_data.contracts, registry_data.tokens)
-        print(f"[Startup] Registry: {len(registry_data.contracts)} contracts, {len(registry_data.tokens)} tokens", flush=True)
-    except Exception as e:
-        print(f"[Startup] FATAL: Registry load failed: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        sys.stdout.flush()
-        raise
-
-    # Initialize transaction queue
-    tx_queue = get_tx_queue()
-    await tx_queue.initialize()
-    print(f"[Startup] TX Queue ready: {tx_queue.wallet_address}", flush=True)
-
-    # Initialize analytics
-    await init_analytics()
-    scheduler.add_job(update_analytics_job, 'interval', hours=1, id='analytics_update')
-
-    # Schedule other jobs
-    scheduler.add_job(scheduled_weekly_job, 'cron', day_of_week='sun', hour=0, minute=0, timezone=timezone.utc, id='weekly_merkle')
-    scheduler.add_job(update_pool_rewards, 'cron', hour=0, minute=0, timezone=timezone.utc, id='daily_pool_rewards')
-
-    # Initialize Monero bridge
-    await init_monero_bridge()
-    if config.MONERO_BRIDGE_ENABLED:
-        scheduler.add_job(poll_deposits, 'interval', seconds=30, id='monero_deposit_poll')
-
-    # Optionally run Merkle job once on startup
-    if getattr(config, "MERKLE_RUN_ON_STARTUP", False):
-        try:
-            validator = getattr(config, "MERKLE_VALIDATOR", "").strip()
-            if validator:
-                print("[Startup] Running Merkle job...", flush=True)
-                await scheduled_weekly_job()
-        except Exception as e:
-            print(f"[Startup] Merkle failed: {e}", flush=True)
-
-    scheduler.start()
-    print("[Startup] Ready\n", flush=True)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shuts down the scheduler and transaction queue."""
-    scheduler.shutdown()
-    await get_tx_queue().close()
-    print("Application shutdown.")
-
-# --- API Routers ---
-app.include_router(analytics.router, tags=["Analytics"])
-app.include_router(verify.router, tags=["Verification"])
-app.include_router(airdrop.router, tags=["Airdrop"])
-app.include_router(secret_query.router, tags=["SecretQuery"])
-app.include_router(faucet.router, tags=["Ads for Gas"])
-app.include_router(monero_bridge.router, tags=["Monero Bridge"])
-
-
-@app.get("/", tags=["Health Check"])
-async def read_root():
-    return {"message": "Welcome to the Erth Network API"}
-
-# --- Run Server ---
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=config.WEBHOOK_PORT,
-        reload=True,
-        access_log=False
-    )
+        remaining = chain.balance()
+    except Exception as exc:
+        return {"status": "degraded", "error": str(exc)}
+    return {
+        "status": "ok",
+        "wallet": chain.wallet_address(),
+        "balance_uerth": remaining,
+        "dust_uerth": config.DUST_UERTH,
+        "grants_remaining": remaining // config.DUST_UERTH if config.DUST_UERTH else 0,
+    }
