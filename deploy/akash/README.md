@@ -57,6 +57,22 @@ compares against the last path segment, so the full form belongs here.
 Leaving it unset is not neutral: the service starts and skips the check, which
 lets a valid Google signature from *any* of your ad units claim a grant.
 
+## Do not lease this on the chain's provider
+
+`EARTH_NODE_URL` points at the chain provider's public hostname and NodePort. On
+the same provider that is a hairpin from inside the cluster back to its own
+NodePort, and it hangs instead of failing.
+
+The symptom is badly disguised. cosmpy builds its `LedgerClient` inside FastAPI's
+startup event, so the hang stops uvicorn before it accepts connections — the port
+completes a TCP handshake from the socket backlog and then never answers, and
+the lease reports `ready=1` because nothing here defines a readiness probe. It
+reads as a network problem rather than a hung process.
+
+Same image and same environment on a different provider came up on the second
+poll. If you ever want them co-located, put both services in one SDL instead and
+let the backend reach the node by service name over the cluster network.
+
 ## Watch the balance
 
 `/health` reports `grants_remaining`. When the wallet runs dry the failure is
