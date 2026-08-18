@@ -1,0 +1,105 @@
+---
+# Akash SDL — earth ads-for-gas service.
+#
+# One FastAPI app. It holds a hot key and turns a Google-signed rewarded-ad
+# callback into enough ERTH for a new human to make their first transaction.
+#
+# See README.md in this directory. Read the note on GAS_WALLET_MNEMONIC before
+# deploying: it is the one thing here that is genuinely a secret, and Akash's
+# trust model does not keep it one.
+version: "2.0"
+
+services:
+  app:
+    # Pin a digest, not a tag. CI builds and pushes on `v*.*.*` tags only, and
+    # the digest for a release is written into docker-compose-secretvm.yaml by
+    # that same workflow, so it can be copied from there.
+    image: ghcr.io/zenopie/earth-network-backend:v1.1.46
+
+    env:
+      # The chain this grants dust on. cosmpy wants a scheme-prefixed URL, and
+      # REST is what the node exposes.
+      - EARTH_NODE_URL=rest+http://provider.hurricane.akash.pub:31920
+      - EARTH_CHAIN_ID=earth
+      - EARTH_PREFIX=earth
+      - EARTH_DENOM=uerth
+      # The chain runs --minimum-gas-prices 0uerth, but cosmpy still prices the
+      # fee it puts in the tx; leaving the default is harmless and survives the
+      # node later requiring a real minimum.
+      - EARTH_GAS_PRICE=0.025
+      # What one verified ad view is worth. Has to materialise the account and
+      # cover a registration (~400k gas).
+      - DUST_UERTH=50000
+      #
+      # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
+      # the provider hosting the lease, so a mnemonic written here is a mnemonic
+      # handed to a third party — and this one holds spendable ERTH, unlike the
+      # chain's validator key which at worst costs you a devnet.
+      #
+      # Set it at deploy time instead, by substituting it into the SDL that is
+      # POSTed rather than into the file that is committed. It still reaches the
+      # provider either way; what this avoids is it reaching the repository.
+      #
+      # ADMOB_AD_UNIT_ID is likewise unset. The service starts without it and
+      # simply skips the ad-unit check, which is fine for a devnet and wrong for
+      # anything real — an unset unit id means any valid Google signature from
+      # any of your ad units can claim a grant.
+
+    expose:
+      # HTTP API: /ads-callback for Google's SSV callback, /health for the
+      # balance. Exposed on a mapped port rather than `as: 80` — see the chain
+      # repo's SDL for why; the generated ingress hostname was not reliable.
+      #
+      # AdMob's callback URL has to point at whatever port this comes back as,
+      # so it must be updated after any lease change.
+      - port: 8000
+        as: 8000
+        to:
+          - global: true
+
+    params:
+      storage:
+        state:
+          # Replay protection for SSV transaction ids.
+          mount: /app/state
+          readOnly: false
+
+profiles:
+  compute:
+    app:
+      resources:
+        # Measured, not guessed: the service idles at 69 MB RSS with the wallet
+        # built and a /health round trip served, so 256Mi is roughly 4x what it
+        # uses. It is one process serving a callback that is rate-limited by how
+        # fast humans can watch adverts.
+        cpu:
+          units: 0.1
+        memory:
+          size: 256Mi
+        storage:
+          # Root: python:3.11-slim plus cosmpy's dependency tree.
+          - size: 2Gi
+          # The replay database. Losing it does not lose money, it loses the
+          # record of which SSV transaction ids were already honoured — and
+          # every one of them becomes replayable against the hot wallet.
+          - name: state
+            size: 1Gi
+            attributes:
+              persistent: true
+              class: beta3
+
+  placement:
+    dcloud:
+      pricing:
+        app:
+          denom: uakt
+          amount: 10000
+
+deployment:
+  app:
+    dcloud:
+      profile: app
+      # One replica. Sends are serialised behind a single lock on one account
+      # sequence; a second replica shares the account but not the lock, and they
+      # would race to reuse the same sequence number.
+      count: 1
