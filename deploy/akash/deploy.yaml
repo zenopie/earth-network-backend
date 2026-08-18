@@ -19,7 +19,7 @@ services:
     env:
       # The chain this grants dust on. cosmpy wants a scheme-prefixed URL, and
       # REST is what the node exposes.
-      - EARTH_NODE_URL=rest+http://provider.hurricane.akash.pub:31920
+      - EARTH_NODE_URL=rest+http://provider.hurricane.akash.pub:32317
       - EARTH_CHAIN_ID=earth
       - EARTH_PREFIX=earth
       - EARTH_DENOM=uerth
