@@ -75,7 +75,7 @@ services:
         as: 8000
         to:
           # Both. The mapped port keeps working while the tunnel hostname is
-          # being confirmed; drop `global` once ads.* is verified, so the
+          # being confirmed; drop `global` once api.* is verified, so the
           # callback endpoint is reachable only through Cloudflare.
           - global: true
           - service: cloudflared
