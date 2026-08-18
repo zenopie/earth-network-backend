@@ -74,7 +74,11 @@ services:
       - port: 8000
         as: 8000
         to:
+          # Both. The mapped port keeps working while the tunnel hostname is
+          # being confirmed; drop `global` once ads.* is verified, so the
+          # callback endpoint is reachable only through Cloudflare.
           - global: true
+          - service: cloudflared
 
     params:
       storage:
@@ -82,6 +86,27 @@ services:
           # Replay protection for SSV transaction ids.
           mount: /app/state
           readOnly: false
+
+  # Cloudflare Tunnel connector. Dials out, so it needs no inbound port.
+  #
+  # It matters more here than on the chain: AdMob's SSV callback URL is
+  # configured in Google's console against whatever address this service has,
+  # and Akash reassigns the external port on every new lease. A dead callback
+  # URL fails silently — Google records a delivery, the user watched an advert,
+  # and nothing arrives.
+  #
+  # Configure the Public Hostname on Cloudflare's side to http://app:8000, which
+  # resolves over the cluster network because `app` exposes 8000 to this service.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+    # TUNNEL_TOKEN is injected at deploy time, like GAS_WALLET_MNEMONIC. It lives
+    # in this repo's gitignored .env; anyone holding it can attach a replica to
+    # the tunnel and receive its traffic.
+    env: []
 
 profiles:
   compute:
@@ -107,10 +132,22 @@ profiles:
               persistent: true
               class: beta3
 
+    cloudflared:
+      resources:
+        cpu:
+          units: 0.1
+        memory:
+          size: 128Mi
+        storage:
+          - size: 512Mi
+
   placement:
     dcloud:
       pricing:
         app:
+          denom: uakt
+          amount: 10000
+        cloudflared:
           denom: uakt
           amount: 10000
 
@@ -121,4 +158,8 @@ deployment:
       # One replica. Sends are serialised behind a single lock on one account
       # sequence; a second replica shares the account but not the lock, and they
       # would race to reuse the same sequence number.
+      count: 1
+  cloudflared:
+    dcloud:
+      profile: cloudflared
       count: 1
