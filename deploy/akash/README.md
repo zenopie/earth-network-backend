@@ -44,11 +44,18 @@ the external port is assigned per lease. If it points at a dead port the failure
 is quiet in the worst way: users watch ads, Google records a delivery, and
 nothing arrives.
 
-## `ADMOB_AD_UNIT_ID` is unset
+## `ADMOB_AD_UNIT_ID`
 
-The service starts without it and skips the ad-unit check. Fine for a devnet,
-wrong for anything real — unset means a valid Google signature from *any* of
-your ad units can claim a grant. Set it before this faces users.
+Set to `ca-app-pub-8662126294069074/9040854138`, the mobile app's
+`REWARDED_AD_UNIT_ID` (`HostActivity.kt`) — the unit whose
+`ServerSideVerificationOptions` carry the wallet address as `custom_data`. The
+interstitial unit in the same file is not it and never calls back.
+
+Google sends the bare numeric half (`9040854138`) in the callback; the service
+compares against the last path segment, so the full form belongs here.
+
+Leaving it unset is not neutral: the service starts and skips the check, which
+lets a valid Google signature from *any* of your ad units claim a grant.
 
 ## Watch the balance
 

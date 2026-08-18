@@ -30,6 +30,15 @@ services:
       # What one verified ad view is worth. Has to materialise the account and
       # cover a registration (~400k gas).
       - DUST_UERTH=50000
+      # The rewarded ad unit allowed to trigger a grant. Must match the mobile
+      # app's REWARDED_AD_UNIT_ID (HostActivity.kt) — that is the unit whose
+      # ServerSideVerificationOptions carry the wallet address as custom_data.
+      # Not the interstitial unit, which never calls back.
+      #
+      # With this unset the service still starts and simply skips the check,
+      # which would let a valid Google signature from any of your ad units claim
+      # a grant.
+      - ADMOB_AD_UNIT_ID=ca-app-pub-8662126294069074/9040854138
       #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic
