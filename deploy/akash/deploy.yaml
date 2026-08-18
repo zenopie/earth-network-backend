@@ -29,7 +29,7 @@ services:
       # pod reports ready=1 because nothing here defines a readiness probe.
       # Deployed on hurricane alongside the chain it did exactly that; moved to
       # another provider, unchanged, it came up on the second poll.
-      - EARTH_NODE_URL=rest+http://provider.hurricane.akash.pub:32317
+      - EARTH_NODE_URL=rest+http://provider.hurricane.akash.pub:30572
       - EARTH_CHAIN_ID=earth
       - EARTH_PREFIX=earth
       - EARTH_DENOM=uerth
