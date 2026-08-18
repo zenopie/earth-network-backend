@@ -17,7 +17,7 @@ PORT = int(os.getenv("PORT", "8000"))
 # "grpc+http://host:9090". REST is the safer default — a node exposing only the
 # API port is a supported deployment, and that is what the wallet apps use too.
 EARTH_NODE_URL = os.getenv("EARTH_NODE_URL", "rest+http://localhost:1317")
-EARTH_CHAIN_ID = os.getenv("EARTH_CHAIN_ID", "earth")
+EARTH_CHAIN_ID = os.getenv("EARTH_CHAIN_ID", "earth-1")
 EARTH_PREFIX = os.getenv("EARTH_PREFIX", "earth")
 EARTH_DENOM = os.getenv("EARTH_DENOM", "uerth")
 EARTH_GAS_PRICE = float(os.getenv("EARTH_GAS_PRICE", "0.025"))

@@ -30,7 +30,7 @@ services:
       # Deployed on hurricane alongside the chain it did exactly that; moved to
       # another provider, unchanged, it came up on the second poll.
       - EARTH_NODE_URL=rest+https://lcd.erth.network
-      - EARTH_CHAIN_ID=earth
+      - EARTH_CHAIN_ID=earth-1
       - EARTH_PREFIX=earth
       - EARTH_DENOM=uerth
       # The chain runs --minimum-gas-prices 0uerth, but cosmpy still prices the
