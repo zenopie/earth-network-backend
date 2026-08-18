@@ -1,6 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-.env
+# .env* — not bare `.env`. A pattern of `.env` matches that exact filename and
+# nothing else, so `.env.local` was tracked and reached a public repo with a
+# wallet mnemonic and a Monero seed in it.
+.env*
 # Replay-protection state; local to each deployment.
 *.db
