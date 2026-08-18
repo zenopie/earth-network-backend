@@ -99,7 +99,12 @@ services:
   # resolves over the cluster network because `app` exposes 8000 to this service.
   cloudflared:
     image: cloudflare/cloudflared:latest
+    # `cloudflared` first: Akash's `command` maps to Kubernetes `command`, which
+    # REPLACES the image entrypoint rather than appending to it. Without the
+    # binary name the container tries to exec something called `tunnel` and the
+    # service never starts — the lease reports available=0/1 with no other clue.
     command:
+      - cloudflared
       - tunnel
       - --no-autoupdate
       - run
