@@ -14,7 +14,7 @@ services:
     # Pin a digest, not a tag. CI builds and pushes on `v*.*.*` tags only, and
     # the digest for a release is written into docker-compose-secretvm.yaml by
     # that same workflow, so it can be copied from there.
-    image: ghcr.io/zenopie/earth-network-backend:v1.1.46
+    image: ghcr.io/zenopie/earth-network-backend@sha256:ecb26e2536864f12a745f7e88edd0ce1e77c0b2d82c614bd231efa1df25cc206
 
     env:
       # The chain this grants dust on. cosmpy wants a scheme-prefixed URL, and
