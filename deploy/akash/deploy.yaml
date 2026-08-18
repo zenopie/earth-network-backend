@@ -65,6 +65,10 @@ services:
       # any of your ad units can claim a grant.
 
     expose:
+      # Tunnel-only. Nothing is published on a provider port: every entry below
+      # goes to `cloudflared`, so the only way in is a Cloudflare hostname.
+      # Verified serving before the mapped ports were removed, because dropping
+      # them is a structural change and cannot be undone in place.
       # HTTP API: /ads-callback for Google's SSV callback, /health for the
       # balance. Exposed on a mapped port rather than `as: 80` — see the chain
       # repo's SDL for why; the generated ingress hostname was not reliable.
@@ -74,10 +78,6 @@ services:
       - port: 8000
         as: 8000
         to:
-          # Both. The mapped port keeps working while the tunnel hostname is
-          # being confirmed; drop `global` once api.* is verified, so the
-          # callback endpoint is reachable only through Cloudflare.
-          - global: true
           - service: cloudflared
 
     params:
