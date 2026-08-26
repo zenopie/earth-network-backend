@@ -48,7 +48,11 @@ services:
       # With this unset the service still starts and simply skips the check,
       # which would let a valid Google signature from any of your ad units claim
       # a grant.
-      - ADMOB_AD_UNIT_ID=ca-app-pub-8662126294069074/9040854138
+      # Both platforms, comma-separated. An ad unit belongs to one app on one
+      # platform, and Android and iOS both call this backend — the callback is
+      # checked for membership, so a single value here rejected every iOS ad
+      # view before its signature was even verified.
+      - ADMOB_AD_UNIT_ID=ca-app-pub-8662126294069074/9040854138,ca-app-pub-8662126294069074/1484036231
       #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic

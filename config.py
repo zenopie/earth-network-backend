@@ -37,8 +37,20 @@ GAS_WALLET_MNEMONIC = os.getenv("GAS_WALLET_MNEMONIC", "")
 DUST_UERTH = int(os.getenv("DUST_UERTH", "50000"))
 
 # --- AdMob ---
-# The rewarded ad unit that may trigger a grant. Google sends the numeric id.
-ADMOB_AD_UNIT_ID = os.getenv("ADMOB_AD_UNIT_ID", "")
+# The rewarded ad units that may trigger a grant.
+#
+# Plural, because an ad unit belongs to one platform and both apps call this one
+# backend: Android's unit will never serve on iOS and vice versa. Comma-separate
+# them. A single value still works, which is what every existing deployment has.
+#
+# Google sends the bare numeric id in the callback, not the full `ca-app-pub-…/…`
+# form, so each entry is reduced to the part after the last slash and compared
+# against that. Writing either form in the environment is therefore fine.
+ADMOB_AD_UNIT_IDS = frozenset(
+    unit.rsplit("/", 1)[-1]
+    for unit in (u.strip() for u in os.getenv("ADMOB_AD_UNIT_ID", "").split(","))
+    if unit
+)
 
 # Google's rotating public keys for Server-Side Verification.
 GOOGLE_SSV_KEYS_URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"

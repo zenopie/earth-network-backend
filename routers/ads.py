@@ -42,10 +42,18 @@ async def ads_callback(request: Request):
         return {"status": "error", "message": "missing parameters"}
 
     # Google sends the bare numeric id, not the full ca-app-pub form.
-    if config.ADMOB_AD_UNIT_ID:
-        expected = config.ADMOB_AD_UNIT_ID.rsplit("/", 1)[-1]
-        if ad_unit and ad_unit != expected:
-            logger.warning("ad unit %s is not %s", ad_unit, expected)
+    #
+    # Membership, not equality: Android and iOS have separate units for the same
+    # reward and both call this endpoint. Comparing against one of them rejected
+    # every callback from the other platform here, before the signature was even
+    # checked — an ad watched, no dust, and nothing in the app to explain it.
+    if config.ADMOB_AD_UNIT_IDS:
+        if ad_unit and ad_unit not in config.ADMOB_AD_UNIT_IDS:
+            logger.warning(
+                "ad unit %s is not one of %s",
+                ad_unit,
+                ", ".join(sorted(config.ADMOB_AD_UNIT_IDS)),
+            )
             return {"status": "error", "message": "unexpected ad unit"}
 
     if not ssv.verify(query_string, signature, key_id, await ssv.public_keys()):
