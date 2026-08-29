@@ -98,6 +98,16 @@ async def send_dust(address: str) -> str:
 def _send_blocking(destination: Address) -> str:
     # Broadcast. Anything raised here happened before the transaction reached a
     # mempool, so nothing was sent.
+    #
+    # TODO(double-pay): this assumption doesn't hold for a network error *after*
+    # the node accepted the tx. send_tokens does the broadcast itself, so a
+    # timeout/dropped connection once the tx is in the mempool raises here, the
+    # caller's bare `except` releases the transaction_id, Google retries, and the
+    # view is paid twice while the first send still lands. Low severity: 50k
+    # uerth per event, needs a fault in this exact window plus a retry, not
+    # attacker-forceable. Fix: wrap this call and classify connection/timeout as
+    # SendUnresolved (keep the id claimed); only re-raise provable rejections
+    # (bad address, signing failure) as ordinary errors that release the id.
     tx = _client.send_tokens(destination, config.DUST_UERTH, config.EARTH_DENOM, _wallet)
     tx_hash = str(tx.tx_hash)
 
