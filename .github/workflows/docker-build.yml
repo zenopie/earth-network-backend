@@ -1,0 +1,50 @@
+name: Build and Push Docker Image
+
+# Publishes the image that deploy/akash/deploy.yaml pins by digest. Tags only:
+# a push to main should not move what is deployed.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+# packages: write to push to ghcr. contents stays read — this workflow used to
+# commit a generated compose file back to main, which is why it held write.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Get the version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Set lowercase repository name
+        id: set_repo
+        run: echo "REPO_NAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build Docker image
+        run: docker build -t ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:latest -f Dockerfile .
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:latest
+          docker tag ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:latest ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:${{ steps.get_version.outputs.VERSION }}
+          docker push ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:${{ steps.get_version.outputs.VERSION }}
+
+      # The digest is not written anywhere in the repo on purpose. It is a
+      # property of what was published, so bin/digest.sh reads it back from the
+      # registry at deploy time instead of CI committing it to a public branch.
+      - name: Report the published image
+        run: |
+          echo "pushed ghcr.io/${{ steps.set_repo.outputs.REPO_NAME }}:${{ steps.get_version.outputs.VERSION }}"
+          echo "pin it with: bin/digest.sh ${{ steps.get_version.outputs.VERSION }}"

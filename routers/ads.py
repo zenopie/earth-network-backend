@@ -9,6 +9,7 @@ The ad is the Sybil cost. It is paid in attention rather than in ERTH, and it
 pays for itself.
 """
 import logging
+from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Request
 
@@ -30,23 +31,48 @@ async def ads_callback(request: Request):
     # The raw query string, not request.query_params: the signature covers the
     # exact bytes in the exact order Google sent them.
     query_string = request.scope.get("query_string", b"").decode("utf-8")
-    params = dict(request.query_params)
+
+    # Everything the decisions below are made on is read from the *signed*
+    # prefix, and nothing is read from the full query string.
+    #
+    # The signature covers only what precedes `&signature=`, while Starlette's
+    # QueryParams is last-wins — so `dict(request.query_params)` returns a
+    # parameter appended *after* the signature in preference to the one the
+    # signature actually covers. Reading the decisions from there meant a single
+    # captured callback could be replayed with `&custom_data=<attacker>` and a
+    # fresh `&transaction_id=` tacked on the end: the signature still verified
+    # over the untouched prefix, the dust went somewhere else, the replay table
+    # never saw the id it had already honoured, and the ad-unit allowlist was
+    # bypassed the same way. All three checks fell to one appended parameter.
+    #
+    # Duplicates within the signed prefix are refused rather than resolved.
+    # Google does not send them, and picking a winner is how this class of bug
+    # comes back.
+    signed, separator, _ = query_string.partition("&signature=")
+    if not separator:
+        return {"status": "error", "message": "missing parameters"}
+    signed_items = parse_qsl(signed, keep_blank_values=True)
+    if len({name for name, _ in signed_items}) != len(signed_items):
+        logger.warning("callback has duplicate signed parameters")
+        return {"status": "error", "message": "duplicate parameters"}
+    params = dict(signed_items)
 
     address = (params.get("custom_data") or "").strip()
     transaction_id = params.get("transaction_id") or ""
-    signature = params.get("signature") or ""
-    key_id = params.get("key_id") or ""
     ad_unit = params.get("ad_unit") or ""
+
+    # These two are the verification inputs rather than decisions taken on
+    # trust, and they sit after `&signature=` so they are not in the signed
+    # prefix. A forged key_id only selects a key the signature then fails
+    # against.
+    signature = request.query_params.get("signature") or ""
+    key_id = request.query_params.get("key_id") or ""
 
     if not all([address, transaction_id, signature, key_id]):
         return {"status": "error", "message": "missing parameters"}
 
     # Google sends the bare numeric id, not the full ca-app-pub form.
     #
-    # Membership, not equality: Android and iOS have separate units for the same
-    # reward and both call this endpoint. Comparing against one of them rejected
-    # every callback from the other platform here, before the signature was even
-    # checked — an ad watched, no dust, and nothing in the app to explain it.
     # Membership, not equality: Android and iOS have separate units for the same
     # reward and both call this endpoint. Comparing against one of them rejected
     # every callback from the other platform here, before the signature was even

@@ -5,11 +5,10 @@ Same image as the compose deployment; only the hosting primitives differ.
 
 ## Build the image first
 
-**The published image is older than this service.** CI builds on
-`v[0-9]+.[0-9]+.[0-9]+` tags only, and the digest currently in
-`docker-compose-secretvm.yaml` is `v1.1.45`, built from a commit that predates
-the ads-for-gas rewrite — it is still the Secret-era backend. Deploying it gets
-you a different program.
+**Check the published image is not older than this service.** CI builds on
+`v[0-9]+.[0-9]+.[0-9]+` tags only, so an untagged change is not published and
+deploying the last release gets you a different program. `bin/digest.sh <tag>`
+resolves a tag to the digest to pin.
 
     git tag v1.1.46 && git push origin v1.1.46
 

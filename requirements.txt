@@ -1,6 +1,14 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-httpx
-ecdsa
-cosmpy
+# Pinned exactly. This service holds a hot wallet mnemonic, so an unpinned
+# dependency is a key that anyone who can push to any of six packages gets a
+# turn at. Bump deliberately, not by rebuilding.
+#
+# Regenerate the whole set with `pip install -U <pkg>` in a clean venv, then
+# `pip freeze`, rather than editing one line — cosmpy pulls a large transitive
+# tree and pinning the leaves against a moved trunk is how the build breaks in
+# CI rather than locally.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-dotenv==1.2.3
+httpx==0.28.1
+ecdsa==0.19.2
+cosmpy==0.12.2

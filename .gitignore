@@ -7,3 +7,4 @@ __pycache__/
 .env*
 # Replay-protection state; local to each deployment.
 *.db
+.DS_Store
