@@ -10,6 +10,7 @@ import asyncio
 import logging
 
 from cosmpy.aerial.client import LedgerClient, NetworkConfig
+from cosmpy.aerial.exceptions import BroadcastError, QueryTimeoutError
 from cosmpy.aerial.wallet import LocalWallet
 from cosmpy.crypto.address import Address
 
@@ -61,11 +62,29 @@ def balance() -> int:
     return _client.query_bank_balance(_wallet.address(), config.EARTH_DENOM)
 
 
+class SendUnresolved(Exception):
+    """The send was broadcast and its outcome is not known.
+
+    The difference from an ordinary failure is what the caller may do about it.
+    A send that failed did not move coins, so the ad view that paid for it can
+    be handed back. A send whose outcome is unknown may well have landed, and
+    handing the ad view back would let the same callback be paid twice.
+    """
+
+    def __init__(self, tx_hash: str, cause: Exception) -> None:
+        super().__init__(f"tx {tx_hash} was broadcast but not confirmed: {cause}")
+        self.tx_hash = tx_hash
+
+
 async def send_dust(address: str) -> str:
     """Sends DUST_UERTH to address. Returns the tx hash.
 
     Runs the blocking cosmpy call on a worker thread so the event loop keeps
     serving callbacks, but holds the lock across it so sends stay serialised.
+
+    Raises SendUnresolved when the transaction reached the chain but its result
+    could not be read, and an ordinary exception when it demonstrably did not
+    move any coins.
     """
     if _client is None or _wallet is None:
         raise RuntimeError("chain service not initialised")
@@ -77,6 +96,28 @@ async def send_dust(address: str) -> str:
 
 
 def _send_blocking(destination: Address) -> str:
+    # Broadcast. Anything raised here happened before the transaction reached a
+    # mempool, so nothing was sent.
     tx = _client.send_tokens(destination, config.DUST_UERTH, config.EARTH_DENOM, _wallet)
-    tx.wait_to_complete()
-    return str(tx.tx_hash)
+    tx_hash = str(tx.tx_hash)
+
+    try:
+        tx.wait_to_complete()
+    except BroadcastError:
+        # The transaction was included and failed — out of gas, insufficient
+        # fees, or a dry hot wallet, which is the common one. It consumed a
+        # sequence number and moved no coins, so the ad view is genuinely
+        # unspent and the caller may hand it back.
+        raise
+    except QueryTimeoutError as exc:
+        # Polling gave up. The transaction may still be sitting in a mempool and
+        # may still land. Only the caller can decide what to do, and what it
+        # must not do is release the id.
+        raise SendUnresolved(tx_hash, exc) from exc
+    except Exception as exc:
+        # An unrecognised failure while querying is the same situation: the
+        # transaction is out of our hands and its fate is unknown. Fail into the
+        # cautious branch rather than the convenient one.
+        raise SendUnresolved(tx_hash, exc) from exc
+
+    return tx_hash

@@ -34,8 +34,12 @@ def health():
     """
     try:
         remaining = chain.balance()
-    except Exception as exc:
-        return {"status": "degraded", "error": str(exc)}
+    except Exception:
+        # Logged, not returned. This endpoint is reachable by anyone who can
+        # reach the service, and a cosmpy exception carries the node URL and
+        # internals that are nobody else's business.
+        logger.exception("health check could not read the hot wallet balance")
+        return {"status": "degraded"}
     return {
         "status": "ok",
         "wallet": chain.wallet_address(),

@@ -30,12 +30,19 @@ logger = logging.getLogger(__name__)
 _keys: dict[str, str] = {}
 _fetched_at: float = 0.0
 
+# The soonest an unknown key id may trigger another fetch. Without it, junk key
+# ids in unsigned callbacks would be a free way to make this service hammer
+# gstatic — the signature has not been checked when the refresh happens, and it
+# cannot be: checking it is what needs the key.
+_MISS_REFETCH_INTERVAL = 300.0
+_last_miss_fetch: float = 0.0
 
-async def public_keys() -> dict[str, str]:
+
+async def public_keys(force: bool = False) -> dict[str, str]:
     """Google's SSV verifier keys, keyed by id. Cached for GOOGLE_SSV_KEYS_TTL."""
     global _keys, _fetched_at
 
-    if _keys and time.time() - _fetched_at < config.GOOGLE_SSV_KEYS_TTL:
+    if not force and _keys and time.time() - _fetched_at < config.GOOGLE_SSV_KEYS_TTL:
         return _keys
 
     try:
@@ -56,6 +63,34 @@ async def public_keys() -> dict[str, str]:
         logger.warning("could not refresh AdMob SSV keys: %s", exc)
 
     return _keys
+
+
+async def keys_for(key_id: str) -> dict[str, str]:
+    """The key set, refreshed if it does not contain key_id.
+
+    Google rotates these, and the TTL alone makes a rotation look like a day of
+    forged callbacks: every real ad view is checked against a stale set and
+    refused, users watch ads and get no dust, and it fixes itself 24 hours
+    later. A miss is the signal that the cache is behind, so it is worth one
+    fetch rather than waiting out the TTL.
+    """
+    global _last_miss_fetch
+
+    keys = await public_keys()
+    if not key_id or key_id in keys:
+        return keys
+
+    # Rate-limited on the attempt, not on the success. Keying this off the
+    # last *successful* fetch would leave a Google outage — which is when a
+    # refresh fails and the timestamp does not move — refetching on every
+    # single callback for as long as the outage lasted.
+    now = time.time()
+    if now - _last_miss_fetch < _MISS_REFETCH_INTERVAL:
+        return keys
+    _last_miss_fetch = now
+
+    logger.info("key id %s not in the cached set; refreshing", key_id)
+    return await public_keys(force=True)
 
 
 def verify(query_string: str, signature_b64: str, key_id: str, keys: dict[str, str]) -> bool:
