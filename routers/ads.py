@@ -47,16 +47,24 @@ async def ads_callback(request: Request):
     # reward and both call this endpoint. Comparing against one of them rejected
     # every callback from the other platform here, before the signature was even
     # checked — an ad watched, no dust, and nothing in the app to explain it.
-    if config.ADMOB_AD_UNIT_IDS:
-        if ad_unit and ad_unit not in config.ADMOB_AD_UNIT_IDS:
-            logger.warning(
-                "ad unit %s is not one of %s",
-                ad_unit,
-                ", ".join(sorted(config.ADMOB_AD_UNIT_IDS)),
-            )
-            return {"status": "error", "message": "unexpected ad unit"}
+    # Membership, not equality: Android and iOS have separate units for the same
+    # reward and both call this endpoint. Comparing against one of them rejected
+    # every callback from the other platform here, before the signature was even
+    # checked — an ad watched, no dust, and nothing in the app to explain it.
+    #
+    # A missing ad_unit is refused rather than waved through. It used to be, via
+    # `if ad_unit and ...`, which made the whole guard skippable by omitting the
+    # parameter — the signature still had to verify, so it was not a bypass, but
+    # a check that silently does nothing is worse than no check at all.
+    if config.ADMOB_AD_UNIT_IDS and ad_unit not in config.ADMOB_AD_UNIT_IDS:
+        logger.warning(
+            "ad unit %r is not one of %s",
+            ad_unit,
+            ", ".join(sorted(config.ADMOB_AD_UNIT_IDS)),
+        )
+        return {"status": "error", "message": "unexpected ad unit"}
 
-    if not ssv.verify(query_string, signature, key_id, await ssv.public_keys()):
+    if not ssv.verify(query_string, signature, key_id, await ssv.keys_for(key_id)):
         return {"status": "error", "message": "invalid signature"}
 
     # Claim before sending. The insert is atomic, so two concurrent deliveries of
@@ -67,12 +75,22 @@ async def ads_callback(request: Request):
 
     try:
         tx_hash = await chain.send_dust(address)
-    except Exception as exc:
-        # Give the id back: the user watched an ad and got nothing, and should be
-        # able to try again rather than have it silently consumed.
+    except chain.SendUnresolved as exc:
+        # Broadcast, outcome unknown. The id stays claimed: a transaction that
+        # is still in a mempool will land, and releasing here would let the same
+        # callback — Google retries them — be paid a second time. The cost of
+        # being wrong is one ad view; the cost of the other choice is paying
+        # twice for it, every time the LCD is slow.
+        logger.error("dust send to %s is unresolved: %s", address, exc)
+        return {"status": "error", "message": "grant pending", "tx_hash": exc.tx_hash}
+    except Exception:
+        # The send demonstrably moved nothing — it never reached the chain, or
+        # it was included and failed. Give the id back: the user watched an ad
+        # and got nothing, and should be able to try again rather than have it
+        # silently consumed.
         replay.release(transaction_id)
         logger.exception("dust send to %s failed", address)
-        return {"status": "error", "message": str(exc)}
+        return {"status": "error", "message": "grant failed"}
 
     logger.info("granted %d%s to %s (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, address, tx_hash)
     return {"status": "success", "tx_hash": tx_hash}
