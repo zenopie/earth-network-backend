@@ -102,7 +102,10 @@ services:
   # Configure the Public Hostname on Cloudflare's side to http://app:8000, which
   # resolves over the cluster network because `app` exposes 8000 to this service.
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Pinned by digest. This container holds TUNNEL_TOKEN and sits in front of
+    # every callback; `latest` meant whatever was pushed last got both on the
+    # next lease. Bump deliberately.
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
     # `cloudflared` first: Akash's `command` maps to Kubernetes `command`, which
     # REPLACES the image entrypoint rather than appending to it. Without the
     # binary name the container tries to exec something called `tunnel` and the

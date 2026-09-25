@@ -24,9 +24,11 @@ COPY . .
 # fresh filesystem forgets which SSV transaction ids it has already honoured,
 # and every one of them becomes replayable.
 ENV STATE_DB=/app/state/ads_for_gas.db
-RUN mkdir -p /app/state
+RUN mkdir -p /app/state \
+    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 VOLUME ["/app/state"]
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Starts as root only to hand the state volume to `app`; see entrypoint.py.
+CMD ["python", "entrypoint.py"]
