@@ -52,6 +52,13 @@ ADMOB_AD_UNIT_IDS = frozenset(
     if unit
 )
 
+# How far a callback's signed timestamp may sit from now, in seconds. Replay
+# protection is the transaction_id table; this bounds how long a captured
+# callback stays worth anything should that table ever be lost, and refuses one
+# stamped in the future outright. Wide enough for Google's delivery retries.
+SSV_MAX_AGE_SECONDS = int(os.getenv("SSV_MAX_AGE_SECONDS", "3600"))
+SSV_MAX_FUTURE_SECONDS = int(os.getenv("SSV_MAX_FUTURE_SECONDS", "300"))
+
 # Google's rotating public keys for Server-Side Verification.
 GOOGLE_SSV_KEYS_URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"
 GOOGLE_SSV_KEYS_TTL = 86400  # 24h

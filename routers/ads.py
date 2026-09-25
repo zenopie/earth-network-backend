@@ -9,6 +9,7 @@ The ad is the Sybil cost. It is paid in attention rather than in ERTH, and it
 pays for itself.
 """
 import logging
+import time
 
 from fastapi import APIRouter, Request
 
@@ -98,6 +99,16 @@ async def ads_callback(request: Request):
 
     if not ssv.verify(query_string, signature, key_id, await ssv.keys_for(key_id)):
         return {"status": "error", "message": "invalid signature"}
+
+    # Checked after the signature, so it is Google's clock being read and not
+    # the caller's. Milliseconds since the epoch.
+    try:
+        age = time.time() - int(params.get("timestamp") or "") / 1000
+    except ValueError:
+        return {"status": "error", "message": "missing parameters"}
+    if age > config.SSV_MAX_AGE_SECONDS or -age > config.SSV_MAX_FUTURE_SECONDS:
+        logger.warning("callback %s is outside the timestamp window (age %.0fs)", transaction_id, age)
+        return {"status": "error", "message": "stale callback"}
 
     # Claim before sending. The insert is atomic, so two concurrent deliveries of
     # the same callback cannot both reach the chain.

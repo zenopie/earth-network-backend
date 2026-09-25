@@ -47,3 +47,33 @@ def test_reencoding_a_callback_does_not_change_its_parameters(client, sends):
     reencoded = query.replace("&transaction_id=tx-1", "%26transaction_id%3Dtx-1", 1)
     assert call(client, reencoded)["message"] == "already granted"
     assert sends == [ADDRESS]
+
+
+def _stamped(seconds_from_now: float) -> str:
+    import time
+
+    return str(int((time.time() + seconds_from_now) * 1000))
+
+
+def test_stale_callback_is_refused(client, sends):
+    query = signed_query(callback_prefix(timestamp=_stamped(-2 * 3600)))
+    assert call(client, query)["message"] == "stale callback"
+    assert sends == []
+
+
+def test_future_callback_is_refused(client, sends):
+    query = signed_query(callback_prefix(timestamp=_stamped(3600)))
+    assert call(client, query)["message"] == "stale callback"
+    assert sends == []
+
+
+def test_callback_inside_the_window_is_paid(client, sends):
+    query = signed_query(callback_prefix(timestamp=_stamped(-600)))
+    assert call(client, query)["status"] == "success"
+
+
+def test_missing_or_garbage_timestamp_is_refused(client, sends):
+    for ts in ("", "soon"):
+        query = signed_query(callback_prefix(timestamp=ts, transaction_id="tx-" + ts))
+        assert call(client, query)["message"] == "missing parameters"
+    assert sends == []
