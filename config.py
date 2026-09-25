@@ -52,6 +52,10 @@ ADMOB_AD_UNIT_IDS = frozenset(
     if unit
 )
 
+# Seconds any one request to the chain's REST endpoint may take. Sends are
+# serialised, so without a bound a single hung request stalls every payout.
+CHAIN_HTTP_TIMEOUT = float(os.getenv("CHAIN_HTTP_TIMEOUT", "15"))
+
 # How far a callback's signed timestamp may sit from now, in seconds. Replay
 # protection is the transaction_id table; this bounds how long a captured
 # callback stays worth anything should that table ever be lost, and refuses one

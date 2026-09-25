@@ -9,6 +9,8 @@ account and funds it in one transaction.
 import asyncio
 import logging
 
+import requests
+
 from cosmpy.aerial.client import LedgerClient, NetworkConfig
 from cosmpy.aerial.exceptions import BroadcastError, QueryTimeoutError
 from cosmpy.aerial.wallet import LocalWallet
@@ -46,7 +48,30 @@ def init() -> None:
         raise RuntimeError("GAS_WALLET_MNEMONIC is unset; refusing to start")
     _wallet = LocalWallet.from_mnemonic(config.GAS_WALLET_MNEMONIC, prefix=config.EARTH_PREFIX)
     _client = LedgerClient(_network())
+    _bound_http(_client)
     logger.info("ads-for-gas wallet %s on %s", _wallet.address(), config.EARTH_CHAIN_ID)
+
+
+def _bound_http(client: LedgerClient) -> None:
+    """Gives every REST call the client makes a timeout.
+
+    cosmpy's RestClient uses a bare requests session, which waits forever. Every
+    send runs under _send_lock, so one request to a node that accepted the
+    connection and never answered used to stop every payout behind it until the
+    process was restarted. A gRPC endpoint has no session to bound and is left
+    alone.
+    """
+    rest = getattr(client.bank, "_rest_api", None)
+    if rest is None:
+        return
+    session = rest._session
+    request = session.request
+
+    def with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", config.CHAIN_HTTP_TIMEOUT)
+        return request(method, url, **kwargs)
+
+    session.request = with_timeout
 
 
 def wallet_address() -> str:
@@ -96,19 +121,24 @@ async def send_dust(address: str) -> str:
 
 
 def _send_blocking(destination: Address) -> str:
-    # Broadcast. Anything raised here happened before the transaction reached a
-    # mempool, so nothing was sent.
-    #
-    # TODO(double-pay): this assumption doesn't hold for a network error *after*
-    # the node accepted the tx. send_tokens does the broadcast itself, so a
-    # timeout/dropped connection once the tx is in the mempool raises here, the
-    # caller's bare `except` releases the transaction_id, Google retries, and the
-    # view is paid twice while the first send still lands. Low severity: 50k
-    # uerth per event, needs a fault in this exact window plus a retry, not
-    # attacker-forceable. Fix: wrap this call and classify connection/timeout as
-    # SendUnresolved (keep the id claimed); only re-raise provable rejections
-    # (bad address, signing failure) as ordinary errors that release the id.
-    tx = _client.send_tokens(destination, config.DUST_UERTH, config.EARTH_DENOM, _wallet)
+    # Broadcast. send_tokens looks up the account, simulates, and posts the
+    # transaction, and a network fault in the post can come after the node has
+    # accepted it. Only a connection that was never made proves nothing went
+    # out; any other transport failure — a read timeout above all, which the
+    # timeout on the session now makes a real possibility — is treated as
+    # unresolved, so the caller keeps the id and Google's retry is not paid a
+    # second time. Errors that are not transport errors (a rejected
+    # transaction, a signing failure) moved nothing and propagate as they are.
+    try:
+        tx = _client.send_tokens(destination, config.DUST_UERTH, config.EARTH_DENOM, _wallet)
+    except requests.exceptions.ConnectTimeout:
+        raise
+    except requests.exceptions.ConnectionError as exc:
+        if _never_connected(exc):
+            raise
+        raise SendUnresolved("", exc) from exc
+    except requests.exceptions.RequestException as exc:
+        raise SendUnresolved("", exc) from exc
     tx_hash = str(tx.tx_hash)
 
     try:
@@ -131,3 +161,17 @@ def _send_blocking(destination: Address) -> str:
         raise SendUnresolved(tx_hash, exc) from exc
 
     return tx_hash
+
+
+def _never_connected(exc: requests.exceptions.ConnectionError) -> bool:
+    """Whether a connection error happened before any bytes were sent.
+
+    Refused and unresolvable connections surface as a NewConnectionError inside
+    the urllib3 MaxRetryError that requests wraps; anything else — a reset or
+    a dropped connection mid-exchange — may have happened after the node read
+    the request.
+    """
+    from urllib3.exceptions import NameResolutionError, NewConnectionError
+
+    reason = getattr(exc.args[0], "reason", None) if exc.args else None
+    return isinstance(reason, (NewConnectionError, NameResolutionError))
