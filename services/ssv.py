@@ -93,6 +93,30 @@ async def keys_for(key_id: str) -> dict[str, str]:
     return await public_keys(force=True)
 
 
+def signed_content(query_string: str) -> str:
+    """The exact text the signature covers: the prefix before `&signature=`, decoded.
+
+    Anything decided on must be read from this, not from the raw query string.
+    Decoding is many-to-one — `&` and `%26` decode alike — so the raw string can
+    be re-encoded without disturbing the signature, and a parser run over it
+    sees whatever parameters the re-encoding makes up.
+    """
+    return unquote(query_string.split("&signature=")[0])
+
+
+def signed_params(query_string: str) -> list[tuple[str, str]]:
+    """The signed parameters, split out of signed_content in order.
+
+    Split on every `&` of the decoded text, because that is the only reading of
+    it that does not depend on how the raw string was encoded. A value that
+    itself contained an `&` comes out as an extra parameter; that is the point.
+    """
+    return [
+        (name, value)
+        for name, _, value in (item.partition("=") for item in signed_content(query_string).split("&"))
+    ]
+
+
 def verify(query_string: str, signature_b64: str, key_id: str, keys: dict[str, str]) -> bool:
     """Checks the SSV signature over a raw query string."""
     pem = keys.get(key_id)
@@ -100,7 +124,7 @@ def verify(query_string: str, signature_b64: str, key_id: str, keys: dict[str, s
         logger.warning("unknown AdMob SSV key id %s", key_id)
         return False
 
-    content = unquote(query_string.split("&signature=")[0]).encode("utf-8")
+    content = signed_content(query_string).encode("utf-8")
 
     padded = unquote(signature_b64)
     padded += "=" * (-len(padded) % 4)

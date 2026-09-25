@@ -29,6 +29,11 @@ faucet.
     cp example.env .env      # fill in GAS_WALLET_MNEMONIC and ADMOB_AD_UNIT_ID
     uvicorn main:app --host 0.0.0.0 --port 8000
 
+Tests need no chain and no Google: they sign callbacks with a local key.
+
+    pip install -r requirements-dev.txt
+    python -m pytest
+
 Point AdMob's SSV callback URL at `https://<host>/ads-callback`. The app sets the
 wallet address as `custom_data` (see `HostActivity.showRewardedAd`).
 

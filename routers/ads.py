@@ -9,7 +9,6 @@ The ad is the Sybil cost. It is paid in attention rather than in ERTH, and it
 pays for itself.
 """
 import logging
-from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Request
 
@@ -45,13 +44,20 @@ async def ads_callback(request: Request):
     # never saw the id it had already honoured, and the ad-unit allowlist was
     # bypassed the same way. All three checks fell to one appended parameter.
     #
+    # And it is read from the prefix *as signed*, which is its decoded form.
+    # Parsing the raw prefix instead let a captured callback be re-encoded into a
+    # second payout: `&` and `%26` decode alike, so turning the real
+    # `&transaction_id=` into `%26transaction_id%3D` and un-encoding a
+    # `transaction_id=` smuggled inside the app-chosen user_id changed which id
+    # the parser saw without changing a byte the signature covers.
+    #
     # Duplicates within the signed prefix are refused rather than resolved.
     # Google does not send them, and picking a winner is how this class of bug
-    # comes back.
-    signed, separator, _ = query_string.partition("&signature=")
-    if not separator:
+    # comes back. They are also what that smuggled parameter looks like once
+    # the prefix is read the way it was signed.
+    if "&signature=" not in query_string:
         return {"status": "error", "message": "missing parameters"}
-    signed_items = parse_qsl(signed, keep_blank_values=True)
+    signed_items = ssv.signed_params(query_string)
     if len({name for name, _ in signed_items}) != len(signed_items):
         logger.warning("callback has duplicate signed parameters")
         return {"status": "error", "message": "duplicate parameters"}
