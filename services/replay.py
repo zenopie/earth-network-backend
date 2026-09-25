@@ -26,8 +26,19 @@ def _db() -> sqlite3.Connection:
                    granted_at     INTEGER NOT NULL
                )"""
         )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS used_by_address ON used_transactions (address, granted_at)"
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS used_by_time ON used_transactions (granted_at)")
         _conn.commit()
     return _conn
+
+
+class LimitReached(Exception):
+    """The payout would go over a rolling 24-hour limit; nothing was claimed."""
+
+
+_DAY = 86400
 
 
 def claim(transaction_id: str, address: str) -> bool:
@@ -35,8 +46,27 @@ def claim(transaction_id: str, address: str) -> bool:
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
     two concurrent callbacks with the same id cannot both win.
+
+    Raises LimitReached, before claiming, when the address or the service as a
+    whole has already been paid its allowance in the last 24 hours. Every
+    genuine callback was otherwise payable, so the hot wallet could be drained
+    as fast as someone could farm ad views. Counted from this table, under the
+    same lock as the insert, so concurrent callbacks cannot both squeeze under
+    a limit; a released id no longer counts, because it moved nothing.
     """
     with _lock:
+        since = int(time.time()) - _DAY
+        (mine,) = _db().execute(
+            "SELECT COUNT(*) FROM used_transactions WHERE address = ? AND granted_at > ?",
+            (address, since),
+        ).fetchone()
+        if mine >= config.ADS_MAX_PER_ADDRESS_PER_DAY:
+            raise LimitReached("address")
+        (everyone,) = _db().execute(
+            "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ?", (since,)
+        ).fetchone()
+        if everyone >= config.ADS_MAX_PER_DAY:
+            raise LimitReached("daily")
         try:
             _db().execute(
                 "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, ?, ?)",

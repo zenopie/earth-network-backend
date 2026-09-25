@@ -52,6 +52,11 @@ ADMOB_AD_UNIT_IDS = frozenset(
     if unit
 )
 
+# Rolling 24-hour payout limits. Each callback pays DUST_UERTH, so these bound
+# what ad farming can take: per address, and for the service as a whole.
+ADS_MAX_PER_ADDRESS_PER_DAY = int(os.getenv("ADS_MAX_PER_ADDRESS_PER_DAY", "5"))
+ADS_MAX_PER_DAY = int(os.getenv("ADS_MAX_PER_DAY", "1000"))
+
 # Seconds any one request to the chain's REST endpoint may take. Sends are
 # serialised, so without a bound a single hung request stalls every payout.
 CHAIN_HTTP_TIMEOUT = float(os.getenv("CHAIN_HTTP_TIMEOUT", "15"))

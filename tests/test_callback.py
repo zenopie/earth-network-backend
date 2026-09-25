@@ -1,3 +1,5 @@
+import config
+from services import chain
 from tests.conftest import ADDRESS, call, callback_prefix, signed_query
 
 
@@ -77,3 +79,36 @@ def test_missing_or_garbage_timestamp_is_refused(client, sends):
         query = signed_query(callback_prefix(timestamp=ts, transaction_id="tx-" + ts))
         assert call(client, query)["message"] == "missing parameters"
     assert sends == []
+
+
+def test_an_address_is_paid_at_most_its_daily_allowance(client, sends, monkeypatch):
+    monkeypatch.setattr(config, "ADS_MAX_PER_ADDRESS_PER_DAY", 2)
+    replies = [call(client, signed_query(callback_prefix(transaction_id=f"tx-{i}"))) for i in range(3)]
+    assert [r["status"] for r in replies[:2]] == ["success", "success"]
+    assert replies[2]["message"] == "limit reached"
+    assert sends == [ADDRESS, ADDRESS]
+
+
+def test_the_service_is_paid_at_most_its_daily_allowance(client, sends, monkeypatch):
+    monkeypatch.setattr(config, "ADS_MAX_PER_DAY", 1)
+    other = "earth1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfhk6sa"
+    assert call(client, signed_query(callback_prefix(transaction_id="a")))["status"] == "success"
+    reply = call(client, signed_query(callback_prefix(transaction_id="b", custom_data=other)))
+    assert reply["message"] == "limit reached"
+    assert sends == [ADDRESS]
+
+
+def test_a_failed_send_does_not_use_up_the_allowance(client, sends, monkeypatch):
+    monkeypatch.setattr(config, "ADS_MAX_PER_ADDRESS_PER_DAY", 1)
+
+    async def failing(address):
+        raise RuntimeError("node refused")
+
+    monkeypatch.setattr(chain, "send_dust", failing)
+    assert call(client, signed_query(callback_prefix(transaction_id="a")))["message"] == "grant failed"
+
+    async def ok(address):
+        return "HASH"
+
+    monkeypatch.setattr(chain, "send_dust", ok)
+    assert call(client, signed_query(callback_prefix(transaction_id="b")))["status"] == "success"

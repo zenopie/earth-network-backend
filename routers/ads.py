@@ -112,7 +112,12 @@ async def ads_callback(request: Request):
 
     # Claim before sending. The insert is atomic, so two concurrent deliveries of
     # the same callback cannot both reach the chain.
-    if not replay.claim(transaction_id, address):
+    try:
+        claimed = replay.claim(transaction_id, address)
+    except replay.LimitReached as exc:
+        logger.warning("%s payout limit reached; refusing %s for %s", exc, transaction_id, address)
+        return {"status": "error", "message": "limit reached"}
+    if not claimed:
         logger.info("replayed transaction_id %s", transaction_id)
         return {"status": "error", "message": "already granted"}
 
