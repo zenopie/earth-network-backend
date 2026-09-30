@@ -2,7 +2,7 @@
 # Akash SDL — earth gas-grant service.
 #
 # One FastAPI app. It holds a hot key and turns an attested request from a
-# genuine app install (App Attest / Play Integrity) into enough ERTH for a new
+# genuine app install (App Attest / Android key attestation) into enough ERTH for a new
 # human to make their first transaction.
 #
 # See README.md in this directory. Read the note on GAS_WALLET_MNEMONIC before
@@ -47,8 +47,15 @@ services:
       # from Xcode. TestFlight and the App Store use production. Set false once
       # nobody is testing from Xcode.
       - APP_ATTEST_ALLOW_DEVELOPMENT=true
-      # The Android package a Play Integrity verdict must name.
+      # The Android package a key attestation must name, and the SHA-256 of
+      # every certificate our APKs are signed with: the release/upload key for
+      # sideloads, and Play's app-signing key for Play installs. Empty, Android
+      # grants answer 503.
       - ANDROID_PACKAGE=network.erth.wallet
+      - ANDROID_SIGNING_CERT_SHA256=8f9d4bf1df38e9bcfa56c5bff64e0dbabf8223a6a3db589421222c3259abd36c
+      # Refuse phones with an unlocked bootloader: there the OS can lie to the
+      # secure hardware about which app is asking.
+      - ANDROID_REQUIRE_LOCKED_BOOTLOADER=true
       # Rolling 24h limits. An attestation proves a genuine app on a real
       # device, not a new human, so the daily cap is what bounds one phone
       # attesting for fresh addresses: 500 x 0.1 ERTH = 50 ERTH a day.
@@ -63,10 +70,6 @@ services:
       # Set it at deploy time instead, by substituting it into the SDL that is
       # POSTed rather than into the file that is committed. It still reaches the
       # provider either way; what this avoids is it reaching the repository.
-      #
-      # GOOGLE_SERVICE_ACCOUNT_JSON, the Play Integrity service account, is
-      # injected the same way when .env has it. Without it /gas/android answers
-      # 503 and iOS is unaffected.
 
     expose:
       # Tunnel-only. Nothing is published on a provider port: every entry below

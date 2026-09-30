@@ -34,7 +34,7 @@ nothing outside the devnet. Do not reuse this key for anything that is.
     GET  /health          hot wallet balance and grants remaining
     POST /gas/challenge   a single-use challenge to attest over
     POST /gas/ios         grant on an App Attest attestation
-    POST /gas/android     grant on a Play Integrity token
+    POST /gas/android     grant on an Android hardware key attestation
 
 Exposed on a mapped port, not `as: 80`. The chain repo's SDL explains why: the
 provider's generated ingress hostname returned nginx 404 for ten minutes with a
@@ -42,12 +42,6 @@ ready pod, and a mapped port worked immediately.
 
 The apps reach this only as `https://api.erth.network`, through the tunnel, so
 a new lease needs no change on the apps' side.
-
-## `GOOGLE_SERVICE_ACCOUNT_JSON`
-
-The Play Integrity service account; see the top-level README for how to make
-one. Like the mnemonic it lives in `.env` and is injected by `bin/build-sdl.py`,
-base64-encoded. Unset, Android grants answer 503 and iOS is unaffected.
 
 ## Do not lease this on the chain's provider
 

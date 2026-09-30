@@ -45,14 +45,21 @@ IOS_APP_ID = os.getenv("IOS_APP_ID", "XD8VH8WKVX.network.erth.EarthWallet")
 # Store use production. Turn off once nobody is testing from Xcode.
 APP_ATTEST_ALLOW_DEVELOPMENT = os.getenv("APP_ATTEST_ALLOW_DEVELOPMENT", "true").lower() == "true"
 
-# Android Play Integrity: the package the verdict must name, and a service
-# account in the Cloud project linked to the app in Play Console, as JSON or
-# base64 of it. Unset, /gas/android answers 503 and iOS is unaffected.
+# Android key attestation: the package the attestation must name, and the
+# SHA-256 digests of the certificates our APKs are signed with, comma-separated
+# hex (colons allowed, as keytool and Play Console print them). Include both the
+# upload/release key and, if Play App Signing is on, Play's app-signing key: a
+# Play install is signed with the latter, a sideloaded release with the former.
+# Unset, /gas/android answers 503 and iOS is unaffected.
 ANDROID_PACKAGE = os.getenv("ANDROID_PACKAGE", "network.erth.wallet")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-# Accept UNRECOGNIZED_VERSION: a build Play has not seen, i.e. sideloaded.
-# Only for testing a local build; anyone can sideload a modified APK.
-PLAY_INTEGRITY_ALLOW_UNRECOGNIZED = os.getenv("PLAY_INTEGRITY_ALLOW_UNRECOGNIZED", "false").lower() == "true"
+ANDROID_SIGNING_CERT_SHA256 = frozenset(
+    bytes.fromhex(d.replace(":", "").strip())
+    for d in os.getenv("ANDROID_SIGNING_CERT_SHA256", "").split(",")
+    if d.strip()
+)
+# Refuse phones with an unlocked bootloader or unverified boot. On such a phone
+# the OS can lie to the secure hardware about which app is asking.
+ANDROID_REQUIRE_LOCKED_BOOTLOADER = os.getenv("ANDROID_REQUIRE_LOCKED_BOOTLOADER", "true").lower() == "true"
 
 # How long a challenge stays usable, and how many may be outstanding at once.
 CHALLENGE_TTL_SECONDS = int(os.getenv("CHALLENGE_TTL_SECONDS", "300"))

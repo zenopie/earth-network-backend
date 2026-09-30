@@ -5,10 +5,8 @@ secrets from .env.
 The same arrangement as the chain's deploy repo, and for the same reason. Two
 values must reach the provider and must not reach the repository:
 
-    GAS_WALLET_MNEMONIC          the hot key the dust is sent from — spendable ERTH
-    TUNNEL_TOKEN                 anyone holding it can attach a replica to the tunnel
-    GOOGLE_SERVICE_ACCOUNT_JSON  the Play Integrity service account (optional;
-                                 unset, Android grants are off)
+    GAS_WALLET_MNEMONIC   the hot key the dust is sent from — spendable ERTH
+    TUNNEL_TOKEN          anyone holding it can attach a replica to the tunnel
 
 Everything submitted reaches the provider regardless; that is what submitting
 means. What this avoids is them being committed.
@@ -19,8 +17,6 @@ for what cannot be written down.
 
     bin/build-sdl.py <repo> <out.yaml> <digest>
 """
-import base64
-import json
 import os
 import sys
 
@@ -61,16 +57,6 @@ assert len(mn.split()) in (12, 24), "GAS_WALLET_MNEMONIC missing or malformed"
 assert not any(c in mn for c in "\"'"), "mnemonic carries quote characters; BIP39 will reject it"
 assert mn == mn.strip(), "mnemonic has leading/trailing whitespace"
 s = s.replace(anchor, anchor + "      - GAS_WALLET_MNEMONIC=%s\n" % mn)
-
-# Optional. A JSON key file is multi-line and full of quotes, so it goes in as
-# base64 whatever form .env holds it in; the service accepts either.
-sa = env.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-if sa:
-    if sa.lstrip().startswith("{"):
-        sa = base64.b64encode(sa.encode("utf-8")).decode()
-    assert json.loads(base64.b64decode(sa)).get("type") == "service_account", \
-        "GOOGLE_SERVICE_ACCOUNT_JSON is not a service account key"
-    s = s.replace(anchor, anchor + "      - GOOGLE_SERVICE_ACCOUNT_JSON=%s\n" % sa)
 
 anchor = "    env: []\n"
 assert s.count(anchor) == 1, "cloudflared env anchor moved"
@@ -113,8 +99,12 @@ print("services:   ", ", ".join(sorted(svcs)))
 print("node:       ", node, " chain:", a.get("EARTH_CHAIN_ID"))
 print("dust:       ", a.get("DUST_UERTH"), "uerth")
 print("ios app:    ", a.get("IOS_APP_ID"), " development keys:", a.get("APP_ATTEST_ALLOW_DEVELOPMENT", "true"))
-print("android:    ", a.get("ANDROID_PACKAGE", "network.erth.wallet"), " play integrity:", "configured" if sa else "OFF (unset GOOGLE_SERVICE_ACCOUNT_JSON)")
-print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars), GOOGLE_SERVICE_ACCOUNT_JSON(%s)" % (len(mn.split()), len(tok), "set" if sa else "unset"))
+certs = [d for d in a.get("ANDROID_SIGNING_CERT_SHA256", "").split(",") if d.strip()]
+for d in certs:
+    assert len(bytes.fromhex(d.replace(":", "").strip())) == 32, "ANDROID_SIGNING_CERT_SHA256 entry is not a SHA-256: %s" % d
+print("android:    ", a.get("ANDROID_PACKAGE", "network.erth.wallet"), " signing certs:", len(certs) or "NONE (Android grants off)",
+      " locked bootloader:", a.get("ANDROID_REQUIRE_LOCKED_BOOTLOADER", "true"))
+print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars)" % (len(mn.split()), len(tok)))
 
 open(out, "w").write(s)
 print("wrote %s (%d bytes)" % (out, len(s)))

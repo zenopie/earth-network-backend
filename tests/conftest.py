@@ -142,3 +142,89 @@ def get_challenge(client, address=ADDRESS) -> str:
     resp = client.post("/gas/challenge", json={"address": address})
     assert resp.status_code == 200, resp.text
     return resp.json()["challenge"]
+
+
+# --- Android key attestation ------------------------------------------------------
+
+SIGNING_DIGEST = hashlib.sha256(b"our release certificate").digest()
+
+
+def _der(tag: bytes, content: bytes) -> bytes:
+    n = len(content)
+    length = bytes([n]) if n < 128 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return tag + length + content
+
+
+def _ctx(number: int, inner: bytes) -> bytes:
+    """[number] EXPLICIT, high-tag form (every AuthorizationList tag used here is >= 31)."""
+    digits = []
+    while True:
+        digits.insert(0, number & 0x7F)
+        number >>= 7
+        if not number:
+            break
+    tag = bytes([0xBF] + [d | 0x80 for d in digits[:-1]] + [digits[-1]])
+    return _der(tag, inner)
+
+
+def _int(v: int) -> bytes:
+    return _der(b"\x02", v.to_bytes(max(1, (v.bit_length() + 8) // 8), "big", signed=True))
+
+
+def _enum(v: int) -> bytes:
+    return _der(b"\x0a", bytes([v]))
+
+
+def key_description(challenge: bytes, *, package="network.erth.wallet", digests=(SIGNING_DIGEST,),
+                    security=1, locked=True, boot=0, origin=0, app_id_in_hardware=False) -> bytes:
+    app_id = _der(b"\x30",
+                  _der(b"\x31", _der(b"\x30", _der(b"\x04", package.encode()) + _int(1)))
+                  + _der(b"\x31", b"".join(_der(b"\x04", d) for d in digests)))
+    app_field = _ctx(709, _der(b"\x04", app_id))
+    root_of_trust = _der(b"\x30", _der(b"\x04", bytes(32)) + _der(b"\x01", b"\xff" if locked else b"\x00")
+                         + _enum(boot) + _der(b"\x04", bytes(32)))
+    hardware = _ctx(702, _int(origin)) + _ctx(704, root_of_trust) + (app_field if app_id_in_hardware else b"")
+    software = b"" if app_id_in_hardware else app_field
+    return _der(b"\x30", _int(200) + _enum(security) + _int(200) + _enum(security)
+                + _der(b"\x04", challenge) + _der(b"\x04", b"")
+                + _der(b"\x30", software) + _der(b"\x30", hardware))
+
+
+class FakeGoogleCA:
+    """A hardware-attestation root and intermediate, issuing leaves with a KeyDescription."""
+
+    def __init__(self):
+        self.root_key = ec.generate_private_key(ec.SECP384R1())
+        self.root = _cert("Test Key Attestation Root", "Test Key Attestation Root",
+                          self.root_key.public_key(), self.root_key, ca=True)
+        self.inter_key = ec.generate_private_key(ec.SECP256R1())
+        self.inter = _cert("Test Key Attestation Intermediate", "Test Key Attestation Root",
+                           self.inter_key.public_key(), self.root_key, ca=True)
+
+    def attest(self, challenge: bytes, **kwargs) -> list[str]:
+        device_key = ec.generate_private_key(ec.SECP256R1())
+        ext = x509.UnrecognizedExtension(x509.ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17"),
+                                         key_description(challenge, **kwargs))
+        leaf = _cert("Android Keystore Key", "Test Key Attestation Intermediate",
+                     device_key.public_key(), self.inter_key, ca=False, extensions=[ext])
+        return [base64.b64encode(c.public_bytes(Encoding.DER)).decode() for c in (leaf, self.inter, self.root)]
+
+
+@pytest.fixture
+def google(monkeypatch):
+    """Android configured, verifying against a test root, with an empty revocation list."""
+    from services import keyattest
+
+    ca = FakeGoogleCA()
+    monkeypatch.setattr(config, "ANDROID_SIGNING_CERT_SHA256", frozenset({SIGNING_DIGEST}))
+    monkeypatch.setattr(config, "ANDROID_REQUIRE_LOCKED_BOOTLOADER", True)
+    monkeypatch.setattr(keyattest, "GOOGLE_ROOTS", [ca.root])
+    real = keyattest.verify
+    monkeypatch.setattr(keyattest, "verify", lambda *a, **k: real(*a, **{**k, "roots": [ca.root]}))
+    ca.revoked = set()
+
+    async def revoked():
+        return ca.revoked
+
+    monkeypatch.setattr(keyattest, "revoked_serials", revoked)
+    return ca

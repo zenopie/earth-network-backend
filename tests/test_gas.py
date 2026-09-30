@@ -1,12 +1,13 @@
 """The grant endpoints: what an attestation must prove before dust moves."""
 import base64
+import hashlib
 import time
 
 import pytest
 
 import config
-from services import appattest, challenges, chain, playintegrity
-from tests.conftest import ADDRESS, get_challenge
+from services import appattest, challenges, chain, keyattest
+from tests.conftest import ADDRESS, SIGNING_DIGEST, FakeGoogleCA, get_challenge
 
 OTHER = "earth1s7rgscltvw8v3kzhj46pptdqg843ngs7th9ywp"
 
@@ -27,7 +28,7 @@ def test_challenge_refuses_a_non_earth_address(client):
 def test_bound_digest_vector():
     # The vector the apps' unit tests carry: 32 zero bytes, then "earth1test".
     assert challenges.bound_digest("A" * 43, "earth1test").hex() == (
-        __import__("hashlib").sha256(bytes(32) + b"earth1test").hexdigest()
+        hashlib.sha256(bytes(32) + b"earth1test").hexdigest()
     )
 
 
@@ -145,38 +146,10 @@ def test_unresolved_send_is_pending(apple, client, monkeypatch):
 
 # --- Android ----------------------------------------------------------------------
 
-def verdict(nonce, **over):
-    payload = {
-        "requestDetails": {"requestPackageName": config.ANDROID_PACKAGE, "nonce": nonce,
-                           "timestampMillis": str(int(time.time() * 1000))},
-        "appIntegrity": {"appRecognitionVerdict": "PLAY_RECOGNIZED", "packageName": config.ANDROID_PACKAGE},
-        "deviceIntegrity": {"deviceRecognitionVerdict": ["MEETS_DEVICE_INTEGRITY"]},
-    }
-    for path, value in over.items():
-        section, field = path.split(".")
-        payload[section][field] = value
-    return payload
-
-
-@pytest.fixture
-def google(monkeypatch):
-    """Play Integrity configured, with decode answering whatever the test sets."""
-    monkeypatch.setattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
-    state = {"payload": None}
-
-    async def decode(token):
-        assert token == "TOKEN"
-        return state["payload"]
-
-    monkeypatch.setattr(playintegrity, "decode", decode)
-    return state
-
-
-def android_body(client, google, address=ADDRESS, **over):
+def android_body(client, google, address=ADDRESS, **kwargs):
     challenge = get_challenge(client, address)
-    nonce = challenges.b64url_encode(challenges.bound_digest(challenge, address))
-    google["payload"] = verdict(nonce, **over)
-    return {"address": address, "challenge": challenge, "token": "TOKEN"}
+    chain_b64 = google.attest(challenges.bound_digest(challenge, address), **kwargs)
+    return {"address": address, "challenge": challenge, "chain": chain_b64}
 
 
 def test_android_grant(client, google, sends):
@@ -185,26 +158,63 @@ def test_android_grant(client, google, sends):
     assert sends == [ADDRESS]
 
 
-@pytest.mark.parametrize("over", [
-    {"requestDetails.requestPackageName": "com.evil"},
-    {"requestDetails.nonce": "AAAA"},
-    {"requestDetails.timestampMillis": "1000"},
-    {"appIntegrity.appRecognitionVerdict": "UNRECOGNIZED_VERSION"},
-    {"appIntegrity.packageName": "com.evil"},
-    {"deviceIntegrity.deviceRecognitionVerdict": ["MEETS_BASIC_INTEGRITY"]},
+def test_android_app_id_may_be_hardware_enforced(client, google, sends):
+    assert client.post("/gas/android", json=android_body(client, google, app_id_in_hardware=True)).status_code == 200
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"package": "com.evil"},
+    {"digests": (b"\x01" * 32,)},
+    {"digests": (b"\x01" * 32, SIGNING_DIGEST)},
+    {"security": 0},
+    {"locked": False},
+    {"boot": 2},
+    {"origin": 2},
 ])
-def test_android_refuses_a_bad_verdict(client, google, sends, over):
-    assert client.post("/gas/android", json=android_body(client, google, **over)).status_code == 403
+def test_android_refuses_a_bad_attestation(client, google, sends, kwargs):
+    assert client.post("/gas/android", json=android_body(client, google, **kwargs)).status_code == 403
     assert sends == []
 
 
-def test_android_sideload_allowance(client, google, sends, monkeypatch):
-    monkeypatch.setattr(config, "PLAY_INTEGRITY_ALLOW_UNRECOGNIZED", True)
-    body = android_body(client, google, **{"appIntegrity.appRecognitionVerdict": "UNRECOGNIZED_VERSION"})
-    assert client.post("/gas/android", json=body).status_code == 200
+def test_android_attestation_cannot_be_moved_to_another_address(client, google, sends):
+    body = android_body(client, google)
+    body["challenge"] = get_challenge(client, OTHER)
+    body["address"] = OTHER
+    assert client.post("/gas/android", json=body).status_code == 403
+    assert sends == []
 
 
-def test_android_off_without_a_service_account(client, sends, monkeypatch):
-    monkeypatch.setattr(config, "GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    body = {"address": ADDRESS, "challenge": get_challenge(client), "token": "TOKEN"}
+def test_android_unlocked_bootloader_is_configurable(client, google, sends, monkeypatch):
+    monkeypatch.setattr(config, "ANDROID_REQUIRE_LOCKED_BOOTLOADER", False)
+    assert client.post("/gas/android", json=android_body(client, google, locked=False)).status_code == 200
+
+
+def test_android_refuses_a_chain_from_another_root(client, google, sends):
+    challenge = get_challenge(client)
+    body = {"address": ADDRESS, "challenge": challenge,
+            "chain": FakeGoogleCA().attest(challenges.bound_digest(challenge, ADDRESS))}
+    assert client.post("/gas/android", json=body).status_code == 403
+
+
+def test_android_refuses_a_revoked_intermediate(client, google, sends):
+    google.revoked.add(format(google.inter.serial_number, "x"))
+    assert client.post("/gas/android", json=android_body(client, google)).status_code == 403
+
+
+def test_android_refuses_a_spliced_chain(client, google, sends):
+    # A leaf from one chain presented with another chain's intermediate.
+    body = android_body(client, google)
+    body["chain"][1] = FakeGoogleCA().attest(b"x" * 32)[1]
+    assert client.post("/gas/android", json=body).status_code == 403
+
+
+def test_android_garbage_is_refused_not_crashed(client, google, sends):
+    body = android_body(client, google)
+    body["chain"] = [base64.b64encode(b"not a certificate").decode()] * 3
+    assert client.post("/gas/android", json=body).status_code == 403
+
+
+def test_android_off_without_signing_certs(client, sends, monkeypatch):
+    monkeypatch.setattr(config, "ANDROID_SIGNING_CERT_SHA256", frozenset())
+    body = {"address": ADDRESS, "challenge": get_challenge(client), "chain": []}
     assert client.post("/gas/android", json=body).status_code == 503

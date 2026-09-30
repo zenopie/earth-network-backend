@@ -4,7 +4,9 @@ A new human has no ERTH and no on-chain account, so they cannot make their first
 transaction — including the registration that would earn them ERTH. This closes
 that loop: the app proves, through the platform's own attestation, that it is a
 genuine copy running on a real device, and the backend sends enough dust to
-transact.
+transact. On iOS that is App Attest; on Android, hardware key attestation, which
+needs no Google account or Play services and accepts any install of our signed
+APK, sideloaded included.
 
 The attestation is the Sybil cost. It cannot be produced by a script, only by
 our signed app on real hardware, and the per-address and daily caps in replay
@@ -12,7 +14,7 @@ bound what one phone farming fresh addresses can take.
 
     POST /gas/challenge   {address}                                -> {challenge, expires_in}
     POST /gas/ios         {address, challenge, key_id, attestation} App Attest
-    POST /gas/android     {address, challenge, token}               Play Integrity
+    POST /gas/android     {address, challenge, chain}               Key Attestation
 
 Both grant endpoints answer with {status, message, tx_hash?} and a status code
 the app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request
@@ -28,7 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import config
-from services import appattest, chain, challenges, playintegrity, replay
+from services import appattest, chain, challenges, keyattest, replay
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ class IosGrant(BaseModel):
 class AndroidGrant(BaseModel):
     address: str
     challenge: str
-    token: str
+    chain: list[str]
 
 
 def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse:
@@ -99,26 +101,28 @@ async def ios(body: IosGrant):
     return await _grant(f"ios:{body.key_id}", address)
 
 
-@router.post("/android", summary="Grant gas on a Play Integrity token")
+@router.post("/android", summary="Grant gas on a hardware key attestation")
 async def android(body: AndroidGrant):
     address = body.address.strip()
-    if not playintegrity.configured():
+    if not config.ANDROID_SIGNING_CERT_SHA256:
         return _reply(503, "error", "Android grants are not configured on this server")
     digest = challenges.consume(body.challenge, address)
     if digest is None:
         return _reply(409, "error", "challenge expired or already used; start again")
     try:
-        payload = await playintegrity.decode(body.token)
-        playintegrity.check(payload, challenges.b64url_encode(digest))
-    except playintegrity.IntegrityError as exc:
-        logger.warning("Play Integrity refused for %s: %s", address, exc)
+        chain_der = [base64.b64decode(c, validate=True) for c in body.chain]
+    except (binascii.Error, ValueError):
+        return _reply(400, "error", "chain is not base64")
+    try:
+        key_hash = await keyattest.verify_async(chain_der, digest)
+    except keyattest.AttestationError as exc:
+        logger.warning("key attestation refused for %s: %s", address, exc)
         return _reply(403, "error", "this device could not verify the app")
-    except playintegrity.Unavailable as exc:
-        logger.error("Play Integrity unavailable: %s", exc)
+    except keyattest.Unavailable as exc:
+        logger.error("key attestation unavailable: %s", exc)
         return _reply(503, "error", "verification is unavailable; try again shortly")
-    # The token carries no stable id of its own; the challenge is single-use
-    # and bound into the verdict, so it is the grant's identity.
-    return await _grant(f"android:{body.challenge}", address)
+    # Keyed on the attested key, as on iOS: a fresh hardware key per request.
+    return await _grant(f"android:{key_hash.hex()}", address)
 
 
 async def _grant(grant_id: str, address: str) -> JSONResponse:

@@ -15,51 +15,52 @@ subsidising the first transactions of each new human.
 
 Device attestation is the Sybil defence. A grant needs proof, from Apple or
 Google, that the request came from our signed app on real hardware — App Attest
-on iOS, Play Integrity on Android — over a single-use challenge bound to the
-address. A script cannot produce one. A real phone can attest for many fresh
+on iOS, hardware key attestation on Android — over a single-use challenge
+bound to the address. A script cannot produce one. A real phone can attest for many fresh
 addresses, so per-address and daily caps bound what one device can take.
 
 ## Endpoints
 
     POST /gas/challenge   {address}                                -> {challenge, expires_in}
     POST /gas/ios         {address, challenge, key_id, attestation}  App Attest
-    POST /gas/android     {address, challenge, token}                Play Integrity
+    POST /gas/android     {address, challenge, chain}                Key Attestation
     GET  /health          hot wallet balance and how many grants are left in it
 
 The app attests `SHA-256(base64url_decode(challenge) || address)`: as App
-Attest's `clientDataHash` on iOS, and base64url-encoded as the Play Integrity
-nonce on Android. Grant endpoints answer `{status, message, tx_hash?}` with 200
+Attest's `clientDataHash` on iOS, and as the attestation challenge of a fresh
+AndroidKeyStore key on Android, whose certificate chain (leaf first, base64 DER)
+is what it sends. Grant endpoints answer `{status, message, tx_hash?}` with 200
 (sent), 202 (broadcast, unresolved), 4xx (cannot succeed as sent) or 5xx (retry).
 
 ## Running
 
     pip install -r requirements.txt
-    cp example.env .env      # fill in GAS_WALLET_MNEMONIC, and the service account for Android
+    cp example.env .env      # fill in GAS_WALLET_MNEMONIC
     uvicorn main:app --host 0.0.0.0 --port 8000
 
-Tests need no chain, no Apple and no Google: they build their own App Attest
-certificate chain and stand in for Google's decoder.
+Tests need no chain, no Apple and no Google: they build their own attestation
+certificate chains under roots they generate.
 
     pip install -r requirements-dev.txt
     python -m pytest
 
-## Android: the Play Integrity service account
+## Android: key attestation
 
-iOS needs nothing configured beyond `IOS_APP_ID`. Android needs Google to
-decode each token, which takes a service account:
+Nothing to sign up for. The phone's secure hardware certifies a fresh key whose
+certificate carries the challenge, the boot state, and the package name and
+signing-certificate digest of the app that asked; the chain ends at one of
+Google's public hardware-attestation roots (`services/certs/`). The backend
+checks it locally and fetches only Google's public revocation list.
 
-1. Play Console → the app → **Release → App integrity → Play Integrity API** →
-   link a Google Cloud project (create one if asked; it is free).
-2. In that Cloud project: **APIs & Services** → enable **Google Play Integrity API**.
-3. **IAM & Admin → Service accounts** → create one (no roles needed) → **Keys →
-   Add key → JSON**.
-4. Put the file's contents, or base64 of them, in `.env` as
-   `GOOGLE_SERVICE_ACCOUNT_JSON`. `bin/build-sdl.py` injects it at deploy time.
+It needs `ANDROID_SIGNING_CERT_SHA256`: the SHA-256 of every certificate the
+APK is signed with. That is the release key for sideloaded builds and, when
+Play App Signing is on, Play's app-signing key for Play installs (Play Console →
+Test and release → App integrity → App signing). Unset, `/gas/android` answers
+503.
 
-Without it `/gas/android` answers 503 and iOS is unaffected. Builds that did not
-come from Play (sideloaded, `assembleDebug`) are refused as
-`UNRECOGNIZED_VERSION` unless `PLAY_INTEGRITY_ALLOW_UNRECOGNIZED=true`, which is
-for testing only — anyone can sideload a modified APK.
+Refused: phones whose keys are only in software, phones with an unlocked
+bootloader (`ANDROID_REQUIRE_LOCKED_BOOTLOADER`), and any APK signed with a
+certificate not on the list — so a modified, re-signed app gets nothing.
 
 ## Watch the wallet
 
