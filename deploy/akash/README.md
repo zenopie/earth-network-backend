@@ -43,21 +43,20 @@ ready pod, and a mapped port worked immediately.
 The apps reach this only as `https://api.erth.network`, through the tunnel, so
 a new lease needs no change on the apps' side.
 
-## Do not lease this on the chain's provider
+## The host needs ADX
 
-`EARTH_NODE_URL` points at the chain provider's public hostname and NodePort. On
-the same provider that is a hairpin from inside the cluster back to its own
-NodePort, and it hangs instead of failing.
+`earthd gas-check` links Barretenberg's prebuilt verifier, which uses ADX
+(Broadwell 2014 and later, every AMD Zen). On a host without it — the Haswell
+Xeon this ran on until 2026-09-30 — earthd dies with `Illegal instruction`
+before printing anything, and every proof-backed grant answers 503. Akash cannot
+filter bids by CPU feature, so `bin/create.py <tag> --provider <addr>` names the
+provider; the chain's own provider (akash15tl6v6gd0nte0syyxnv57zmmspgju4c3xfmdhk,
+AMD EPYC) is known good. Check a new host with
+`earthd gas-check human <address>` in the container before closing the old lease.
 
-The symptom is badly disguised. cosmpy builds its `LedgerClient` inside FastAPI's
-startup event, so the hang stops uvicorn before it accepts connections — the port
-completes a TCP handshake from the socket backlog and then never answers, and
-the lease reports `ready=1` because nothing here defines a readiness probe. It
-reads as a network problem rather than a hung process.
-
-Same image and same environment on a different provider came up on the second
-poll. If you ever want them co-located, put both services in one SDL instead and
-let the backend reach the node by service name over the cluster network.
+Sharing a provider with the chain is fine now. It used to hang, because
+`EARTH_NODE_URL` named the chain's provider hostname and NodePort, a hairpin
+from inside the cluster; both URLs are the Cloudflare tunnel now.
 
 ## Watch the balance
 
