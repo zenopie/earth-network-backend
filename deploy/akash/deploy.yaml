@@ -50,9 +50,10 @@ services:
       # The Android package a key attestation must name, and the SHA-256 of
       # every certificate our APKs are signed with: the release/upload key for
       # sideloads, and Play's app-signing key for Play installs. Empty, Android
-      # grants answer 503.
+      # grants answer 503. Here: the release key (8f9d…, sideloads) and Play's
+      # app-signing key (9194…, Play installs).
       - ANDROID_PACKAGE=network.erth.wallet
-      - ANDROID_SIGNING_CERT_SHA256=8f9d4bf1df38e9bcfa56c5bff64e0dbabf8223a6a3db589421222c3259abd36c
+      - ANDROID_SIGNING_CERT_SHA256=8f9d4bf1df38e9bcfa56c5bff64e0dbabf8223a6a3db589421222c3259abd36c,9194aa3796428970c80c628fe53fbca9a7b0d646f092b5c22f39cb7b6f942a26
       # Refuse phones with an unlocked bootloader: there the OS can lie to the
       # secure hardware about which app is asking.
       - ANDROID_REQUIRE_LOCKED_BOOTLOADER=true
