@@ -49,7 +49,7 @@ def init() -> None:
     _wallet = LocalWallet.from_mnemonic(config.GAS_WALLET_MNEMONIC, prefix=config.EARTH_PREFIX)
     _client = LedgerClient(_network())
     _bound_http(_client)
-    logger.info("ads-for-gas wallet %s on %s", _wallet.address(), config.EARTH_CHAIN_ID)
+    logger.info("gas-grant wallet %s on %s", _wallet.address(), config.EARTH_CHAIN_ID)
 
 
 def _bound_http(client: LedgerClient) -> None:
@@ -91,9 +91,9 @@ class SendUnresolved(Exception):
     """The send was broadcast and its outcome is not known.
 
     The difference from an ordinary failure is what the caller may do about it.
-    A send that failed did not move coins, so the ad view that paid for it can
+    A send that failed did not move coins, so the grant id that paid for it can
     be handed back. A send whose outcome is unknown may well have landed, and
-    handing the ad view back would let the same callback be paid twice.
+    handing the id back would let the same grant be paid twice.
     """
 
     def __init__(self, tx_hash: str, cause: Exception) -> None:
@@ -146,7 +146,7 @@ def _send_blocking(destination: Address) -> str:
     except BroadcastError:
         # The transaction was included and failed — out of gas, insufficient
         # fees, or a dry hot wallet, which is the common one. It consumed a
-        # sequence number and moved no coins, so the ad view is genuinely
+        # sequence number and moved no coins, so the grant id is genuinely
         # unspent and the caller may hand it back.
         raise
     except QueryTimeoutError as exc:

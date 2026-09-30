@@ -12,3 +12,11 @@ python-dotenv==1.2.3
 httpx==0.28.1
 ecdsa==0.19.2
 cosmpy==0.12.2
+# Device attestation. cbor2 and cryptography for App Attest (the attestation is
+# CBOR around an X.509 chain); google-auth for the service account that asks
+# Google to decode a Play Integrity token. pyasn1* come with google-auth.
+cbor2==6.1.4
+cryptography==50.0.1
+google-auth==2.59.0
+pyasn1==0.6.4
+pyasn1-modules==0.4.2

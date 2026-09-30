@@ -1,66 +1,116 @@
-"""Shared fixtures: a real signing key standing in for Google's, a throwaway
-replay database, and a chain whose sends are recorded instead of broadcast."""
+"""Shared fixtures: a throwaway replay database, a chain whose sends are recorded
+instead of broadcast, and a stand-in for Apple's App Attest CA.
+
+A real attestation can only come off a device, so the tests build the same
+structure Apple does — root, intermediate, leaf with the nonce extension, CBOR
+around it — under a root they generated, and hand the verifier that root."""
 import base64
+import datetime
 import hashlib
 import os
 import sys
-import time
-from urllib.parse import quote
 
+import cbor2
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# config reads the environment at import time.
-os.environ.setdefault("ADMOB_AD_UNIT_ID", "ca-app-pub-1/1111")
-
-from ecdsa import NIST256p, SigningKey  # noqa: E402
-from ecdsa.util import sigencode_der  # noqa: E402
+from cryptography import x509  # noqa: E402
+from cryptography.hazmat.primitives import hashes  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat  # noqa: E402
+from cryptography.x509.oid import NameOID  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import config  # noqa: E402
-from routers import ads  # noqa: E402
-from services import chain, replay, ssv  # noqa: E402
+from routers import gas  # noqa: E402
+from services import appattest, chain, challenges, replay  # noqa: E402
 
-KEY_ID = "1234"
-AD_UNIT = "1111"
-ADDRESS = "earth1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu"
-
-_signing_key = SigningKey.generate(curve=NIST256p)
+ADDRESS = "earth1qqqsyqcyq5rqwzqfpg9scrgwpugpzysncc2uls"
+APP_ID = "XD8VH8WKVX.network.erth.EarthWallet"
 
 
-def signed_query(raw_prefix: str) -> str:
-    """Signs a raw (encoded) query prefix the way Google does: over its decoded form."""
-    from urllib.parse import unquote
+def _name(cn: str) -> x509.Name:
+    return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
 
-    sig = _signing_key.sign(
-        unquote(raw_prefix).encode("utf-8"), hashfunc=hashlib.sha256, sigencode=sigencode_der
+
+def _cert(subject, issuer, public_key, signing_key, *, ca: bool, extensions=()):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(_name(subject))
+        .issuer_name(_name(issuer))
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
     )
-    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
-    return f"{raw_prefix}&signature={sig_b64}&key_id={KEY_ID}"
+    for ext in extensions:
+        builder = builder.add_extension(ext, critical=False)
+    return builder.sign(signing_key, hashes.SHA384() if ca else hashes.SHA256())
 
 
-def callback_prefix(**overrides) -> str:
-    """A raw query prefix in Google's parameter order, each value percent-encoded."""
-    params = {
-        "ad_network": "5450213213286189855",
-        "ad_unit": AD_UNIT,
-        "custom_data": ADDRESS,
-        "reward_amount": "1",
-        "reward_item": "gas",
-        "timestamp": str(int(time.time() * 1000)),
-        "transaction_id": "tx-1",
-        "user_id": "",
-    }
-    params.update(overrides)
-    return "&".join(f"{k}={quote(v, safe='')}" for k, v in params.items() if v is not None)
+class FakeAppleCA:
+    """Root and intermediate, issuing leaves the way Apple's App Attest CA does."""
+
+    def __init__(self):
+        self.root_key = ec.generate_private_key(ec.SECP384R1())
+        self.root = _cert("Test App Attestation Root", "Test App Attestation Root",
+                          self.root_key.public_key(), self.root_key, ca=True)
+        self.inter_key = ec.generate_private_key(ec.SECP384R1())
+        self.inter = _cert("Test App Attestation CA 1", "Test App Attestation Root",
+                           self.inter_key.public_key(), self.root_key, ca=True)
+
+    def attest(self, client_data_hash: bytes, *, app_id=APP_ID, aaguid=appattest.AAGUID_PRODUCTION,
+               counter=0, nonce_override: bytes | None = None, key_id_override: bytes | None = None):
+        """Returns (key_id, attestation bytes) for a fresh device key."""
+        device_key = ec.generate_private_key(ec.SECP256R1())
+        point = device_key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+        key_id = hashlib.sha256(point).digest()
+        cred_id = key_id_override or key_id
+        auth_data = (
+            hashlib.sha256(app_id.encode()).digest()
+            + b"\x40"
+            + counter.to_bytes(4, "big")
+            + aaguid
+            + len(cred_id).to_bytes(2, "big")
+            + cred_id
+        )
+        nonce = nonce_override or hashlib.sha256(auth_data + client_data_hash).digest()
+        ext = x509.UnrecognizedExtension(
+            x509.ObjectIdentifier("1.2.840.113635.100.8.2"), bytes.fromhex("3024a1220420") + nonce
+        )
+        leaf = _cert("device", "Test App Attestation CA 1", device_key.public_key(), self.inter_key,
+                     ca=False, extensions=[ext])
+        att = cbor2.dumps({
+            "fmt": "apple-appattest",
+            "attStmt": {"x5c": [leaf.public_bytes(Encoding.DER), self.inter.public_bytes(Encoding.DER)],
+                        "receipt": b""},
+            "authData": auth_data,
+        })
+        return base64.b64encode(key_id).decode(), att
+
+
+@pytest.fixture
+def apple(monkeypatch):
+    ca = FakeAppleCA()
+    real = appattest.verify
+
+    def verify_with_test_root(*args, **kwargs):
+        kwargs["root"] = ca.root
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(appattest, "verify", verify_with_test_root)
+    return ca
 
 
 @pytest.fixture(autouse=True)
 def fresh_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DB", str(tmp_path / "state.db"))
-    monkeypatch.setattr(config, "ADMOB_AD_UNIT_IDS", frozenset({AD_UNIT}))
+    monkeypatch.setattr(config, "IOS_APP_ID", APP_ID)
     monkeypatch.setattr(replay, "_conn", None)
+    challenges.reset()
     yield
     if replay._conn is not None:
         replay._conn.close()
@@ -75,11 +125,7 @@ def sends(monkeypatch):
         sent.append(address)
         return f"HASH{len(sent)}"
 
-    async def fake_keys(key_id: str) -> dict[str, str]:
-        return {KEY_ID: _signing_key.get_verifying_key().to_pem().decode()}
-
     monkeypatch.setattr(chain, "send_dust", fake_send)
-    monkeypatch.setattr(ssv, "keys_for", fake_keys)
     return sent
 
 
@@ -88,9 +134,11 @@ def client():
     from fastapi import FastAPI
 
     app = FastAPI()
-    app.include_router(ads.router)
+    app.include_router(gas.router)
     return TestClient(app)
 
 
-def call(client, query: str) -> dict:
-    return client.get("/ads-callback?" + query).json()
+def get_challenge(client, address=ADDRESS) -> str:
+    resp = client.post("/gas/challenge", json={"address": address})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["challenge"]

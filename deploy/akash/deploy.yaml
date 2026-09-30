@@ -1,8 +1,9 @@
 ---
-# Akash SDL — earth ads-for-gas service.
+# Akash SDL — earth gas-grant service.
 #
-# One FastAPI app. It holds a hot key and turns a Google-signed rewarded-ad
-# callback into enough ERTH for a new human to make their first transaction.
+# One FastAPI app. It holds a hot key and turns an attested request from a
+# genuine app install (App Attest / Play Integrity) into enough ERTH for a new
+# human to make their first transaction.
 #
 # See README.md in this directory. Read the note on GAS_WALLET_MNEMONIC before
 # deploying: it is the one thing here that is genuinely a secret, and Akash's
@@ -37,22 +38,22 @@ services:
       # fee it puts in the tx; leaving the default is harmless and survives the
       # node later requiring a real minimum.
       - EARTH_GAS_PRICE=0.025
-      # What one verified ad view is worth. Has to materialise the account and
-      # cover a registration (~400k gas).
-      - DUST_UERTH=50000
-      # The rewarded ad unit allowed to trigger a grant. Must match the mobile
-      # app's REWARDED_AD_UNIT_ID (HostActivity.kt) — that is the unit whose
-      # ServerSideVerificationOptions carry the wallet address as custom_data.
-      # Not the interstitial unit, which never calls back.
-      #
-      # With this unset the service still starts and simply skips the check,
-      # which would let a valid Google signature from any of your ad units claim
-      # a grant.
-      # Both platforms, comma-separated. An ad unit belongs to one app on one
-      # platform, and Android and iOS both call this backend — the callback is
-      # checked for membership, so a single value here rejected every iOS ad
-      # view before its signature was even verified.
-      - ADMOB_AD_UNIT_ID=ca-app-pub-8662126294069074/9040854138,ca-app-pub-8662126294069074/1484036231
+      # What one attested grant is worth. Has to materialise the account and
+      # cover a registration (6M gas limit at 0.005 uerth/gas = 30,000 uerth).
+      - DUST_UERTH=100000
+      # The iOS app an App Attest attestation must name, as TEAMID.bundle-id.
+      - IOS_APP_ID=XD8VH8WKVX.network.erth.EarthWallet
+      # Accept keys from App Attest's development environment, i.e. a build run
+      # from Xcode. TestFlight and the App Store use production. Set false once
+      # nobody is testing from Xcode.
+      - APP_ATTEST_ALLOW_DEVELOPMENT=true
+      # The Android package a Play Integrity verdict must name.
+      - ANDROID_PACKAGE=network.erth.wallet
+      # Rolling 24h limits. An attestation proves a genuine app on a real
+      # device, not a new human, so the daily cap is what bounds one phone
+      # attesting for fresh addresses: 500 x 0.1 ERTH = 50 ERTH a day.
+      - GRANT_MAX_PER_ADDRESS_PER_DAY=3
+      - GRANT_MAX_PER_DAY=500
       #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic
@@ -63,22 +64,18 @@ services:
       # POSTed rather than into the file that is committed. It still reaches the
       # provider either way; what this avoids is it reaching the repository.
       #
-      # ADMOB_AD_UNIT_ID is likewise unset. The service starts without it and
-      # simply skips the ad-unit check, which is fine for a devnet and wrong for
-      # anything real — an unset unit id means any valid Google signature from
-      # any of your ad units can claim a grant.
+      # GOOGLE_SERVICE_ACCOUNT_JSON, the Play Integrity service account, is
+      # injected the same way when .env has it. Without it /gas/android answers
+      # 503 and iOS is unaffected.
 
     expose:
       # Tunnel-only. Nothing is published on a provider port: every entry below
       # goes to `cloudflared`, so the only way in is a Cloudflare hostname.
       # Verified serving before the mapped ports were removed, because dropping
       # them is a structural change and cannot be undone in place.
-      # HTTP API: /ads-callback for Google's SSV callback, /health for the
+      # HTTP API: /gas/* for the apps' grant requests, /health for the
       # balance. Exposed on a mapped port rather than `as: 80` — see the chain
       # repo's SDL for why; the generated ingress hostname was not reliable.
-      #
-      # AdMob's callback URL has to point at whatever port this comes back as,
-      # so it must be updated after any lease change.
       - port: 8000
         as: 8000
         to:
@@ -87,23 +84,20 @@ services:
     params:
       storage:
         state:
-          # Replay protection for SSV transaction ids.
+          # Replay protection for grant ids, and the history the daily caps count.
           mount: /app/state
           readOnly: false
 
   # Cloudflare Tunnel connector. Dials out, so it needs no inbound port.
   #
-  # It matters more here than on the chain: AdMob's SSV callback URL is
-  # configured in Google's console against whatever address this service has,
-  # and Akash reassigns the external port on every new lease. A dead callback
-  # URL fails silently — Google records a delivery, the user watched an advert,
-  # and nothing arrives.
+  # The apps call https://api.erth.network, so the hostname has to survive a
+  # lease change, and Akash reassigns the external port on every new lease.
   #
   # Configure the Public Hostname on Cloudflare's side to http://app:8000, which
   # resolves over the cluster network because `app` exposes 8000 to this service.
   cloudflared:
     # Pinned by digest. This container holds TUNNEL_TOKEN and sits in front of
-    # every callback; `latest` meant whatever was pushed last got both on the
+    # every grant request; `latest` meant whatever was pushed last got both on the
     # next lease. Bump deliberately.
     image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
     # `cloudflared` first: Akash's `command` maps to Kubernetes `command`, which
@@ -140,8 +134,8 @@ profiles:
       resources:
         # Measured, not guessed: the service idles at 69 MB RSS with the wallet
         # built and a /health round trip served, so 256Mi is roughly 4x what it
-        # uses. It is one process serving a callback that is rate-limited by how
-        # fast humans can watch adverts.
+        # uses. It is one process serving requests that are rate-limited by the
+        # daily grant cap.
         cpu:
           units: 0.1
         memory:

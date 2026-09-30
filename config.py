@@ -1,4 +1,4 @@
-"""Configuration for the ads-for-gas service.
+"""Configuration for the gas-grant service.
 
 Everything the service needs comes from the environment; see example.env. The
 only secret is GAS_WALLET_MNEMONIC, the hot key the dust is sent from.
@@ -26,52 +26,48 @@ EARTH_GAS_PRICE = float(os.getenv("EARTH_GAS_PRICE", "0.025"))
 # from a key nobody meant to use.
 GAS_WALLET_MNEMONIC = os.getenv("GAS_WALLET_MNEMONIC", "")
 
-# How much a verified ad view is worth, in uerth.
+# How much one attested grant is worth, in uerth.
 #
 # This has to do two jobs: materialise the account (an address with no on-chain
 # account cannot sign anything at all — the ante handler rejects it with
 # "account does not exist", regardless of who pays the fee), and cover the gas
 # for the transaction the user is trying to make. Registration is the expensive
-# one at ~400k gas, so at 0.025 uerth/gas that is ~10,000 uerth; 50,000 leaves
-# room for a few follow-up transactions before they are self-funding.
-DUST_UERTH = int(os.getenv("DUST_UERTH", "50000"))
+# one: the apps give it a 6M gas limit, which at the validator's 0.005 uerth/gas
+# is 30,000 uerth. 100,000 covers that with room for a few follow-ups.
+DUST_UERTH = int(os.getenv("DUST_UERTH", "100000"))
 
-# --- AdMob ---
-# The rewarded ad units that may trigger a grant.
-#
-# Plural, because an ad unit belongs to one platform and both apps call this one
-# backend: Android's unit will never serve on iOS and vice versa. Comma-separate
-# them. A single value still works, which is what every existing deployment has.
-#
-# Google sends the bare numeric id in the callback, not the full `ca-app-pub-…/…`
-# form, so each entry is reduced to the part after the last slash and compared
-# against that. Writing either form in the environment is therefore fine.
-ADMOB_AD_UNIT_IDS = frozenset(
-    unit.rsplit("/", 1)[-1]
-    for unit in (u.strip() for u in os.getenv("ADMOB_AD_UNIT_ID", "").split(","))
-    if unit
-)
+# --- attestation ---
+# iOS App Attest: the app id is TEAMID.bundle-id. An attestation names the app
+# it was made for, so this is what stops another team's app minting grants.
+IOS_APP_ID = os.getenv("IOS_APP_ID", "XD8VH8WKVX.network.erth.EarthWallet")
+# Accept keys made in App Attest's development environment — a build run from
+# Xcode. Still our team's signed app on a real device; TestFlight and the App
+# Store use production. Turn off once nobody is testing from Xcode.
+APP_ATTEST_ALLOW_DEVELOPMENT = os.getenv("APP_ATTEST_ALLOW_DEVELOPMENT", "true").lower() == "true"
 
-# Rolling 24-hour payout limits. Each callback pays DUST_UERTH, so these bound
-# what ad farming can take: per address, and for the service as a whole.
-ADS_MAX_PER_ADDRESS_PER_DAY = int(os.getenv("ADS_MAX_PER_ADDRESS_PER_DAY", "5"))
-ADS_MAX_PER_DAY = int(os.getenv("ADS_MAX_PER_DAY", "1000"))
+# Android Play Integrity: the package the verdict must name, and a service
+# account in the Cloud project linked to the app in Play Console, as JSON or
+# base64 of it. Unset, /gas/android answers 503 and iOS is unaffected.
+ANDROID_PACKAGE = os.getenv("ANDROID_PACKAGE", "network.erth.wallet")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+# Accept UNRECOGNIZED_VERSION: a build Play has not seen, i.e. sideloaded.
+# Only for testing a local build; anyone can sideload a modified APK.
+PLAY_INTEGRITY_ALLOW_UNRECOGNIZED = os.getenv("PLAY_INTEGRITY_ALLOW_UNRECOGNIZED", "false").lower() == "true"
+
+# How long a challenge stays usable, and how many may be outstanding at once.
+CHALLENGE_TTL_SECONDS = int(os.getenv("CHALLENGE_TTL_SECONDS", "300"))
+CHALLENGE_MAX_PENDING = int(os.getenv("CHALLENGE_MAX_PENDING", "10000"))
+
+# Rolling 24-hour payout limits, per address and for the service as a whole.
+# An attestation proves a real device, not a new human: one phone can attest
+# for as many fresh addresses as it likes, so the daily cap is what bounds that.
+GRANT_MAX_PER_ADDRESS_PER_DAY = int(os.getenv("GRANT_MAX_PER_ADDRESS_PER_DAY", "3"))
+GRANT_MAX_PER_DAY = int(os.getenv("GRANT_MAX_PER_DAY", "500"))
 
 # Seconds any one request to the chain's REST endpoint may take. Sends are
 # serialised, so without a bound a single hung request stalls every payout.
 CHAIN_HTTP_TIMEOUT = float(os.getenv("CHAIN_HTTP_TIMEOUT", "15"))
 
-# How far a callback's signed timestamp may sit from now, in seconds. Replay
-# protection is the transaction_id table; this bounds how long a captured
-# callback stays worth anything should that table ever be lost, and refuses one
-# stamped in the future outright. Wide enough for Google's delivery retries.
-SSV_MAX_AGE_SECONDS = int(os.getenv("SSV_MAX_AGE_SECONDS", "3600"))
-SSV_MAX_FUTURE_SECONDS = int(os.getenv("SSV_MAX_FUTURE_SECONDS", "300"))
-
-# Google's rotating public keys for Server-Side Verification.
-GOOGLE_SSV_KEYS_URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"
-GOOGLE_SSV_KEYS_TTL = 86400  # 24h
-
 # --- storage ---
-# Replay protection for SSV transaction ids.
+# Replay protection for grant ids, and the history the daily caps count.
 STATE_DB = os.getenv("STATE_DB", "ads_for_gas.db")

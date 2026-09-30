@@ -1,9 +1,12 @@
-"""Replay protection for AdMob SSV callbacks.
+"""Replay protection and payout limits for gas grants.
 
-Google will retry a callback, and an attacker will happily replay one, so a
-transaction_id may be honoured exactly once. SQLite rather than a JSON file: the
-id set is append-only and read on every request, and a file that gets rewritten
-wholesale loses entries the moment two callbacks land together.
+A grant id — the attested key on iOS, the spent challenge on Android — may be
+honoured exactly once. SQLite rather than a JSON file: the id set is
+append-only and read on every request, and a file that gets rewritten wholesale
+loses entries the moment two requests land together.
+
+The table keeps its original name from the AdMob era, when the ids were SSV
+transaction ids; renaming it would drop the history the daily caps count.
 """
 import sqlite3
 import threading
@@ -42,17 +45,18 @@ _DAY = 86400
 
 
 def claim(transaction_id: str, address: str) -> bool:
-    """Records a transaction_id, returning False if it was already used.
+    """Records a grant id, returning False if it was already used.
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
-    two concurrent callbacks with the same id cannot both win.
+    two concurrent requests with the same id cannot both win.
 
     Raises LimitReached, before claiming, when the address or the service as a
-    whole has already been paid its allowance in the last 24 hours. Every
-    genuine callback was otherwise payable, so the hot wallet could be drained
-    as fast as someone could farm ad views. Counted from this table, under the
-    same lock as the insert, so concurrent callbacks cannot both squeeze under
-    a limit; a released id no longer counts, because it moved nothing.
+    whole has already been paid its allowance in the last 24 hours. An
+    attestation proves a device, not a person, so every genuine one is
+    otherwise payable and the hot wallet could be drained as fast as one phone
+    can make addresses. Counted from this table, under the same lock as the
+    insert, so concurrent requests cannot both squeeze under a limit; a
+    released id no longer counts, because it moved nothing.
     """
     with _lock:
         since = int(time.time()) - _DAY
@@ -60,12 +64,12 @@ def claim(transaction_id: str, address: str) -> bool:
             "SELECT COUNT(*) FROM used_transactions WHERE address = ? AND granted_at > ?",
             (address, since),
         ).fetchone()
-        if mine >= config.ADS_MAX_PER_ADDRESS_PER_DAY:
+        if mine >= config.GRANT_MAX_PER_ADDRESS_PER_DAY:
             raise LimitReached("address")
         (everyone,) = _db().execute(
             "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ?", (since,)
         ).fetchone()
-        if everyone >= config.ADS_MAX_PER_DAY:
+        if everyone >= config.GRANT_MAX_PER_DAY:
             raise LimitReached("daily")
         try:
             _db().execute(
@@ -81,8 +85,8 @@ def claim(transaction_id: str, address: str) -> bool:
 def release(transaction_id: str) -> None:
     """Gives a claimed id back, for when the grant itself failed.
 
-    Without this a user who watched an ad the chain then refused to pay out on
-    would have burned it — the id would be spent with nothing to show for it.
+    Without this a failed send would still count against the address's
+    allowance, with nothing to show for it.
     """
     with _lock:
         _db().execute("DELETE FROM used_transactions WHERE transaction_id = ?", (transaction_id,))

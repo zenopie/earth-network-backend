@@ -1,4 +1,4 @@
-# Akash deployment — earth ads-for-gas
+# Akash deployment — earth gas grants
 
 Same image as the compose deployment; only the hosting primitives differ.
 `deploy.yaml` is the SDL.
@@ -26,35 +26,28 @@ Substitute it into the SDL you submit, never into the file you commit:
     SDL=$(sed "s|^      - EARTH_GAS_PRICE=.*|&\n      - GAS_WALLET_MNEMONIC=$MNEMONIC|" deploy/akash/deploy.yaml)
 
 Treat the balance as the blast radius. It is seeded with 10,000 ERTH in the
-chain's genesis — enough for 200,000 grants at `DUST_UERTH=50000`, and worth
+chain's genesis — enough for 100,000 grants at `DUST_UERTH=100000`, and worth
 nothing outside the devnet. Do not reuse this key for anything that is.
 
 ## Endpoints
 
-    GET /health         hot wallet balance and grants remaining
-    GET /ads-callback   AdMob Server-Side Verification callback
+    GET  /health          hot wallet balance and grants remaining
+    POST /gas/challenge   a single-use challenge to attest over
+    POST /gas/ios         grant on an App Attest attestation
+    POST /gas/android     grant on a Play Integrity token
 
 Exposed on a mapped port, not `as: 80`. The chain repo's SDL explains why: the
 provider's generated ingress hostname returned nginx 404 for ten minutes with a
 ready pod, and a mapped port worked immediately.
 
-**AdMob's SSV callback URL must be updated whenever the lease changes**, since
-the external port is assigned per lease. If it points at a dead port the failure
-is quiet in the worst way: users watch ads, Google records a delivery, and
-nothing arrives.
+The apps reach this only as `https://api.erth.network`, through the tunnel, so
+a new lease needs no change on the apps' side.
 
-## `ADMOB_AD_UNIT_ID`
+## `GOOGLE_SERVICE_ACCOUNT_JSON`
 
-Set to `ca-app-pub-8662126294069074/9040854138`, the mobile app's
-`REWARDED_AD_UNIT_ID` (`HostActivity.kt`) — the unit whose
-`ServerSideVerificationOptions` carry the wallet address as `custom_data`. The
-interstitial unit in the same file is not it and never calls back.
-
-Google sends the bare numeric half (`9040854138`) in the callback; the service
-compares against the last path segment, so the full form belongs here.
-
-Leaving it unset is not neutral: the service starts and skips the check, which
-lets a valid Google signature from *any* of your ad units claim a grant.
+The Play Integrity service account; see the top-level README for how to make
+one. Like the mnemonic it lives in `.env` and is injected by `bin/build-sdl.py`,
+base64-encoded. Unset, Android grants answer 503 and iOS is unaffected.
 
 ## Do not lease this on the chain's provider
 
@@ -74,9 +67,9 @@ let the backend reach the node by service name over the cluster network.
 
 ## Watch the balance
 
-`/health` reports `grants_remaining`. When the wallet runs dry the failure is
-silent and expensive: callbacks still verify, transaction ids are still consumed,
-and users watch ads for nothing.
+`/health` reports `grants_remaining`. When the wallet runs dry every grant fails
+after its attestation verifies, and new users are stuck at their first
+transaction.
 
 ## Sizing
 

@@ -5,8 +5,10 @@ secrets from .env.
 The same arrangement as the chain's deploy repo, and for the same reason. Two
 values must reach the provider and must not reach the repository:
 
-    GAS_WALLET_MNEMONIC   the hot key the dust is sent from — spendable ERTH
-    TUNNEL_TOKEN          anyone holding it can attach a replica to the tunnel
+    GAS_WALLET_MNEMONIC          the hot key the dust is sent from — spendable ERTH
+    TUNNEL_TOKEN                 anyone holding it can attach a replica to the tunnel
+    GOOGLE_SERVICE_ACCOUNT_JSON  the Play Integrity service account (optional;
+                                 unset, Android grants are off)
 
 Everything submitted reaches the provider regardless; that is what submitting
 means. What this avoids is them being committed.
@@ -17,7 +19,8 @@ for what cannot be written down.
 
     bin/build-sdl.py <repo> <out.yaml> <digest>
 """
-import base64  # noqa: F401  (kept for parity with the chain's builder)
+import base64
+import json
 import os
 import sys
 
@@ -59,6 +62,16 @@ assert not any(c in mn for c in "\"'"), "mnemonic carries quote characters; BIP3
 assert mn == mn.strip(), "mnemonic has leading/trailing whitespace"
 s = s.replace(anchor, anchor + "      - GAS_WALLET_MNEMONIC=%s\n" % mn)
 
+# Optional. A JSON key file is multi-line and full of quotes, so it goes in as
+# base64 whatever form .env holds it in; the service accepts either.
+sa = env.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+if sa:
+    if sa.lstrip().startswith("{"):
+        sa = base64.b64encode(sa.encode("utf-8")).decode()
+    assert json.loads(base64.b64decode(sa)).get("type") == "service_account", \
+        "GOOGLE_SERVICE_ACCOUNT_JSON is not a service account key"
+    s = s.replace(anchor, anchor + "      - GOOGLE_SERVICE_ACCOUNT_JSON=%s\n" % sa)
+
 anchor = "    env: []\n"
 assert s.count(anchor) == 1, "cloudflared env anchor moved"
 tok = env.get("TUNNEL_TOKEN", "")
@@ -90,10 +103,8 @@ assert "provider." not in node, (
     "rest+https://lcd.erth.network — or this hangs on startup if it is ever "
     "leased on the same provider as the chain." % node)
 
-# An unset unit id makes the service skip the check entirely, so any valid
-# Google signature from any of your ad units could claim a grant.
-units = [u for u in a.get("ADMOB_AD_UNIT_ID", "").split(",") if u.strip()]
-assert units, "ADMOB_AD_UNIT_ID unset — the ad-unit check would be skipped entirely"
+# The app id an attestation must name. Wrong here, every iOS grant is refused.
+assert a.get("IOS_APP_ID", "").count(".") >= 2, "IOS_APP_ID must be TEAMID.bundle.id"
 
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
@@ -101,8 +112,9 @@ assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
 print("services:   ", ", ".join(sorted(svcs)))
 print("node:       ", node, " chain:", a.get("EARTH_CHAIN_ID"))
 print("dust:       ", a.get("DUST_UERTH"), "uerth")
-print("ad units:   ", ", ".join(u.rsplit("/", 1)[-1] for u in units))
-print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars)" % (len(mn.split()), len(tok)))
+print("ios app:    ", a.get("IOS_APP_ID"), " development keys:", a.get("APP_ATTEST_ALLOW_DEVELOPMENT", "true"))
+print("android:    ", a.get("ANDROID_PACKAGE", "network.erth.wallet"), " play integrity:", "configured" if sa else "OFF (unset GOOGLE_SERVICE_ACCOUNT_JSON)")
+print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars), GOOGLE_SERVICE_ACCOUNT_JSON(%s)" % (len(mn.split()), len(tok), "set" if sa else "unset"))
 
 open(out, "w").write(s)
 print("wrote %s (%d bytes)" % (out, len(s)))

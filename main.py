@@ -1,8 +1,8 @@
-"""earth ads-for-gas service.
+"""earth gas-grant service.
 
-One job: turn a verified rewarded-ad view into enough ERTH for a new human to
-make their first transaction. Everything else the old Secret-era backend did is
-gone — registration is proved on-device and verified on-chain now, and the CSCA
+One job: turn an attested request from a genuine app install into enough ERTH
+for a new human to make their first transaction. Everything else the old
+Secret-era backend did is gone — registration is proved on-device and verified on-chain now, and the CSCA
 trust store moved to the chain repo where it is enforced.
 """
 import logging
@@ -10,14 +10,14 @@ import logging
 from fastapi import FastAPI
 
 import config
-from routers import ads
+from routers import gas
 from services import chain
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="earth ads-for-gas", version="1.0.0")
-app.include_router(ads.router)
+app = FastAPI(title="earth gas grants", version="2.0.0")
+app.include_router(gas.router)
 
 
 @app.on_event("startup")
@@ -29,8 +29,8 @@ def startup() -> None:
 def health():
     """Reports the hot wallet's balance — the thing that silently stops onboarding.
 
-    When this runs dry every ad view is wasted: the callback verifies, the id is
-    consumed, and the send fails. Worth alerting on.
+    When this runs dry every grant fails: the attestation verifies and the send
+    does not. Worth alerting on.
     """
     try:
         remaining = chain.balance()
