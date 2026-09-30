@@ -61,6 +61,15 @@ ANDROID_SIGNING_CERT_SHA256 = frozenset(
 # the OS can lie to the secure hardware about which app is asking.
 ANDROID_REQUIRE_LOCKED_BOOTLOADER = os.getenv("ANDROID_REQUIRE_LOCKED_BOOTLOADER", "true").lower() == "true"
 
+# `earthd gas-check`: the chain release's binary, the node whose state it reads,
+# and a writable home (earthd insists on one, and the service user has none).
+EARTHD_BIN = os.getenv("EARTHD_BIN", "earthd")
+EARTHD_HOME = os.getenv("EARTHD_HOME", "/tmp/earthd-home")
+EARTH_RPC_URL = os.getenv("EARTH_RPC_URL", "https://rpc.erth.network:443")
+GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
+# Checks run one at a time (memory); beyond this many waiting, refuse with 503.
+GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
+
 # How long a challenge stays usable, and how many may be outstanding at once.
 CHALLENGE_TTL_SECONDS = int(os.getenv("CHALLENGE_TTL_SECONDS", "300"))
 CHALLENGE_MAX_PENDING = int(os.getenv("CHALLENGE_MAX_PENDING", "10000"))

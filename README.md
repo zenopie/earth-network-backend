@@ -21,6 +21,20 @@ addresses, so per-address and daily caps bound what one device can take.
 
 ## Endpoints
 
+    POST /gas/register    {address, proof, public_signals, signature_algorithm, dsc_der, affiliate?}
+    POST /gas/human       {address}
+
+What the apps call. `/gas/register` takes the registration the app is about to
+broadcast and pays if the chain would accept it — once per passport per month.
+`/gas/human` pays an address the chain counts as a human — once per person per
+day. Both are keyed on the passport's nullifier, so new wallets do not multiply
+them, and both ask the chain's own checks through `earthd gas-check` (installed
+in the image from the chain release; see the Dockerfile). Proofs are verified
+here, never by the node.
+
+The device-attestation endpoints below predate these and stay until the app
+builds that call them are retired:
+
     POST /gas/challenge   {address}                                -> {challenge, expires_in}
     POST /gas/ios         {address, challenge, key_id, attestation}  App Attest
     POST /gas/android     {address, challenge, chain}                Key Attestation

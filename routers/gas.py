@@ -1,4 +1,6 @@
-"""Gas for new humans, paid on proof of a genuine app install.
+"""Gas for humans: new ones on proof of their registration, registered ones on
+the chain's word that they are human, and — for app builds that predate those —
+on proof of a genuine app install.
 
 A new human has no ERTH and no on-chain account, so they cannot make their first
 transaction — including the registration that would earn them ERTH. This closes
@@ -12,9 +14,22 @@ The attestation is the Sybil cost. It cannot be produced by a script, only by
 our signed app on real hardware, and the per-address and daily caps in replay
 bound what one phone farming fresh addresses can take.
 
+    POST /gas/register    {address, proof, public_signals, signature_algorithm, dsc_der, affiliate?}
+    POST /gas/human       {address}
     POST /gas/challenge   {address}                                -> {challenge, expires_in}
     POST /gas/ios         {address, challenge, key_id, attestation} App Attest
     POST /gas/android     {address, challenge, chain}               Key Attestation
+
+The first two are the ones the apps use. Both ask the chain's own checks via
+`earthd gas-check` (services/gascheck), so a grant is tied to a passport:
+
+- /gas/register takes the registration the app is about to broadcast, and pays
+  if the chain would accept it — once per passport per month, keyed on the
+  nullifier, so new wallets do not multiply it.
+- /gas/human pays an address the chain counts as a human, once per person per
+  day, again keyed on the nullifier.
+
+The attestation endpoints stay until the app builds that call them are gone.
 
 Both grant endpoints answer with {status, message, tx_hash?} and a status code
 the app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request
@@ -30,7 +45,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import config
-from services import appattest, chain, challenges, keyattest, replay
+import time
+
+from services import appattest, chain, challenges, gascheck, keyattest, replay
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +55,19 @@ router = APIRouter(prefix="/gas")
 
 
 class ChallengeRequest(BaseModel):
+    address: str
+
+
+class RegisterGrant(BaseModel):
+    address: str
+    proof: str
+    public_signals: list[str]
+    signature_algorithm: str
+    dsc_der: str
+    affiliate: str = ""
+
+
+class HumanGrant(BaseModel):
     address: str
 
 
@@ -61,6 +91,56 @@ def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse
 def _valid_address(address: str) -> bool:
     hrp, data = bech32.bech32_decode(address)
     return hrp == config.EARTH_PREFIX and data is not None
+
+
+@router.post("/register", summary="Grant gas for a registration the chain would accept")
+async def register(body: RegisterGrant):
+    address = body.address.strip()
+    if not _valid_address(address):
+        return _reply(400, "error", "not an earth address")
+    try:
+        base64.b64decode(body.proof, validate=True)
+        base64.b64decode(body.dsc_der, validate=True)
+    except (binascii.Error, ValueError):
+        return _reply(400, "error", "proof and dsc_der must be base64")
+    # MsgRegister in proto JSON: bytes fields are standard base64, exactly as
+    # the app already holds them.
+    msg = {
+        "creator": address,
+        "proof": body.proof,
+        "public_signals": body.public_signals,
+        "signature_algorithm": body.signature_algorithm,
+        "dsc_der": body.dsc_der,
+        "affiliate": body.affiliate,
+    }
+    try:
+        verdict = await gascheck.registration(msg)
+    except gascheck.Unavailable as exc:
+        logger.error("registration check unavailable: %s", exc)
+        return _reply(503, "error", "verification is unavailable; try again shortly")
+    if not verdict.get("ok"):
+        # The chain's own reason — "passport expired", "daily cap reached" —
+        # is what the user needs, and it says nothing they did not send.
+        logger.info("registration check refused %s: %s", address, verdict.get("error"))
+        return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
+    month = time.strftime("%Y-%m", time.gmtime())
+    return await _grant(f"passport:{verdict['nullifier']}:{month}", address)
+
+
+@router.post("/human", summary="Grant gas to a registered human")
+async def human(body: HumanGrant):
+    address = body.address.strip()
+    if not _valid_address(address):
+        return _reply(400, "error", "not an earth address")
+    try:
+        verdict = await gascheck.human(address)
+    except gascheck.Unavailable as exc:
+        logger.error("human check unavailable: %s", exc)
+        return _reply(503, "error", "verification is unavailable; try again shortly")
+    if not verdict.get("ok"):
+        return _reply(403, "error", "this address is not a registered human")
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    return await _grant(f"human:{verdict['nullifier']}:{day}", address)
 
 
 @router.post("/challenge", summary="A single-use challenge to attest over")
