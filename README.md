@@ -56,11 +56,12 @@ is what it sends. Grant endpoints answer `{status, message, tx_hash?}` with 200
 ## Running
 
     pip install -r requirements.txt
-    cp example.env .env      # fill in GAS_WALLET_MNEMONIC
+    cp example.env .env      # fill in GAS_WALLET_MNEMONIC, or GAS_ENABLED=false
     uvicorn main:app --host 0.0.0.0 --port 8000
 
 Tests need no chain, no Apple and no Google: they build their own attestation
-certificate chains under roots they generate.
+certificate chains under roots they generate, and replay recorded chain blocks
+for the indexer.
 
     pip install -r requirements-dev.txt
     python -m pytest
@@ -87,3 +88,88 @@ certificate not on the list — so a modified, re-signed app gets nothing.
 
 `/health` reports `grants_remaining`. When the hot wallet runs dry every grant
 fails after its attestation verifies. Alert on it.
+
+## Privacy indexer
+
+Wallets on the shielded chain never ask anyone about their own notes. They
+download every note commitment and ciphertext, every nullifier and every
+identity leaf, rebuild both trees locally and trial-decrypt. This serves that
+data, and nothing narrower: there is no endpoint keyed by anything a wallet
+derives from its keys.
+
+    GET /privacy/status                               synced height, counts, halted reason
+    GET /privacy/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount]
+    GET /privacy/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
+    GET /privacy/identity?from_index=&limit=          [index, height, leaf, zeroed_height]
+    GET /privacy/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
+    GET /privacy/roots/latest                         note and identity roots, size, height, time
+    GET /privacy/rates?epoch=                         [validator, rate, supply, epoch, height]
+
+Compact JSON (rows as arrays, field order in `fields`), gzip'd. Pages default
+to 1000 rows and cap at `PRIVACY_PAGE_MAX` (5000). Height-paged streams never
+split a block, so `next_height` is always a clean cursor. A page that filled
+its limit covers a closed range and is served `immutable`; the tip page,
+identity leaves (zeroable later), roots, rates and status get short max-ages.
+`amount` is set only for notes whose value is already public (a shield or a
+module mint). A wallet that has synced identity leaves follows
+`/identity/zeroed` rather than re-reading them.
+
+### How it follows the chain
+
+`services/privacy/indexer.py` reads `block_results` over CometBFT RPC from
+`INDEXER_START_HEIGHT` (default: the node's earliest block), in batches, and
+applies each block to SQLite (`INDEX_DB`) in one transaction with the height
+it reaches — so it resumes exactly where it stopped and re-applying a block is
+a no-op. CometBFT blocks are final, so it only moves forward. Run it inside
+the API process (`INDEXER_ENABLED=true`) or alone:
+
+    python -m services.privacy.indexer
+
+Events it reads (privacy/main): `shielded_note`, `shielded_nullifier`,
+`shielded_root`, `shielded_shield`/`shielded_mint` (public amounts),
+`identity_leaf` (append, or zero when the leaf is all zeros),
+`identity_root`, `shieldedstaking_epoch_validator` and
+`shieldedstaking_epoch`. Block events are ordered PreBlock/BeginBlock, txs,
+EndBlock (the SDK's `mode` attribute), which is the order notes are appended.
+
+**Failed txs are read too.** A private tx's notes and nullifiers are written in
+the ante. SDK v0.53 commits the ante's writes before running the msgs and,
+when a msg fails, still returns the ante's events (only those) in the failed
+tx's result; a tx whose ante fails writes nothing and returns no events. So
+every event in every tx result is state that persisted, whatever the code.
+(`bin/sdkcheck`, run in the SDK v0.53.6 baseapp test harness, confirms it.)
+
+It refuses, and halts until an operator steps in, rather than serve trees that
+cannot match the chain: a note position out of sequence, a nullifier twice, a
+root event whose size differs from the index, a different chain id or block
+hash behind the RPC than the one indexed, or tree sizes that differ from the
+chain's own (`Query/Tree`, `Query/IdentityTree` at each batch's last height —
+this is what catches notes imported at genesis, which emit no events, or a
+start height past the first private tx). The reason is in `/privacy/status`;
+clear it by wiping `INDEX_DB`.
+
+The node behind `INDEXER_RPC_URL` must keep block results from the start
+height on: `storage.discard_abci_responses = false` (the default) and no block
+pruning below it.
+
+### Verifying the trees
+
+    bin/verify-trees.py --db privacy_index.db [--all-roots] [--no-chain]
+
+rebuilds both trees from the index with Python Poseidon2 (`services/zk`, a
+port of the chain's `zk/poseidon2`, `zk/merkle` and `zk/privacy`), checks the
+latest root of each (every recorded root with `--all-roots`) against the root
+events the chain emitted, and compares the rebuilt trees with the chain's own
+at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
+asked.
+
+### Fixtures
+
+`tests/fixtures/privacy/Test*.json.gz` are real blocks: the chain's own app
+scenario tests (real proofs, the launch genesis path) recorded as RPC
+`block_results` with the keepers' tree sizes and roots after each block.
+`zk_vectors.json` comes from the chain's Go zk packages. Both regenerate from
+a chain checkout without touching it:
+
+    bin/record-chain-fixtures.sh ../earth-network-chain
+    bin/zk-vectors.sh ../earth-network-chain

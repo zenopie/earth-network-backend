@@ -62,6 +62,15 @@ services:
       # attesting for fresh addresses: 500 x 0.1 ERTH = 50 ERTH a day.
       - GRANT_MAX_PER_ADDRESS_PER_DAY=3
       - GRANT_MAX_PER_DAY=500
+      # The privacy indexer (services/privacy): follows the chain over CometBFT
+      # RPC into /app/state/privacy_index.db and serves /privacy/* to wallets.
+      # The RPC must keep block results from the start height on — for a full
+      # history, a node that has never pruned blocks since genesis. Once the
+      # index holds blocks, INDEXER_START_HEIGHT is ignored.
+      - INDEXER_ENABLED=true
+      - INDEXER_RPC_URL=https://rpc.erth.network:443
+      - INDEXER_START_HEIGHT=0
+      - INDEX_DB=/app/state/privacy_index.db
       #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic
@@ -77,8 +86,8 @@ services:
       # goes to `cloudflared`, so the only way in is a Cloudflare hostname.
       # Verified serving before the mapped ports were removed, because dropping
       # them is a structural change and cannot be undone in place.
-      # HTTP API: /gas/* for the apps' grant requests, /health for the
-      # balance. Exposed on a mapped port rather than `as: 80` — see the chain
+      # HTTP API: /gas/* for the apps' grant requests, /privacy/* for wallet
+      # sync, /health for the balance. Exposed on a mapped port rather than `as: 80` — see the chain
       # repo's SDL for why; the generated ingress hostname was not reliable.
       - port: 8000
         as: 8000
@@ -151,7 +160,11 @@ profiles:
           # record of which SSV transaction ids were already honoured — and
           # every one of them becomes replayable against the hot wallet.
           - name: state
-            size: 1Gi
+            # Also the privacy index: roughly 300 bytes a note (commitment plus
+            # ciphertext), so 4Gi holds on the order of ten million notes.
+            # Persistent storage cannot grow in place; a bigger volume is a
+            # new lease, and the index rebuilds from the chain on its own.
+            size: 4Gi
             attributes:
               persistent: true
               class: beta3

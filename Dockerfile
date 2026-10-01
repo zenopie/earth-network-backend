@@ -26,7 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # Bump EARTHD_VERSION with the chain, together with its checksum: a circuit or
 # parameter change the node has and this binary lacks means refusing proofs the
-# chain would take.
+# chain would take. The shielded chain's gas-check takes MsgRegister without a
+# creator and with idc/pc fields, which v0.9.x cannot parse: this must be the
+# privacy release before /gas/register can pay anything on that chain.
 ARG EARTHD_VERSION=v0.9.4
 ARG EARTHD_SHA256=15885bca933489a22e2647ce01aeb4fb6c34180a258a6e33914814c7ed5ae0a0
 RUN python -c "import hashlib, sys, tarfile, urllib.request; \
@@ -41,10 +43,12 @@ ENV EARTHD_BIN=/opt/earthd/bin/earthd
 
 COPY . .
 
-# Replay-protection state. Mount a volume here: a redeployed container with a
-# fresh filesystem forgets which grants it has already paid, and the per-passport
-# and daily limits start over.
+# Replay-protection state and the privacy index. Mount a volume here: a
+# redeployed container with a fresh filesystem forgets which grants it has
+# already paid, and the per-passport and daily limits start over. (The index
+# would only re-sync from the chain, which takes a while.)
 ENV STATE_DB=/app/state/ads_for_gas.db
+ENV INDEX_DB=/app/state/privacy_index.db
 RUN mkdir -p /app/state \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 VOLUME ["/app/state"]

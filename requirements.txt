@@ -9,6 +9,7 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 python-dotenv==1.2.3
+# Also the privacy indexer's CometBFT RPC client (services/privacy/rpc.py).
 httpx==0.28.1
 ecdsa==0.19.2
 cosmpy==0.12.2
