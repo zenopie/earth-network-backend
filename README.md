@@ -36,6 +36,19 @@ chain's own, through `earthd gas-check registration` (installed in the image
 from the chain release; see the Dockerfile). Proofs are verified here, never by
 the node.
 
+    POST /gas/transparent {address, proof, root, nullifier, max_activation, month?}
+
+For a registered human who wants transparent ERTH (fees from an ordinary
+account). A membership proof (bytes base64) that its prover holds a live
+identity leaf, with scope `GasScope(YYYYMM) = H(TAG_SCOPE, Bytes("gas"),
+YYYYMM)`, signal `H(TAG_SIGNAL, Bytes("earth.gas.transparent"),
+Bytes(chain_id), Bytes(address bytes))`, no exclusions, and `max_activation`
+at most now; `month` must be the current UTC month. Checked by `earthd
+gas-check membership` against an identity root inside the chain's window,
+then `DUST_UERTH` is bank-sent to `address`. Once per nullifier per month,
+keyed `gas-transparent:<nullifier>:<YYYY-MM>` with no address stored: the
+backend never learns which human asked.
+
 `/gas/human` is gone: nothing on chain links an address to a registration any
 more, and a registered human pays every fee from their reward note.
 

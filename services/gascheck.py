@@ -1,7 +1,9 @@
 """Asking the chain's own personhood checks, through `earthd gas-check`.
 
-One question decides a registration grant, and it is the chain's to answer:
-would it accept this registration, and for which passport. (There is no "is
+Two questions decide the grants, and both are the chain's to answer: would it
+accept this registration, and for which passport (`registration`); and is this
+membership proof a live registered human's transparent gas grant for this
+month to this address, under which nullifier (`membership`). (There is no "is
 this address a human" question any more: nothing on chain links an address to
 a registration.) The earthd binary from the chain release answers them with the chain's own code,
 reading live state from the node with plain store reads and verifying any proof
@@ -65,3 +67,15 @@ async def registration(msg: dict) -> dict:
     """{"ok": true, "nullifier", "switched"} or {"ok": false, "error"} for a MsgRegister in proto JSON."""
     return await _run(["registration"], json.dumps(msg).encode())
 
+
+
+async def membership(m: dict, address: str, month: int, max_activation: int) -> dict:
+    """{"ok": true, "nullifier"} or {"ok": false, "error"} for a Membership {proof, root, nullifier} in proto JSON.
+
+    The proof's scope is GasScope(month), month = YYYYMM; its signal binds
+    address and the chain id (zk/privacy GasTransparentSignal).
+    """
+    return await _run(
+        ["membership", "--address", address, "--month", str(month), "--max-activation", str(max_activation)],
+        json.dumps(m).encode(),
+    )

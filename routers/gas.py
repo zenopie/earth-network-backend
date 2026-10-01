@@ -19,6 +19,19 @@ MsgRegister and pays its fee from that note; the registration reward pays
 every later fee. The backend stores only the passport key, never pc_gas or
 anything else that names the note, and the note's spend is unlinkable to it.
 
+Once registered, a human may also want transparent ERTH, to pay fees from an
+ordinary account (an LP, an IBC transfer, a contract call):
+
+    POST /gas/transparent {address, proof, root, nullifier, max_activation, month?}
+
+takes a membership proof that its prover holds some live identity leaf —
+scope GasScope(month) = H(TAG_SCOPE, Bytes("gas"), YYYYMM), signal
+H(TAG_SIGNAL, Bytes("earth.gas.transparent"), Bytes(chain_id), Bytes(address
+bytes)), no exclusions — asks the chain whether it verifies against a live
+identity root (`earthd gas-check membership`), and bank-sends DUST_UERTH to the
+address, once per membership nullifier per month. The backend never learns
+which human asked; it keeps only `gas-transparent:<nullifier>:<YYYY-MM>`.
+
 /gas/human is gone: it paid an address the chain counted as a human, and
 nothing on chain links an address to a registration any more.
 
@@ -74,6 +87,19 @@ class RegisterGrant(BaseModel):
     # fee from, and optionally that note encrypted to itself.
     pc_gas: str
     ciphertext_gas: str = ""
+
+
+class TransparentGrant(BaseModel):
+    # The account the grant pays, bound in the proof's signal.
+    address: str
+    # personhood Membership, bytes as standard base64 (proto JSON).
+    proof: str
+    root: str
+    nullifier: str
+    # The proof's max_activation (unix seconds), at most now.
+    max_activation: int
+    # The proof's scope month, YYYYMM (UTC). Must be this month; defaults to it.
+    month: int | None = None
 
 
 class IosGrant(BaseModel):
@@ -152,6 +178,75 @@ async def register(body: RegisterGrant):
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     month = time.strftime("%Y-%m", time.gmtime())
     return await _grant_note(f"passport:{verdict['nullifier']}:{month}", pc_gas, ciphertext_gas)
+
+
+def _this_month() -> int:
+    """The current UTC month as YYYYMM."""
+    now = time.gmtime()
+    return now.tm_year * 100 + now.tm_mon
+
+
+@router.post("/transparent", summary="Send transparent ERTH to an address a live human names")
+async def transparent(body: TransparentGrant):
+    address = body.address.strip()
+    if not _valid_address(address):
+        return _reply(400, "error", "not an earth address")
+    try:
+        if not _b64(body.proof):
+            raise ValueError("empty proof")
+        _field(body.root)
+        nullifier = _field(body.nullifier)
+    except (binascii.Error, ValueError):
+        return _reply(400, "error", "proof must be base64; root and nullifier 32-byte field elements")
+    if body.max_activation < 0 or body.max_activation >= 1 << 63:
+        return _reply(400, "error", "max_activation out of range")
+    this_month = _this_month()
+    month = this_month if body.month is None else body.month
+    if month != this_month:
+        return _reply(400, "error", f"the grant is for this month ({this_month}); prove again with its scope")
+    m = {"proof": body.proof, "root": body.root, "nullifier": body.nullifier}
+    try:
+        verdict = await gascheck.membership(m, address, month, body.max_activation)
+    except gascheck.Unavailable as exc:
+        logger.error("membership check unavailable: %s", exc)
+        return _reply(503, "error", "verification is unavailable; try again shortly")
+    if not verdict.get("ok"):
+        logger.info("membership check refused: %s", verdict.get("error"))
+        return _reply(403, "error", f"the chain would not accept this proof: {verdict.get('error')}")
+    if verdict.get("nullifier") != nullifier.hex():
+        # gas-check verified the nullifier it was sent; anything else is a bug.
+        logger.error("gas-check answered for another nullifier")
+        return _reply(503, "error", "verification is unavailable; try again shortly")
+    grant_id = f"gas-transparent:{nullifier.hex()}:{month // 100:04d}-{month % 100:02d}"
+    return await _grant_transparent(grant_id, address)
+
+
+async def _grant_transparent(grant_id: str, address: str) -> JSONResponse:
+    """_grant for a membership grant: claimed under its id alone, no address.
+
+    The address is public in the send itself; keeping it next to the nullifier
+    here would add nothing but a record of which grants one address took.
+    """
+    try:
+        claimed = replay.claim(grant_id)
+    except replay.LimitReached as exc:
+        logger.warning("%s payout limit reached; refusing a transparent grant", exc)
+        return _reply(429, "error", "free gas limit reached; try again tomorrow")
+    if not claimed:
+        return _reply(409, "error", "already granted this month")
+
+    try:
+        tx_hash = await chain.send_dust(address)
+    except chain.SendUnresolved as exc:
+        logger.error("transparent grant is unresolved: %s", exc)
+        return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
+    except Exception:
+        replay.release(grant_id)
+        logger.exception("transparent grant send failed")
+        return _reply(502, "error", "the grant could not be sent; try again")
+
+    logger.info("sent %d%s as a transparent gas grant (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, tx_hash)
+    return _reply(200, "success", "gas sent", tx_hash=tx_hash)
 
 
 async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONResponse:

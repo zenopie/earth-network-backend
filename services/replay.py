@@ -1,9 +1,10 @@
 """Replay protection and payout limits for gas grants.
 
 A grant id — the passport key `passport:<nullifier>:<YYYY-MM>` for a
-registration grant, the attested key for the device grants — may be honoured
-exactly once. A registration grant is stored under its id alone, with an empty
-address: it pays a shielded note, and the backend keeps nothing that names
+registration grant, `gas-transparent:<nullifier>:<YYYY-MM>` for a membership
+(transparent) grant, the attested key for the device grants — may be honoured
+exactly once. A registration or membership grant is stored under its id alone, with an
+empty address: the backend never learns who took it, and the backend keeps nothing that names
 where the note went. SQLite rather than a JSON file: the id set is
 append-only and read on every request, and a file that gets rewritten wholesale
 loses entries the moment two requests land together.
