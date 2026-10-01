@@ -1,8 +1,9 @@
 """Asking the chain's own personhood checks, through `earthd gas-check`.
 
-Two questions decide a proof-backed grant, and both are the chain's to answer:
-would it accept this registration, and does this address count as a human. The
-earthd binary from the chain release answers them with the chain's own code,
+One question decides a registration grant, and it is the chain's to answer:
+would it accept this registration, and for which passport. (There is no "is
+this address a human" question any more: nothing on chain links an address to
+a registration.) The earthd binary from the chain release answers them with the chain's own code,
 reading live state from the node with plain store reads and verifying any proof
 here, on this machine — so junk proofs cost this service CPU and the chain
 nothing. See `earthd gas-check --help` in the chain repo.
@@ -64,7 +65,3 @@ async def registration(msg: dict) -> dict:
     """{"ok": true, "nullifier", "switched"} or {"ok": false, "error"} for a MsgRegister in proto JSON."""
     return await _run(["registration"], json.dumps(msg).encode())
 
-
-async def human(address: str) -> dict:
-    """{"ok": true, "nullifier"} if address counts as a human, else {"ok": false, "error"}."""
-    return await _run(["human", address])

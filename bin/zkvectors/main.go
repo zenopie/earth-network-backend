@@ -9,7 +9,10 @@ import (
 	"encoding/json"
 	"os"
 
+	"cosmossdk.io/math"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	shieldedtypes "github.com/earth-network/earth/x/shielded/types"
 	"github.com/earth-network/earth/zk/merkle"
 	"github.com/earth-network/earth/zk/poseidon2"
 	"github.com/earth-network/earth/zk/privacy"
@@ -60,5 +63,17 @@ func main() {
 	out["identity_leaves"] = leaves
 	out["identity_root_3"] = hx(r3)
 	out["identity_root_zeroed1"] = hx(rz)
+	// MsgShield as the chain encodes it, for the backend's hand-built proto.
+	shield := shieldedtypes.MsgShield{
+		Sender:     "earth1qqqsyqcyq5rqwzqfpg9scrgwpugpzysncc2uls",
+		Amount:     sdk.NewCoin("uerth", math.NewInt(100000)),
+		Pc:         privacy.FieldBytes(pc),
+		Ciphertext: []byte("ciphertext"),
+	}
+	bz, err := shield.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	out["msg_shield"] = map[string]string{"sender": shield.Sender, "pc": hx(pc), "ciphertext_hex": hex.EncodeToString(shield.Ciphertext), "encoded": hex.EncodeToString(bz)}
 	json.NewEncoder(os.Stdout).Encode(out)
 }

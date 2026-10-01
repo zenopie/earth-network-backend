@@ -1,39 +1,37 @@
-"""Gas for humans: new ones on proof of their registration, registered ones on
-the chain's word that they are human, and — for app builds that predate those —
-on proof of a genuine app install.
+"""Gas for humans: new ones on proof of their registration, and — for app builds
+that predate it — on proof of a genuine app install.
 
-A new human has no ERTH and no on-chain account, so they cannot make their first
-transaction — including the registration that would earn them ERTH. This closes
-that loop: the app proves, through the platform's own attestation, that it is a
-genuine copy running on a real device, and the backend sends enough dust to
-transact. On iOS that is App Attest; on Android, hardware key attestation, which
-needs no Google account or Play services and accepts any install of our signed
-APK, sideloaded included.
+A new human has no ERTH, so they cannot make their first transaction — the
+registration that would earn them ERTH. On the shielded chain a registration
+is an unsigned private tx that pays its fee from a shielded note, so what a
+new human needs is a note:
 
-The attestation is the Sybil cost. It cannot be produced by a script, only by
-our signed app on real hardware, and the per-address and daily caps in replay
-bound what one phone farming fresh addresses can take.
+    POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
+                           idc, pc_anml, pc_erth, ciphertext_anml?, ciphertext_erth?,
+                           affiliate?, pc_gas, ciphertext_gas?}
 
-    POST /gas/register    {address, proof, public_signals, signature_algorithm, dsc_der, affiliate?}
-    POST /gas/human       {address}
+takes the registration the app is about to broadcast, asks the chain's own
+checks whether it would be accepted (`earthd gas-check registration`,
+services/gascheck), and if so shields DUST_UERTH from the hot wallet into a
+note to pc_gas — once per passport per month, keyed on the passport nullifier,
+which the registration makes public anyway. The app then broadcasts
+MsgRegister and pays its fee from that note; the registration reward pays
+every later fee. The backend stores only the passport key, never pc_gas or
+anything else that names the note, and the note's spend is unlinkable to it.
+
+/gas/human is gone: it paid an address the chain counted as a human, and
+nothing on chain links an address to a registration any more.
+
+The device-attestation endpoints stay until the app builds that call them are
+gone:
+
     POST /gas/challenge   {address}                                -> {challenge, expires_in}
     POST /gas/ios         {address, challenge, key_id, attestation} App Attest
     POST /gas/android     {address, challenge, chain}               Key Attestation
 
-The first two are the ones the apps use. Both ask the chain's own checks via
-`earthd gas-check` (services/gascheck), so a grant is tied to a passport:
-
-- /gas/register takes the registration the app is about to broadcast, and pays
-  if the chain would accept it — once per passport per month, keyed on the
-  nullifier, so new wallets do not multiply it.
-- /gas/human pays an address the chain counts as a human, once per person per
-  day, again keyed on the nullifier.
-
-The attestation endpoints stay until the app builds that call them are gone.
-
-Both grant endpoints answer with {status, message, tx_hash?} and a status code
-the app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request
-cannot succeed as sent, 5xx try again later.
+Grant endpoints answer with {status, message, tx_hash?} and a status code the
+app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request cannot
+succeed as sent, 5xx try again later.
 """
 import base64
 import binascii
@@ -47,7 +45,8 @@ from pydantic import BaseModel
 import config
 import time
 
-from services import appattest, chain, challenges, gascheck, keyattest, replay
+from services import appattest, chain, challenges, gascheck, keyattest, replay, shielded_msg
+from services.zk import privacy
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +58,22 @@ class ChallengeRequest(BaseModel):
 
 
 class RegisterGrant(BaseModel):
-    address: str
+    # MsgRegister's own fields, bytes as standard base64 (proto JSON), except
+    # its fee transfer, which the app proves only once it holds the gas note.
     proof: str
     public_signals: list[str]
     signature_algorithm: str
     dsc_der: str
+    idc: str
+    pc_anml: str
+    pc_erth: str
+    ciphertext_anml: str = ""
+    ciphertext_erth: str = ""
     affiliate: str = ""
-
-
-class HumanGrant(BaseModel):
-    address: str
+    # Where the gas goes: the pc of a note the app will spend MsgRegister's
+    # fee from, and optionally that note encrypted to itself.
+    pc_gas: str
+    ciphertext_gas: str = ""
 
 
 class IosGrant(BaseModel):
@@ -93,25 +98,47 @@ def _valid_address(address: str) -> bool:
     return hrp == config.EARTH_PREFIX and data is not None
 
 
-@router.post("/register", summary="Grant gas for a registration the chain would accept")
+def _b64(value: str) -> bytes:
+    return base64.b64decode(value, validate=True)
+
+
+def _field(value: str) -> bytes:
+    """A 32-byte canonical field element, base64, as the chain requires of a pc or idc."""
+    raw = _b64(value)
+    privacy.field_from_bytes(raw)  # raises ValueError
+    return raw
+
+
+@router.post("/register", summary="Fund a fee note for a registration the chain would accept")
 async def register(body: RegisterGrant):
-    address = body.address.strip()
-    if not _valid_address(address):
-        return _reply(400, "error", "not an earth address")
     try:
-        base64.b64decode(body.proof, validate=True)
-        base64.b64decode(body.dsc_der, validate=True)
+        for name in ("proof", "dsc_der", "ciphertext_anml", "ciphertext_erth"):
+            _b64(getattr(body, name))
+        for name in ("idc", "pc_anml", "pc_erth"):
+            _field(getattr(body, name))
+        pc_gas = _field(body.pc_gas)
+        ciphertext_gas = _b64(body.ciphertext_gas)
     except (binascii.Error, ValueError):
-        return _reply(400, "error", "proof and dsc_der must be base64")
-    # MsgRegister in proto JSON: bytes fields are standard base64, exactly as
-    # the app already holds them.
+        return _reply(400, "error", "proof, dsc_der and ciphertexts must be base64; idc and pcs 32-byte field elements")
+    if len(ciphertext_gas) > shielded_msg.MAX_CIPHERTEXT_BYTES:
+        return _reply(400, "error", f"ciphertext_gas exceeds {shielded_msg.MAX_CIPHERTEXT_BYTES} bytes")
+    affiliate = body.affiliate.strip()
+    if affiliate and not _valid_address(affiliate):
+        return _reply(400, "error", "affiliate is not an earth address")
+    # MsgRegister in proto JSON, without its fee transfer (gas-check does not
+    # look at it): bytes fields are standard base64, exactly as the app holds
+    # them.
     msg = {
-        "creator": address,
         "proof": body.proof,
         "public_signals": body.public_signals,
         "signature_algorithm": body.signature_algorithm,
         "dsc_der": body.dsc_der,
-        "affiliate": body.affiliate,
+        "idc": body.idc,
+        "pc_anml": body.pc_anml,
+        "ciphertext_anml": body.ciphertext_anml,
+        "pc_erth": body.pc_erth,
+        "ciphertext_erth": body.ciphertext_erth,
+        "affiliate": affiliate,
     }
     try:
         verdict = await gascheck.registration(msg)
@@ -121,26 +148,36 @@ async def register(body: RegisterGrant):
     if not verdict.get("ok"):
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send.
-        logger.info("registration check refused %s: %s", address, verdict.get("error"))
+        logger.info("registration check refused: %s", verdict.get("error"))
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     month = time.strftime("%Y-%m", time.gmtime())
-    return await _grant(f"passport:{verdict['nullifier']}:{month}", address)
+    return await _grant_note(f"passport:{verdict['nullifier']}:{month}", pc_gas, ciphertext_gas)
 
 
-@router.post("/human", summary="Grant gas to a registered human")
-async def human(body: HumanGrant):
-    address = body.address.strip()
-    if not _valid_address(address):
-        return _reply(400, "error", "not an earth address")
+async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONResponse:
+    """_grant for a shielded note: claimed under its id alone, no address."""
     try:
-        verdict = await gascheck.human(address)
-    except gascheck.Unavailable as exc:
-        logger.error("human check unavailable: %s", exc)
-        return _reply(503, "error", "verification is unavailable; try again shortly")
-    if not verdict.get("ok"):
-        return _reply(403, "error", "this address is not a registered human")
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    return await _grant(f"human:{verdict['nullifier']}:{day}", address)
+        claimed = replay.claim(grant_id)
+    except replay.LimitReached as exc:
+        logger.warning("%s payout limit reached; refusing a registration grant", exc)
+        return _reply(429, "error", "free gas limit reached; try again tomorrow")
+    if not claimed:
+        return _reply(409, "error", "already granted")
+
+    try:
+        tx_hash = await chain.shield_dust(pc, ciphertext)
+    except chain.SendUnresolved as exc:
+        logger.error("gas note shield is unresolved: %s", exc)
+        return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
+    except Exception:
+        replay.release(grant_id)
+        logger.exception("gas note shield failed")
+        return _reply(502, "error", "the grant could not be sent; try again")
+
+    # Logged without the pc or the passport: the tx is public, the link from
+    # this passport to this note need not be kept here as well.
+    logger.info("shielded %d%s as a registration gas note (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, tx_hash)
+    return _reply(200, "success", "gas note sent", tx_hash=tx_hash)
 
 
 @router.post("/challenge", summary="A single-use challenge to attest over")

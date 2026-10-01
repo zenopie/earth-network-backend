@@ -1,17 +1,17 @@
-# earth gas grants
+# earth network backend
 
-Turns an attested request from a genuine app install into enough ERTH for a new
-human to make their first transaction.
+Two jobs: gas grants that let a new human make their first transaction, and the
+privacy indexer that serves the shielded pool's public data to wallets (see
+[Privacy indexer](#privacy-indexer)).
 
-## Why it exists
+## Gas grants: why they exist
 
-A new user has no ERTH and, more awkwardly, no on-chain account. An address the
-chain has never seen cannot sign anything at all — the ante handler rejects an
-unknown signer with `account does not exist` before it even looks at who is
-paying the fee. So a fee grant is not enough; something has to put coins there.
+A new user has no ERTH. On the shielded chain a registration is an unsigned
+private tx that pays its fee from a shielded note, so what they need is a note
+— and they cannot make one without ERTH. The backend funds that first note.
 
-Registration pays ERTH back out of the human allocation stream, so this is
-subsidising the first transactions of each new human.
+Registration mints a shielded ERTH reward that pays every later fee, so this
+subsidises exactly one transaction per new human.
 
 Device attestation is the Sybil defence. A grant needs proof, from Apple or
 Google, that the request came from our signed app on real hardware — App Attest
@@ -21,16 +21,23 @@ addresses, so per-address and daily caps bound what one device can take.
 
 ## Endpoints
 
-    POST /gas/register    {address, proof, public_signals, signature_algorithm, dsc_der, affiliate?}
-    POST /gas/human       {address}
+    POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
+                           idc, pc_anml, pc_erth, ciphertext_anml?, ciphertext_erth?,
+                           affiliate?, pc_gas, ciphertext_gas?}
 
-What the apps call. `/gas/register` takes the registration the app is about to
-broadcast and pays if the chain would accept it — once per passport per month.
-`/gas/human` pays an address the chain counts as a human — once per person per
-day. Both are keyed on the passport's nullifier, so new wallets do not multiply
-them, and both ask the chain's own checks through `earthd gas-check` (installed
-in the image from the chain release; see the Dockerfile). Proofs are verified
-here, never by the node.
+What the apps call. It takes the MsgRegister the app is about to broadcast
+(bytes as standard base64, its fee transfer left out) and, if the chain would
+accept it, shields `DUST_UERTH` from the hot wallet into a note to `pc_gas` (a
+`MsgShield`; `ciphertext_gas` is emitted for the app's own trial decryption).
+The app then broadcasts MsgRegister paying its fee from that note. Once per
+passport per month, keyed `passport:<nullifier>:<YYYY-MM>`; the replay table
+stores that key and nothing else — no address, no pc. The check is the
+chain's own, through `earthd gas-check registration` (installed in the image
+from the chain release; see the Dockerfile). Proofs are verified here, never by
+the node.
+
+`/gas/human` is gone: nothing on chain links an address to a registration any
+more, and a registered human pays every fee from their reward note.
 
 The device-attestation endpoints below predate these and stay until the app
 builds that call them are retired:

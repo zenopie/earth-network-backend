@@ -87,3 +87,45 @@ def test_a_connection_never_made_is_an_ordinary_failure(monkeypatch):
 def test_a_dropped_connection_is_unresolved(monkeypatch):
     with pytest.raises(chain.SendUnresolved):
         _send_with(monkeypatch, requests.exceptions.ConnectionError("Connection reset by peer"))
+
+
+def test_shield_builds_msg_shield_from_the_hot_wallet(monkeypatch):
+    from cosmpy.aerial.wallet import LocalWallet
+    from cosmpy.crypto.keypairs import PrivateKey
+
+    from services import shielded_msg
+
+    wallet = LocalWallet(PrivateKey(b"\x01" * 32), prefix="earth")
+    seen = {}
+
+    class Submitted:
+        tx_hash = "ABC"
+
+        def wait_to_complete(self):
+            return None
+
+    def fake_broadcast(client, tx, sender):
+        seen["msgs"] = tx.msgs
+        seen["sender"] = sender
+        return Submitted()
+
+    monkeypatch.setattr(chain, "prepare_and_broadcast_basic_transaction", fake_broadcast)
+    monkeypatch.setattr(chain, "_client", object())
+    monkeypatch.setattr(chain, "_wallet", wallet)
+    assert chain._shield_blocking(b"\x07" * 32, b"ct") == "ABC"
+    (msg,) = seen["msgs"]
+    assert isinstance(msg, shielded_msg.MsgShield)
+    assert msg.sender == str(wallet.address())
+    assert (msg.amount.denom, msg.amount.amount) == (config.EARTH_DENOM, str(config.DUST_UERTH))
+    assert msg.pc == b"\x07" * 32 and msg.ciphertext == b"ct"
+
+
+def test_shield_read_timeout_is_unresolved(monkeypatch):
+    def raising(*a, **k):
+        raise requests.exceptions.ReadTimeout()
+
+    monkeypatch.setattr(chain, "prepare_and_broadcast_basic_transaction", raising)
+    monkeypatch.setattr(chain, "_client", object())
+    monkeypatch.setattr(chain, "_wallet", type("W", (), {"address": lambda self: "earth1x"})())
+    with pytest.raises(chain.SendUnresolved):
+        chain._shield_blocking(b"\x07" * 32, b"")

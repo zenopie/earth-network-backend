@@ -1,7 +1,10 @@
 """Replay protection and payout limits for gas grants.
 
-A grant id — the attested key on iOS, the spent challenge on Android — may be
-honoured exactly once. SQLite rather than a JSON file: the id set is
+A grant id — the passport key `passport:<nullifier>:<YYYY-MM>` for a
+registration grant, the attested key for the device grants — may be honoured
+exactly once. A registration grant is stored under its id alone, with an empty
+address: it pays a shielded note, and the backend keeps nothing that names
+where the note went. SQLite rather than a JSON file: the id set is
 append-only and read on every request, and a file that gets rewritten wholesale
 loses entries the moment two requests land together.
 
@@ -44,7 +47,7 @@ class LimitReached(Exception):
 _DAY = 86400
 
 
-def claim(transaction_id: str, address: str) -> bool:
+def claim(transaction_id: str, address: str = "") -> bool:
     """Records a grant id, returning False if it was already used.
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
@@ -60,12 +63,15 @@ def claim(transaction_id: str, address: str) -> bool:
     """
     with _lock:
         since = int(time.time()) - _DAY
-        (mine,) = _db().execute(
-            "SELECT COUNT(*) FROM used_transactions WHERE address = ? AND granted_at > ?",
-            (address, since),
-        ).fetchone()
-        if mine >= config.GRANT_MAX_PER_ADDRESS_PER_DAY:
-            raise LimitReached("address")
+        if address:
+            # A note grant has no address (""); its id is already one per
+            # passport per month.
+            (mine,) = _db().execute(
+                "SELECT COUNT(*) FROM used_transactions WHERE address = ? AND granted_at > ?",
+                (address, since),
+            ).fetchone()
+            if mine >= config.GRANT_MAX_PER_ADDRESS_PER_DAY:
+                raise LimitReached("address")
         (everyone,) = _db().execute(
             "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ?", (since,)
         ).fetchone()
