@@ -1,28 +1,56 @@
-"""earth gas-grant service.
+"""earth network backend: gas grants and the privacy indexer.
 
-One job: turn an attested request from a genuine app install into enough ERTH
-for a new human to make their first transaction. Everything else the old
-Secret-era backend did is gone — registration is proved on-device and verified on-chain now, and the CSCA
-trust store moved to the chain repo where it is enforced.
+Gas grants fund a new human's first transaction (routers/gas.py). The privacy
+indexer follows the chain into a SQLite index of the shielded pool's public
+data (services/privacy) and serves it as full-range streams for wallets to
+sync (routers/privacy.py). Either can run without the other: GAS_ENABLED,
+INDEXER_ENABLED.
 """
+import asyncio
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 
 import config
-from routers import gas
+from routers import gas, privacy
 from services import chain
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+# httpx logs every request at INFO; the indexer makes several a second.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-app = FastAPI(title="earth gas grants", version="2.0.0")
-app.include_router(gas.router)
+app = FastAPI(title="earth network backend", version="3.0.0")
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+if config.GAS_ENABLED:
+    app.include_router(gas.router)
+app.include_router(privacy.router)
+
+_indexer_stop = asyncio.Event()
+_indexer_task: asyncio.Task | None = None
+_indexer = None
 
 
 @app.on_event("startup")
-def startup() -> None:
-    chain.init()
+async def startup() -> None:
+    global _indexer_task, _indexer
+    if config.GAS_ENABLED:
+        chain.init()
+    if config.INDEXER_ENABLED:
+        from services.privacy import indexer
+
+        _indexer = indexer.from_config()
+        _indexer_task = asyncio.create_task(_indexer.run(_indexer_stop, poll_seconds=config.INDEXER_POLL_SECONDS))
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    if _indexer_task is not None:
+        _indexer_stop.set()
+        await _indexer_task
+        await _indexer.rpc.close()
+        _indexer.store.close()
 
 
 @app.get("/health")
@@ -32,6 +60,8 @@ def health():
     When this runs dry every grant fails: the attestation verifies and the send
     does not. Worth alerting on.
     """
+    if not config.GAS_ENABLED:
+        return {"status": "ok", "gas": "disabled"}
     try:
         remaining = chain.balance()
     except Exception:
