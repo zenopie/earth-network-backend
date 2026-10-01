@@ -148,9 +148,12 @@ this is what catches notes imported at genesis, which emit no events, or a
 start height past the first private tx). The reason is in `/privacy/status`;
 clear it by wiping `INDEX_DB`.
 
-The node behind `INDEXER_RPC_URL` must keep block results from the start
-height on: `storage.discard_abci_responses = false` (the default) and no block
-pruning below it.
+The node behind `INDEXER_RPC_URL` (CometBFT RPC, default
+`https://rpc.erth.network:443`) must keep block results from the start height
+on: `storage.discard_abci_responses = false` (the default) and no block
+pruning below it. earth-1 runs one node, the validator, and it is a
+full-history node (`pruning = "nothing"`, never state synced), so
+rpc.erth.network serves every height from 1.
 
 ### Verifying the trees
 

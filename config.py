@@ -96,9 +96,11 @@ GAS_ENABLED = os.getenv("GAS_ENABLED", "true").lower() == "true"
 # from whatever INDEX_DB holds (another process may be the one writing it).
 INDEXER_ENABLED = os.getenv("INDEXER_ENABLED", "false").lower() == "true"
 INDEX_DB = os.getenv("INDEX_DB", "privacy_index.db")
-# CometBFT RPC the indexer reads blocks from. It must keep block results
-# from the start height on (an archive node for a full history).
-INDEXER_RPC_URL = os.getenv("INDEXER_RPC_URL", EARTH_RPC_URL)
+# CometBFT RPC (not the LCD) the indexer reads blocks and /block_results
+# from. It must keep block results from the start height on. earth-1's one
+# node, the validator behind rpc.erth.network, is a full-history node
+# (pruning=nothing, discard_abci_responses=false), so that is the default.
+INDEXER_RPC_URL = os.getenv("INDEXER_RPC_URL", "https://rpc.erth.network:443")
 INDEXER_RPC_TIMEOUT = float(os.getenv("INDEXER_RPC_TIMEOUT", "20"))
 # The first height to index on an empty INDEX_DB; 0 = the node's earliest
 # block. Ignored once the index holds blocks.

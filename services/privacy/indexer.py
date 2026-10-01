@@ -78,7 +78,7 @@ class Indexer:
         else:
             start = self.start_height or st["earliest_height"]
             if start < st["earliest_height"]:
-                self._halt(f"start height {start} is below the node's earliest block {st['earliest_height']}; use an archive node")
+                self._halt(f"start height {start} is below the node's earliest block {st['earliest_height']}; use a full-history node (rpc.erth.network)")
             self.next_height = start
 
     def _halt(self, reason: str) -> None:

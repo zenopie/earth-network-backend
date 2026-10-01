@@ -65,7 +65,10 @@ services:
       # The privacy indexer (services/privacy): follows the chain over CometBFT
       # RPC into /app/state/privacy_index.db and serves /privacy/* to wallets.
       # The RPC must keep block results from the start height on — for a full
-      # history, a node that has never pruned blocks since genesis. Once the
+      # history, a node that has never pruned blocks since genesis.
+      # rpc.erth.network is that node: earth-1 runs one node, the validator,
+      # with full history (pruning=nothing, discard_abci_responses=false). It
+      # is CometBFT RPC, not the LCD: the indexer reads /block_results. Once the
       # index holds blocks, INDEXER_START_HEIGHT is ignored.
       - INDEXER_ENABLED=true
       - INDEXER_RPC_URL=https://rpc.erth.network:443
