@@ -21,7 +21,7 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   amount, spc)) + chain StakeTree compare; bin/verify-trees.py prints it.
 - /privacy/stake/{notes,nullifiers,roots}; status + roots/latest carry stake;
   route pin test updated.
-- Fixtures + zk_vectors.json re-recorded from chain-orch d083cc5 (6
+- Fixtures + zk_vectors.json re-recorded from chain-orch aa78c11 (6
   scenarios; Lifecycle and OwnerLocked carry real minted + created stake
   notes, stake nullifiers, stake roots; Dex covers private LP + EndBlock
   payout notes). tests/test_privacy_stake.py runs on them.
