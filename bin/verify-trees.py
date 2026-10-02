@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Rebuilds the note and identity trees from the privacy index and checks them.
+"""Rebuilds the note, identity and stake trees from the privacy index and checks them.
 
     bin/verify-trees.py [--db privacy_index.db] [--rpc https://rpc...] [--all-roots] [--no-chain]
 
-Replays the indexed notes and identity writes with Poseidon2 (services/zk,
-pinned to the chain's Go vectors) and compares:
+Replays the indexed notes, identity writes and stake notes with Poseidon2
+(services/zk, pinned to the chain's Go vectors) and compares:
 
 - the latest root of each tree (every recorded root with --all-roots) with
   the root event the chain emitted for that block;
-- the rebuilt trees with the chain's own Query/Tree and Query/IdentityTree at
-  the index's synced height, over the RPC (skip with --no-chain).
+- every chain-minted stake note's commitment with its public denom, amount
+  and stake pc;
+- the rebuilt trees with the chain's own Query/Tree, Query/IdentityTree and
+  Query/StakeTree at the index's synced height, over the RPC (skip with
+  --no-chain).
 
 Exit status 0 when everything matches, 1 on any mismatch, 2 when the chain
 could not be asked.
@@ -38,10 +41,12 @@ def main() -> int:
     conn = store.connect(args.db, readonly=True)
     started = time.monotonic()
     rep = verify.rebuild(conn, all_roots=args.all_roots)
-    print(f"index synced to height {rep.synced_height}: {rep.note_size} notes, {rep.identity_size} identity leaves")
+    print(f"index synced to height {rep.synced_height}: {rep.note_size} notes, {rep.identity_size} identity leaves, "
+          f"{rep.stake_size} stake notes ({rep.stake_minted_checked} minted, commitments checked)")
     print(f"rebuilt in {time.monotonic() - started:.1f}s; {rep.roots_checked} recorded roots checked")
     print(f"note root     {rep.note_root.hex()}")
     print(f"identity root {rep.identity_root.hex()}")
+    print(f"stake root    {rep.stake_root.hex() if rep.stake_root else '(empty)'}")
 
     if not args.no_chain:
         async def ask():

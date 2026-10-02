@@ -1,9 +1,12 @@
 """Turning one block's CometBFT results into the shielded pool's public changes.
 
-What the chain emits (privacy/main; names in x/shielded/types/events.go,
-x/personhood/keeper/identity.go, x/shieldedstaking/types/events.go):
+What the chain emits (privacy/orchard; names in x/shielded/types/events.go,
+x/personhood/keeper/identity.go, x/shieldedstaking/types/events.go and
+x/shieldedstaking/keeper/stake_tree.go):
 
     shielded_note        position, commitment (hex), ciphertext (base64)
+                         (a bundle's action outputs, MsgSend's included, and
+                         every chain-minted note)
     shielded_shield      sender, amount, position     (a public-value note)
     shielded_mint        module, amount, position     (a public-value note)
     shielded_nullifier   nullifier (hex)
@@ -13,6 +16,29 @@ x/personhood/keeper/identity.go, x/shieldedstaking/types/events.go):
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
+
+The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
+tree of owner-locked derth/<valoper> and unbond/<valoper>/<epoch> notes, its
+own nullifier set and roots):
+
+    shieldedstaking_stake_note       position_id, commitment (hex), and either
+                                     denom, amount, spc (hex)  a note the chain
+                                                               minted, value public
+                                     or ciphertext (base64)    a note a stake
+                                                               proof created
+    shieldedstaking_stake_nullifier  nullifier (hex)
+    shieldedstaking_stake_root       root (hex), tree_size              EndBlock
+
+Stake notes and nullifiers are written by the msg (not the ante), so a failed
+staking msg leaves none of them, and none of its events.
+
+Not read, because they change no tree and no rate a wallet derives:
+shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
+(private LP shares are ordinary shielded_note events; add/remove/complete
+liquidity events name no provider), shieldedstaking_delegate / _undelegate /
+_claim / _position / _stake_vote / _snapshot / _matured and
+shieldedstaking_self_bond_compounded (an operator's own SDK self-bond grows;
+derth rates come from shieldedstaking_epoch_validator as before).
 
 Order. A block's state changes run PreBlock, BeginBlock, each tx in order,
 EndBlock. block_results gives the txs' events per tx and everything else in
@@ -61,6 +87,16 @@ class Root:
 
 
 @dataclass
+class StakeNote:
+    position: int
+    cm: bytes
+    ciphertext: bytes | None = None  # a note a stake proof created
+    denom: str | None = None         # a note the chain minted: denom, amount, spc public
+    amount: str | None = None
+    spc: bytes | None = None
+
+
+@dataclass
 class Rate:
     validator: str
     rate: str
@@ -82,6 +118,9 @@ class BlockDelta:
     note_root: Root | None = None
     identity_root: Root | None = None
     rates: list[Rate] = field(default_factory=list)
+    stake_notes: list[StakeNote] = field(default_factory=list)
+    stake_nullifiers: list[bytes] = field(default_factory=list)
+    stake_root: Root | None = None
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -111,6 +150,30 @@ def _int(value: str, what: str) -> int:
     return v
 
 
+def _b64(value: str, what: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except ValueError as exc:
+        raise EventError(f"{what}: not base64") from exc
+
+
+def _stake_note(a: dict[str, str]) -> StakeNote:
+    n = StakeNote(_int(a.get("position_id"), "shieldedstaking_stake_note position_id"),
+                  _hex32(a.get("commitment", ""), "shieldedstaking_stake_note commitment"))
+    minted = "spc" in a or "denom" in a or "amount" in a
+    if minted == ("ciphertext" in a):
+        raise EventError("shieldedstaking_stake_note: want either denom, amount and spc, or a ciphertext")
+    if minted:
+        n.denom = a.get("denom") or ""
+        if not n.denom:
+            raise EventError("shieldedstaking_stake_note: empty denom")
+        n.amount = str(_int(a.get("amount"), "shieldedstaking_stake_note amount"))
+        n.spc = _hex32(a.get("spc", ""), "shieldedstaking_stake_note spc")
+    else:
+        n.ciphertext = _b64(a["ciphertext"], "shieldedstaking_stake_note ciphertext")
+    return n
+
+
 def ordered_events(results: dict) -> list[dict]:
     """A block's events in execution order (see the module docstring)."""
     finalize = results.get("finalize_block_events") or []
@@ -132,10 +195,7 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
         t = ev.get("type")
         if t == "shielded_note":
             a = _attrs(ev)
-            try:
-                ct = base64.b64decode(a.get("ciphertext", ""), validate=True)
-            except ValueError as exc:
-                raise EventError("shielded_note ciphertext: not base64") from exc
+            ct = _b64(a.get("ciphertext", ""), "shielded_note ciphertext")
             n = Note(_int(a.get("position"), "shielded_note position"), _hex32(a.get("commitment", ""), "shielded_note commitment"), ct)
             d.notes.append(n)
             notes_by_pos[n.position] = n
@@ -160,6 +220,14 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             d.identity_root = Root(_hex32(a.get("root", ""), "identity_root"), _int(a.get("tree_size"), "identity_root tree_size"))
             if "height" in a and _int(a["height"], "identity_root height") != height:
                 raise EventError("identity_root height is not the block's")
+        elif t == "shieldedstaking_stake_note":
+            d.stake_notes.append(_stake_note(_attrs(ev)))
+        elif t == "shieldedstaking_stake_nullifier":
+            d.stake_nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shieldedstaking_stake_nullifier"))
+        elif t == "shieldedstaking_stake_root":
+            a = _attrs(ev)
+            d.stake_root = Root(_hex32(a.get("root", ""), "shieldedstaking_stake_root"),
+                                _int(a.get("tree_size"), "shieldedstaking_stake_root tree_size"))
         elif t == "shieldedstaking_epoch_validator":
             a = _attrs(ev)
             pending_rates.append(Rate(

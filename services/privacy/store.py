@@ -14,6 +14,10 @@ match the chain's roots:
 - a nullifier is never seen twice;
 - a root event's tree_size equals the indexed size at that block.
 
+The stake note tree (x/shieldedstaking) is held the same way, in its own
+tables: stake note positions in sequence, stake nullifiers once, stake root
+sizes equal to the indexed stake tree.
+
 Readers (the API) use their own connections; WAL keeps them from blocking the
 writer.
 """
@@ -84,6 +88,28 @@ CREATE TABLE IF NOT EXISTS rates (
     undelegated TEXT NOT NULL,
     PRIMARY KEY (height, validator)
 );
+CREATE TABLE IF NOT EXISTS stake_notes (
+    position   INTEGER PRIMARY KEY,
+    cm         BLOB NOT NULL,
+    height     INTEGER NOT NULL,
+    ciphertext BLOB,            -- created by a stake proof
+    denom      TEXT,            -- minted by the chain: denom, amount, spc public
+    amount     TEXT,
+    spc        BLOB
+);
+CREATE INDEX IF NOT EXISTS stake_notes_by_height ON stake_notes (height);
+CREATE TABLE IF NOT EXISTS stake_nullifiers (
+    seq    INTEGER PRIMARY KEY,
+    nf     BLOB NOT NULL UNIQUE,
+    height INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS stake_nullifiers_by_height ON stake_nullifiers (height, seq);
+CREATE TABLE IF NOT EXISTS stake_roots (
+    height    INTEGER PRIMARY KEY,
+    root      BLOB NOT NULL,
+    tree_size INTEGER NOT NULL,
+    time      INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS rates_by_epoch ON rates (epoch, validator);
 CREATE INDEX IF NOT EXISTS rates_by_validator ON rates (validator, height);
 """
@@ -104,6 +130,13 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
     if readonly:
         conn.execute("PRAGMA query_only=1")
     return conn
+
+
+def stake_counts(c: sqlite3.Connection) -> tuple[int, int]:
+    """(stake notes, stake nullifiers) indexed."""
+    (n,) = c.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM stake_notes").fetchone()
+    (f,) = c.execute("SELECT COUNT(*) FROM stake_nullifiers").fetchone()
+    return n, f
 
 
 def counts(c: sqlite3.Connection) -> tuple[int, int, int]:
@@ -144,6 +177,9 @@ class Store:
     def counts(self) -> tuple[int, int, int]:
         return counts(self.conn)
 
+    def stake_counts(self) -> tuple[int, int]:
+        return stake_counts(self.conn)
+
     # --- writing ----------------------------------------------------------
 
     @contextmanager
@@ -168,6 +204,7 @@ class Store:
                 raise Inconsistent(f"block {d.height} after {last}: blocks must be applied in order")
             (notes,) = c.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM notes").fetchone()
             (ids,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM identity_leaves").fetchone()
+            (stakes,) = c.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM stake_notes").fetchone()
 
             c.execute("INSERT INTO blocks (height, hash, time) VALUES (?, ?, ?)", (d.height, d.hash, d.time))
 
@@ -220,6 +257,29 @@ class Store:
                     raise Inconsistent(f"block {d.height}: identity root at size {d.identity_root.tree_size}, indexed {ids}")
                 c.execute("INSERT INTO identity_roots (height, root, tree_size, time) VALUES (?, ?, ?, ?)",
                           (d.height, d.identity_root.root, d.identity_root.tree_size, d.time))
+
+            for n in d.stake_notes:
+                if n.position != stakes:
+                    raise Inconsistent(
+                        f"block {d.height}: stake note at position {n.position}, expected {stakes}"
+                        + (" (history before the start height is missing)" if not last and stakes == 0 else "")
+                    )
+                c.execute("INSERT INTO stake_notes (position, cm, height, ciphertext, denom, amount, spc)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          (n.position, n.cm, d.height, n.ciphertext, n.denom, n.amount, n.spc))
+                stakes += 1
+
+            for nf in d.stake_nullifiers:
+                try:
+                    c.execute("INSERT INTO stake_nullifiers (nf, height) VALUES (?, ?)", (nf, d.height))
+                except sqlite3.IntegrityError as exc:
+                    raise Inconsistent(f"block {d.height}: stake nullifier {nf.hex()} spent twice") from exc
+
+            if d.stake_root is not None:
+                if d.stake_root.tree_size != stakes:
+                    raise Inconsistent(f"block {d.height}: stake root at size {d.stake_root.tree_size}, indexed {stakes}")
+                c.execute("INSERT INTO stake_roots (height, root, tree_size, time) VALUES (?, ?, ?, ?)",
+                          (d.height, d.stake_root.root, d.stake_root.tree_size, d.time))
 
             for r in d.rates:
                 c.execute(

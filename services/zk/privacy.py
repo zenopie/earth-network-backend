@@ -16,6 +16,8 @@ TAG_LEAF = tag("earth.leaf")
 TAG_PC = tag("earth.pc")
 TAG_CM = tag("earth.cm")
 TAG_ASSET = tag("earth.asset")
+TAG_STAKE = tag("earth.stake")
+TAG_SPC = tag("earth.spc")
 
 
 def H(*xs: int) -> int:
@@ -69,3 +71,13 @@ def country_field(cc: str) -> int:
 
 def identity_leaf(idc_: int, dsc_key: int, country: int, activated_at: int) -> int:
     return H(TAG_LEAF, idc_, dsc_key, country, activated_at)
+
+
+def stake_pc(owner: int, rho: int, rcm: int) -> int:
+    """privacy.StakePC: a stake note's hidden owner."""
+    return H(TAG_SPC, owner, rho, rcm)
+
+
+def stake_cm(asset: int, amount: int, spc: int) -> int:
+    """privacy.StakeCM: a stake tree leaf, asset = asset_id(derth/<valoper> or unbond/<valoper>/<epoch>)."""
+    return H(TAG_STAKE, asset, amount, spc)

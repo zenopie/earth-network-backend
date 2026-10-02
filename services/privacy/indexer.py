@@ -15,7 +15,8 @@ Blocks are fetched in batches (block_results concurrently, block times and
 hashes from /blockchain) and applied strictly in order, one SQLite
 transaction each; see store.py for what applying checks. After each batch
 the indexed tree sizes are compared with the chain's own (an abci_query of
-x/shielded Tree and x/personhood IdentityTree at that height). That catches
+x/shielded Tree, x/personhood IdentityTree and x/shieldedstaking StakeTree at
+that height). That catches
 history the index never saw — notes or leaves imported at genesis, which emit
 no events, or a start height past the first private tx — which events alone
 cannot reveal.
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 NOTE_TREE_QUERY = "/earth.shielded.v1.Query/Tree"  # QueryTreeResponse.tree_size = 1
 IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"  # QueryIdentityTreeResponse.size = 1
+STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"  # QueryStakeTreeResponse.size = 1
 
 
 class Halted(Exception):
@@ -127,16 +129,18 @@ class Indexer:
         try:
             notes = varint_field(await self.rpc.abci_query(NOTE_TREE_QUERY, height=height), 1)
             ids = varint_field(await self.rpc.abci_query(IDENTITY_TREE_QUERY, height=height), 1)
+            stakes = varint_field(await self.rpc.abci_query(STAKE_TREE_QUERY, height=height), 1)
         except (RPCError, ValueError, IndexError) as exc:
             # State at an old height may be pruned while catching up; the
             # check resumes once the indexer reaches heights the node keeps.
             logger.debug("tree size check at %d skipped: %s", height, exc)
             return
         have_notes, have_ids, _ = await asyncio.to_thread(self.store.counts)
-        if (notes, ids) != (have_notes, have_ids):
+        have_stakes, _ = await asyncio.to_thread(self.store.stake_counts)
+        if (notes, ids, stakes) != (have_notes, have_ids, have_stakes):
             self._halt(
-                f"at height {height} the chain holds {notes} notes and {ids} identity leaves, the index "
-                f"{have_notes} and {have_ids}: history before the start height (or at genesis) is missing"
+                f"at height {height} the chain holds {notes} notes, {ids} identity leaves and {stakes} stake notes, "
+                f"the index {have_notes}, {have_ids} and {have_stakes}: history before the start height (or at genesis) is missing"
             )
 
     async def run(self, stop: asyncio.Event | None = None, poll_seconds: float = 2.0) -> None:

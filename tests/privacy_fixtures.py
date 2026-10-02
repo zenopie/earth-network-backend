@@ -3,8 +3,9 @@
 tests/fixtures/privacy/Test*.json.gz are real FinalizeBlock responses from the
 chain's app scenario tests (real proofs, the launch genesis path), recorded by
 bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
-note and identity trees' sizes and roots after the block as the keepers
-reported them.
+note, identity and stake trees' sizes and roots after the block as the
+keepers reported them (stake fields are absent from fixtures recorded before
+the stake tree existed, and read as an empty tree).
 """
 import gzip
 import json
@@ -51,6 +52,12 @@ def identity_response(block: dict) -> bytes:
     return _field(1, block["identity_tree_size"]) + _field(2, bytes.fromhex(block["identity_latest_root"]))
 
 
+def stake_tree_response(block: dict) -> bytes:
+    """QueryStakeTreeResponse{size=1, root=2 (bytes)}."""
+    return (_field(1, block.get("stake_tree_size", 0))
+            + _field(2, bytes.fromhex(block.get("stake_latest_root", ""))))
+
+
 class FakeRPC:
     """Serves a recorded scenario. `tip` limits what the chain has produced so far."""
 
@@ -92,6 +99,8 @@ class FakeRPC:
             return tree_response(b)
         if path == "/earth.personhood.v1.Query/IdentityTree":
             return identity_response(b)
+        if path == "/earth.shieldedstaking.v1.Query/StakeTree":
+            return stake_tree_response(b)
         raise RPCError(f"unknown path {path}")
 
     async def close(self):
