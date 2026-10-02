@@ -2,7 +2,8 @@
 // copies this into an exported copy of the chain (never the chain repo) and
 // hooks it into the app test envs' block helpers; each recorded test then
 // writes every FinalizeBlock response, as CometBFT RPC block_results JSON,
-// with the trees' sizes and roots after the block, to $RECORD_DIR.
+// with the trees' sizes and roots after the block (note, identity, stake),
+// to $RECORD_DIR.
 
 package app
 
@@ -35,6 +36,8 @@ type recBlock struct {
 	IDSize       uint64          `json:"identity_tree_size"`
 	IDRoot       string          `json:"identity_current_root"`
 	IDAnchor     string          `json:"identity_latest_root"`
+	StakeSize    uint64          `json:"stake_tree_size"`
+	StakeAnchor  string          `json:"stake_latest_root"`
 }
 
 type cmtjsonRaw []byte
@@ -59,6 +62,7 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 	isize, _ := app.PersonhoodKeeper.IdentityTreeSize(ctx)
 	iroot, _ := app.PersonhoodKeeper.CurrentIdentityRoot(ctx)
 	ianchor, _ := app.PersonhoodKeeper.LatestIdentityRoot.Get(ctx)
+	ssize, sanchor, _ := app.ShieldedStakingKeeper.StakeTreeState(ctx)
 	br := &coretypes.ResultBlockResults{
 		Height: height, TxsResults: res.TxResults, FinalizeBlockEvents: res.Events,
 		ValidatorUpdates: res.ValidatorUpdates, ConsensusParamUpdates: res.ConsensusParamUpdates, AppHash: res.AppHash,
@@ -72,6 +76,7 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 		Height: height, Time: now.UTC().Format(time.RFC3339Nano), Hash: strings.ToUpper(hex.EncodeToString(h[:])),
 		BlockResults: bz, NoteSize: nsize, NoteRoot: hex.EncodeToString(nroot), NoteAnchor: hex.EncodeToString(nanchor),
 		IDSize: isize, IDRoot: hex.EncodeToString(iroot), IDAnchor: hex.EncodeToString(ianchor),
+		StakeSize: ssize, StakeAnchor: hex.EncodeToString(sanchor),
 	}
 	recMu.Lock()
 	defer recMu.Unlock()
