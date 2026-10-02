@@ -29,8 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # chain would take. The shielded chain's gas-check takes MsgRegister without a
 # creator and with idc/pc fields, which v0.9.x cannot parse: this must be the
 # privacy release before /gas/register can pay anything on that chain.
-ARG EARTHD_VERSION=v0.9.4
-ARG EARTHD_SHA256=15885bca933489a22e2647ce01aeb4fb6c34180a258a6e33914814c7ed5ae0a0
+ARG EARTHD_VERSION=v1.0.0
+ARG EARTHD_SHA256=16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db475
 RUN python -c "import hashlib, sys, tarfile, urllib.request; \
 url = 'https://github.com/zenopie/earth-network-chain/releases/download/${EARTHD_VERSION}/earthd_${EARTHD_VERSION}_linux_amd64.tar.gz'; \
 data = urllib.request.urlopen(url, timeout=120).read(); \
