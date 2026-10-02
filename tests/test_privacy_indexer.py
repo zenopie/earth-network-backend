@@ -183,6 +183,8 @@ def test_failed_tx_ante_events_are_indexed(db):
     for b in blocks:
         for tx in b["block_results"].get("txs_results") or []:
             if not tx.get("code") and any(e["type"] == "shielded_nullifier" for e in tx.get("events") or []):
+                want_n = sum(e["type"] == "shielded_note" for e in tx["events"])
+                want_f = sum(e["type"] == "shielded_nullifier" for e in tx["events"])
                 tx["code"] = 5
                 tx["log"] = "msg failed"
                 tx["events"] = [e for e in tx["events"] if e["type"] in ("tx", "shielded_nullifier", "shielded_note", "shielded_fee")]
@@ -195,7 +197,8 @@ def test_failed_tx_ante_events_are_indexed(db):
     sync(Indexer(store, FakeRPC(dict(sc, blocks=blocks))))
     (n,) = store.conn.execute("SELECT COUNT(*) FROM notes WHERE height = ?", (target,)).fetchone()
     (f,) = store.conn.execute("SELECT COUNT(*) FROM nullifiers WHERE height = ?", (target,)).fetchone()
-    assert n >= 3 and f >= 3, "the failed tx's three outputs and three nullifiers"
+    assert want_n >= 2 and want_f >= 2, "a bundle has at least two actions"
+    assert (n, f) == (want_n, want_f), "the failed tx's action outputs and nullifiers"
     rep = verify.rebuild(store.conn, all_roots=True)
     assert rep.ok, rep.errors
 

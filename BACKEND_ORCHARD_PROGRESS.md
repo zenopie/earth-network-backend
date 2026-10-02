@@ -21,15 +21,17 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   amount, spc)) + chain StakeTree compare; bin/verify-trees.py prints it.
 - /privacy/stake/{notes,nullifiers,roots}; status + roots/latest carry stake;
   route pin test updated.
-- tests/stake_fixtures.py: stake events spliced into a recorded scenario
-  (until fixtures are re-recorded); tests/test_privacy_stake.py.
-- zkvectors: stake_pc/stake_cm/stake tree vectors (test skips until
-  zk_vectors.json is regenerated).
+- Fixtures + zk_vectors.json re-recorded from chain-orch d083cc5 (6
+  scenarios; Lifecycle and OwnerLocked carry real minted + created stake
+  notes, stake nullifiers, stake roots; Dex covers private LP + EndBlock
+  payout notes). tests/test_privacy_stake.py runs on them.
+- zkvectors: stake_pc/stake_cm/stake tree vectors from Go, pinned in test_zk.
+- Legacy tests adjusted to bundles (>= 2 actions instead of 3-in/3-out).
 - gas: /gas/register unchanged (gas-check ignores MsgRegister.fee, may be
   absent); /gas/transparent unchanged (GasTransparentSignal). Comments only.
 
 ## Left
-- re-record fixtures + zk vectors (first attempts: disk full on the machine)
+- nothing (pytest: 141 passed, 2 skipped = live-earthd tests)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit

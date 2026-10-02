@@ -203,7 +203,9 @@ asked.
 
 `tests/fixtures/privacy/Test*.json.gz` are real blocks: the chain's own app
 scenario tests (real proofs, the launch genesis path) recorded as RPC
-`block_results` with the keepers' tree sizes and roots after each block.
+`block_results` with the keepers' note, identity and stake tree sizes and
+roots after each block (personhood, shielded pool, staking lifecycle,
+owner-locked stake notes, self-bond compounding, private dex LP).
 `zk_vectors.json` comes from the chain's Go zk packages. Both regenerate from
 a chain checkout without touching it:
 

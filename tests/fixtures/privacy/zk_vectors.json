@@ -37,5 +37,23 @@
         "02a716819ce71ee4b6c84cb50d91609228c168a2627708c30744c826f1737b75"
     ],
     "pc": "27f6c2325d3abc835eb32a9fe3080ebe1222d8f1447f3d4fa2195e3b5d4b5b92",
+    "stake_cm_derth": {
+        "amount": "250000",
+        "cm": "1c97851ac5c49ddce81abc69c9c5d8257f6884df0d58216defd063c54014dbf9",
+        "denom": "derth/earthvaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+    },
+    "stake_cms": [
+        "212085c094f71d7f8624ad49307345b942be3a7b37fc39db95761c3f8939ffcd",
+        "0936b26a17107b2bf9b54b63c17cad0a4636089c9c546844ca37e8c38873c87f",
+        "11d913f78e9c094e69c071fb4d6c9e2a319eb5160d6e65f030d64ec0d7c9f2b5",
+        "0fd6ee370c6471dc43b3819c00bd692f4221fafaea05f290bd0abf9215093191"
+    ],
+    "stake_pc": "197df72198542b1708bf8c63623cf0e1e1fa596da7d0481e42ac8917989d8e9a",
+    "stake_roots": [
+        "018607267a5bcee192221f250e2b9f5386b05cf61404fe7795b2bba92b70247d",
+        "0c5740ca3d4a08864ff72d9060afaa8ad8c5073e1fe13c188e4e795474adae63",
+        "091fe3a3d04e70025172231ce12b82b18de2b975140e582aabb6e036f60ed0df",
+        "2c12509b4fe147cbc9d43ef6d9f1024ea2d690602191914105cfd4b988c68b6b"
+    ],
     "zero32": "0b59baa35b9dc267744f0ccb4e3b0255c1fc512460d91130c6bc19fb2668568d"
 }

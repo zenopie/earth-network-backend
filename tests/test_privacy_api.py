@@ -90,7 +90,7 @@ def test_nullifier_pages_never_split_a_height(api):
 def test_a_height_larger_than_the_limit_comes_whole(api):
     first = api.get("/privacy/nullifiers", params={"limit": 5000}).json()["blocks"]
     big = max(first, key=lambda b: len(b[1]))
-    assert len(big[1]) >= 3
+    assert len(big[1]) >= 2
     body = api.get("/privacy/nullifiers", params={"from_height": big[0], "limit": 1}).json()
     assert body["blocks"][0] == big and body["next_height"] == big[0] + 1
 

@@ -92,10 +92,6 @@ def test_stake_tags_match_the_circuits():
 
 
 def test_stake_commitments_and_tree():
-    import pytest
-
-    if "stake_cms" not in VEC:
-        pytest.skip("zk_vectors.json predates the stake tree; regenerate with bin/zk-vectors.sh")
     spc = privacy.stake_pc(privacy.owner_pk(42), 7, 9)
     assert hx(spc) == VEC["stake_pc"]
     d = VEC["stake_cm_derth"]
