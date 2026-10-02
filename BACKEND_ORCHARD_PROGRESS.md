@@ -9,15 +9,32 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
 ## Done
 - Recorder: stake tree size + latest root per block; staking-env hook
   (e.scanStake()); records 6 scenarios (+ TestStakeNotesOwnerLocked,
-  TestSelfBondCompounds, TestDexAnmlPoolLiquidity).
+  TestSelfBondCompounds, TestDexAnmlPoolLiquidity). SCENARIOS = every
+  recorded fixture file.
+- events.py: shieldedstaking_stake_note (position_id!, commitment, minted:
+  denom/amount/spc | created: ciphertext), _stake_nullifier, _stake_root
+  (root, tree_size; no height attr).
+- store: stake_notes / stake_nullifiers / stake_roots, same checks as the
+  pool (sequence, no double spend, root size).
+- indexer size check includes /earth.shieldedstaking.v1.Query/StakeTree.
+- verify: stake tree rebuild + minted cm check (H(TAG_STAKE, AssetID(denom),
+  amount, spc)) + chain StakeTree compare; bin/verify-trees.py prints it.
+- /privacy/stake/{notes,nullifiers,roots}; status + roots/latest carry stake;
+  route pin test updated.
+- tests/stake_fixtures.py: stake events spliced into a recorded scenario
+  (until fixtures are re-recorded); tests/test_privacy_stake.py.
+- zkvectors: stake_pc/stake_cm/stake tree vectors (test skips until
+  zk_vectors.json is regenerated).
+- gas: /gas/register unchanged (gas-check ignores MsgRegister.fee, may be
+  absent); /gas/transparent unchanged (GasTransparentSignal). Comments only.
 
 ## Left
-- events.py: shieldedstaking_stake_note/nullifier/root
-- store: stake_notes, stake_nullifiers, stake_roots
-- /privacy/stake/{notes,nullifiers,roots}; route pin test
-- verify-trees: stake tree; check_sizes vs Query/StakeTree
-- re-record fixtures; gas confirm; README
+- re-record fixtures + zk vectors (first attempts: disk full on the machine)
 
 ## Decisions
-- shielded_* events unchanged in shape (MsgSend/bundle actions emit
+- shielded_* events unchanged in shape (bundle actions / MsgSend emit
   shielded_note / shielded_nullifier from the ante as before).
+- Not indexed: dex LP events, shielded_unshield, self_bond_compounded and
+  other per-msg staking events (no tree, no rate).
+- Stake roots served as a full height-ordered stream (anchors in window /
+  proposal snapshots), not just latest.
