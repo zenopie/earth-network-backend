@@ -14,7 +14,9 @@ import os
 from services.privacy.rpc import RPCError
 
 DIR = os.path.join(os.path.dirname(__file__), "fixtures", "privacy")
-SCENARIOS = ("TestShieldedPoolEndToEnd", "TestPrivatePersonhood", "TestPrivateStakingLifecycle")
+# Every recorded scenario (bin/record-chain-fixtures.sh names them after the
+# chain test that produced them).
+SCENARIOS = tuple(sorted(f[:-len(".json.gz")] for f in os.listdir(DIR) if f.startswith("Test") and f.endswith(".json.gz")))
 
 
 def load(name: str) -> dict:

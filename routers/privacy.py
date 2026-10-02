@@ -15,6 +15,15 @@ keys.
     GET /privacy/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
     GET /privacy/roots/latest
     GET /privacy/rates?epoch=
+    GET /privacy/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext, denom, amount, spc]
+    GET /privacy/stake/nullifiers?from_height=&limit=  [[height, [nf, ...]], ...]
+    GET /privacy/stake/roots?from_height=&limit=       [height, root, tree_size, time]
+
+The stake streams are x/shieldedstaking's stake note tree (owner-locked
+derth/<valoper> and unbond/<valoper>/<epoch> notes), served exactly like the
+pool's: a stake note the chain minted has public denom, amount and stake pc
+(spc) and a null ciphertext; a note a stake proof created has a ciphertext
+and null denom, amount and spc.
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
@@ -100,6 +109,7 @@ def _group(rows, fmt) -> list:
 def status(response: Response):
     c = _db()
     notes, ids, nfs = store_mod.counts(c)
+    stake_notes, stake_nfs = store_mod.stake_counts(c)
     response.headers["Cache-Control"] = TIP
     last_time = _meta(c, "last_time")
     start = _meta(c, "start_height")
@@ -111,6 +121,8 @@ def status(response: Response):
         "notes": notes,
         "identity_leaves": ids,
         "nullifiers": nfs,
+        "stake_notes": stake_notes,
+        "stake_nullifiers": stake_nfs,
         "halted": _meta(c, "halted"),
     }
 
@@ -205,6 +217,7 @@ def roots_latest(response: Response):
         "synced_height": _synced(c),
         "note": _root(c, "note_roots"),
         "identity": _root(c, "identity_roots"),
+        "stake": _root(c, "stake_roots"),
     }
 
 
@@ -236,4 +249,76 @@ def rates(response: Response, epoch: int | None = Query(None, ge=0)):
         "epoch": epoch,
         "latest_epoch": latest_epoch,
         "rates": [list(r) for r in rows],
+    }
+
+
+def _b64_or_none(v: bytes | None) -> str | None:
+    return None if v is None else base64.b64encode(v).decode()
+
+
+def _hex_or_none(v: bytes | None) -> str | None:
+    return None if v is None else v.hex()
+
+
+@router.get("/stake/notes")
+def stake_notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
+    c = _db()
+    n = _limit(limit)
+    rows = c.execute(
+        "SELECT position, height, cm, ciphertext, denom, amount, spc FROM stake_notes"
+        " WHERE position >= ? ORDER BY position LIMIT ?",
+        (from_pos, n),
+    ).fetchall()
+    complete = len(rows) == n
+    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+    return {
+        "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
+        "synced_height": _synced(c),
+        "from_pos": from_pos,
+        "next_pos": rows[-1][0] + 1 if rows else from_pos,
+        "complete": complete,
+        "notes": [[p, h, cm.hex(), _b64_or_none(ct), denom, amt, _hex_or_none(spc)]
+                  for p, h, cm, ct, denom, amt, spc in rows],
+    }
+
+
+@router.get("/stake/nullifiers")
+def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
+    c = _db()
+    rows, nxt, complete = _height_page(
+        c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
+    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+    return {
+        "fields": ["height", "nullifiers"],
+        "synced_height": _synced(c),
+        "from_height": from_height,
+        "next_height": nxt,
+        "complete": complete,
+        "blocks": _group(rows, bytes.hex),
+    }
+
+
+@router.get("/stake/roots")
+def stake_roots(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
+    """Every stake root the chain recorded (one per block that moved the tree), oldest first.
+
+    A wallet proves a stake note against any root still in the chain's window
+    (stake_root_window_seconds) or, for a stake vote, against the proposal's
+    snapshot root; this stream is every candidate, keyed by height alone.
+    """
+    c = _db()
+    n = _limit(limit)
+    rows = c.execute(
+        "SELECT height, root, tree_size, time FROM stake_roots WHERE height >= ? ORDER BY height LIMIT ?",
+        (from_height, n),
+    ).fetchall()
+    complete = len(rows) == n
+    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+    return {
+        "fields": ["height", "root", "tree_size", "time"],
+        "synced_height": _synced(c),
+        "from_height": from_height,
+        "next_height": rows[-1][0] + 1 if complete else max(from_height, _synced(c) + 1),
+        "complete": complete,
+        "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
     }

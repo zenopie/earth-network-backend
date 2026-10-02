@@ -157,4 +157,5 @@ def test_no_per_user_lookups():
     assert paths == {
         "/privacy/status", "/privacy/notes", "/privacy/nullifiers", "/privacy/identity",
         "/privacy/identity/zeroed", "/privacy/roots/latest", "/privacy/rates",
+        "/privacy/stake/notes", "/privacy/stake/nullifiers", "/privacy/stake/roots",
     }

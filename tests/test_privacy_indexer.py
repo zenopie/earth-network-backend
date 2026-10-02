@@ -47,6 +47,10 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
         row = store.conn.execute("SELECT root, tree_size FROM identity_roots WHERE height = ?", (b["height"],)).fetchone()
         if row:
             assert row[0].hex() == b["identity_latest_root"] and row[1] == b["identity_tree_size"]
+        row = store.conn.execute("SELECT root, tree_size FROM stake_roots WHERE height = ?", (b["height"],)).fetchone()
+        if row:
+            assert row[0].hex() == b["stake_latest_root"] and row[1] == b["stake_tree_size"]
+    assert store.stake_counts()[0] == last.get("stake_tree_size", 0)
     # And the Python rebuild reproduces every one of them, and the chain's
     # trees at the synced height.
     rep = verify.rebuild(store.conn, all_roots=True)
@@ -54,6 +58,8 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
     assert rep.ok, rep.errors
     assert rep.note_root.hex() == last["note_current_root"]
     assert rep.identity_root.hex() == last["identity_current_root"]
+    if last.get("stake_tree_size"):
+        assert rep.stake_root.hex() == last["stake_latest_root"]
 
 
 def test_personhood_scenario_covers_appends_zeroings_mints_and_rates(db):
@@ -67,7 +73,7 @@ def test_personhood_scenario_covers_appends_zeroings_mints_and_rates(db):
     (minted,) = c.execute("SELECT COUNT(*) FROM notes WHERE amount LIKE '%uanml'").fetchone()
     assert minted >= 1, "registration and claims mint ANML notes with a public value"
     (hidden,) = c.execute("SELECT COUNT(*) FROM notes WHERE amount IS NULL").fetchone()
-    assert hidden >= 1, "transfer outputs stay hidden"
+    assert hidden >= 1, "bundle outputs stay hidden"
 
 
 def test_staking_scenario_records_epoch_rates(db):

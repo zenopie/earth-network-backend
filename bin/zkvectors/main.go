@@ -63,6 +63,23 @@ func main() {
 	out["identity_leaves"] = leaves
 	out["identity_root_3"] = hx(r3)
 	out["identity_root_zeroed1"] = hx(rz)
+	// stake tree: privacy.StakePC/StakeCM leaves in a zk/merkle tree, as
+	// x/shieldedstaking's stake tree holds them.
+	spc := privacy.StakePC(privacy.OwnerPK(u(42)), u(7), u(9))
+	out["stake_pc"] = hx(spc)
+	out["stake_cm_derth"] = map[string]string{"denom": long, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(long), 250000, spc))}
+	st := merkle.NewMem()
+	var scms, sroots []string
+	for i := uint64(0); i < 4; i++ {
+		cm := privacy.StakeCM(privacy.AssetID(long), 10+i, privacy.StakePC(u(700+i), u(800+i), u(900+i)))
+		st.Append(cm)
+		scms = append(scms, hx(cm))
+		r, _ := st.Root()
+		sroots = append(sroots, hx(r))
+	}
+	out["stake_cms"] = scms
+	out["stake_roots"] = sroots
+
 	// MsgShield as the chain encodes it, for the backend's hand-built proto.
 	shield := shieldedtypes.MsgShield{
 		Sender:     "earth1qqqsyqcyq5rqwzqfpg9scrgwpugpzysncc2uls",

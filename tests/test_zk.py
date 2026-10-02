@@ -82,3 +82,27 @@ def test_field_from_bytes_refuses_non_canonical():
     with pytest.raises(ValueError):
         privacy.field_from_bytes(b"\x01" * 31)
     assert privacy.field_from_bytes((poseidon2.P - 1).to_bytes(32, "big")) == poseidon2.P - 1
+
+
+def test_stake_tags_match_the_circuits():
+    # circuits/privacy_core/src/lib.nr (mobile privacy/orchard) and
+    # zk/privacy/privacy.go: TAG_STAKE "earth.stake", TAG_SPC "earth.spc".
+    assert privacy.TAG_STAKE == 0x65617274682e7374616b65
+    assert privacy.TAG_SPC == 0x65617274682e737063
+
+
+def test_stake_commitments_and_tree():
+    import pytest
+
+    if "stake_cms" not in VEC:
+        pytest.skip("zk_vectors.json predates the stake tree; regenerate with bin/zk-vectors.sh")
+    spc = privacy.stake_pc(privacy.owner_pk(42), 7, 9)
+    assert hx(spc) == VEC["stake_pc"]
+    d = VEC["stake_cm_derth"]
+    assert hx(privacy.stake_cm(privacy.asset_id(d["denom"]), int(d["amount"]), spc)) == d["cm"]
+    t = merkle.SparseTree()
+    for i, want in enumerate(VEC["stake_roots"]):
+        cm = privacy.stake_cm(privacy.asset_id(VEC["asset_long"]["denom"]), 10 + i, privacy.stake_pc(700 + i, 800 + i, 900 + i))
+        assert hx(cm) == VEC["stake_cms"][i]
+        t.append(cm)
+        assert hx(t.root()) == want
