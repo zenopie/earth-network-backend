@@ -72,7 +72,7 @@ class ChallengeRequest(BaseModel):
 
 class RegisterGrant(BaseModel):
     # MsgRegister's own fields, bytes as standard base64 (proto JSON), except
-    # its fee transfer, which the app proves only once it holds the gas note.
+    # its fee bundle, which the app proves only once it holds the gas note.
     proof: str
     public_signals: list[str]
     signature_algorithm: str
@@ -151,7 +151,7 @@ async def register(body: RegisterGrant):
     affiliate = body.affiliate.strip()
     if affiliate and not _valid_address(affiliate):
         return _reply(400, "error", "affiliate is not an earth address")
-    # MsgRegister in proto JSON, without its fee transfer (gas-check does not
+    # MsgRegister in proto JSON, without its fee bundle (gas-check does not
     # look at it): bytes fields are standard base64, exactly as the app holds
     # them.
     msg = {
