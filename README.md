@@ -244,7 +244,7 @@ and under `base` = `/privacy/<chain_id>/<genesis>`:
     GET {base}/status
     GET {base}/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount]
     GET {base}/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
-    GET {base}/identity?from_index=&limit=          [index, height, leaf, zeroed_height]
+    GET {base}/identity?from_index=&limit=          [index, height, leaf, zeroed_height, time]
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
     GET {base}/roots/latest                         note, identity and stake roots, size, height, time
     GET {base}/rates?epoch=                         [validator, rate, supply, epoch, height]
@@ -284,7 +284,8 @@ module mint). Every note row has a `ciphertext`; a shielded or minted note's
 is the required 177-byte amount-blind v2 ciphertext (`EncryptBlindNote`: no
 asset or value inside — the wallet decrypts it, recomputes `pc` and checks
 `cm = H(TAG_CM, AssetID(denom), amount, pc)` against the row's `amount`). A wallet that has synced identity leaves follows
-`/identity/zeroed` rather than re-reading them.
+`/identity/zeroed` rather than re-reading them. An identity row's `time` is
+the block time (unix seconds) of its `height`.
 
 `/stake/*` is x/shieldedstaking's stake note tree (owner-locked
 `derth/<valoper>` and `unbond/<valoper>/<epoch>` notes; its own nullifiers

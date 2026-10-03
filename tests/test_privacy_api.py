@@ -98,6 +98,11 @@ def test_a_height_larger_than_the_limit_comes_whole(api):
 def test_identity_leaves_and_zeroings(api):
     body = api.get("/privacy/identity").json()
     assert body["size"] == len(body["leaves"])
+    assert body["fields"] == ["index", "height", "leaf", "zeroed_height", "time"]
+    from services.privacy.rpc import parse_time
+    times = {b["height"]: parse_time(b["time"]) for b in load("TestPrivatePersonhood")["blocks"]}
+    for l in body["leaves"]:
+        assert l[4] == times[l[1]], "time is the block time of the leaf's height"
     zeroed = [l for l in body["leaves"] if l[3] is not None]
     assert zeroed, "the scenario zeroes leaves"
     z = api.get("/privacy/identity/zeroed").json()

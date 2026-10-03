@@ -15,7 +15,7 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/status
     GET {base}/notes?from_pos=&limit=            [position, height, cm, ciphertext, amount]
     GET {base}/nullifiers?from_height=&limit=    [[height, [nf, ...]], ...]
-    GET {base}/identity?from_index=&limit=       [index, height, leaf, zeroed_height]
+    GET {base}/identity?from_index=&limit=       [index, height, leaf, zeroed_height, time]
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
     GET {base}/roots/latest
     GET {base}/rates?epoch=
@@ -232,7 +232,10 @@ def identity(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT), l
     with _read() as c:
         n = _limit(limit)
         rows = c.execute(
-            "SELECT idx, height, leaf, zeroed_height FROM identity_leaves WHERE idx >= ? ORDER BY idx LIMIT ?",
+            # time: the block time (unix seconds) of the leaf's height; every
+            # applied block is in `blocks`, written in the same transaction.
+            "SELECT l.idx, l.height, l.leaf, l.zeroed_height, b.time FROM identity_leaves l"
+            " JOIN blocks b ON b.height = l.height WHERE l.idx >= ? ORDER BY l.idx LIMIT ?",
             (from_index, n),
         ).fetchall()
         (size,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM identity_leaves").fetchone()
@@ -240,12 +243,12 @@ def identity(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT), l
         # already hold a range follow /identity/zeroed instead of re-reading it.
         response.headers["Cache-Control"] = SHORT if len(rows) == n else TIP
         return {
-            "fields": ["index", "height", "leaf", "zeroed_height"],
+            "fields": ["index", "height", "leaf", "zeroed_height", "time"],
             "synced_height": _synced(c),
             "size": size,
             "from_index": from_index,
             "next_index": rows[-1][0] + 1 if rows else from_index,
-            "leaves": [[i, h, leaf.hex(), z] for i, h, leaf, z in rows],
+            "leaves": [[i, h, leaf.hex(), z, t] for i, h, leaf, z, t in rows],
         }
 
 
