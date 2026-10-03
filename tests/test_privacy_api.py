@@ -26,6 +26,12 @@ def _index(path: str, name: str, tip: int | None = None) -> None:
     store.close()
 
 
+@pytest.fixture(autouse=True)
+def small_pages(monkeypatch):
+    """The recorded scenarios are small: page sizes small enough to page them."""
+    monkeypatch.setattr(config, "PRIVACY_PAGE_SIZES", (1, 2, 4, 7, 100, 1000))
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     path = str(tmp_path / "index.db")
@@ -57,9 +63,10 @@ def test_notes_pages_cover_everything_once_and_full_pages_are_immutable(api):
         else:
             assert "immutable" not in r.headers["cache-control"]
         seen += body["notes"]
-        if not body["notes"]:
+        if not body["complete"]:
             break
         pos = body["next_pos"]
+        assert pos % 7 == 0, "a full page's next_pos is the next aligned cursor"
     assert [n[0] for n in seen] == list(range(total))
     pos_, height, cm, ct, amount = seen[0]
     assert len(bytes.fromhex(cm)) == 32
@@ -68,7 +75,7 @@ def test_notes_pages_cover_everything_once_and_full_pages_are_immutable(api):
 
 
 def test_nullifier_pages_never_split_a_height(api):
-    all_rows = api.get("/privacy/nullifiers", params={"limit": 5000}).json()
+    all_rows = api.get("/privacy/nullifiers", params={"limit": 1000}).json()
     flat_all = [(h, nf) for h, nfs in all_rows["blocks"] for nf in nfs]
     assert len(flat_all) == api.get("/privacy/status").json()["nullifiers"]
     got, h = [], 0
@@ -88,7 +95,7 @@ def test_nullifier_pages_never_split_a_height(api):
 
 
 def test_a_height_larger_than_the_limit_comes_whole(api):
-    first = api.get("/privacy/nullifiers", params={"limit": 5000}).json()["blocks"]
+    first = api.get("/privacy/nullifiers", params={"limit": 1000}).json()["blocks"]
     big = max(first, key=lambda b: len(b[1]))
     assert len(big[1]) >= 2
     body = api.get("/privacy/nullifiers", params={"from_height": big[0], "limit": 1}).json()
@@ -140,9 +147,11 @@ def test_rates(tmp_path, monkeypatch):
     assert first.headers["cache-control"] == "public, max-age=86400"
 
 
-def test_limits_are_clamped_and_validated(api, monkeypatch):
-    monkeypatch.setattr(config, "PRIVACY_PAGE_MAX", 3)
-    assert len(api.get("/privacy/notes", params={"limit": 100}).json()["notes"]) == 3
+def test_limits_are_validated(api, monkeypatch):
+    monkeypatch.setattr(config, "PRIVACY_PAGE_MAX", 4)
+    assert len(api.get("/privacy/notes", params={"limit": 4}).json()["notes"]) == 4
+    r = api.get("/privacy/notes", params={"limit": 7})
+    assert r.status_code == 400 and r.headers["cache-control"] == "no-store", "past PRIVACY_PAGE_MAX"
     assert api.get("/privacy/notes", params={"from_pos": -1}).status_code == 422
     assert api.get("/privacy/notes", params={"limit": 0}).status_code == 422
 
@@ -217,7 +226,15 @@ def test_integers_past_int64_are_422_not_500(api, path, param):
     """audit-3 poc_overflow_500.py: 2^64 reached SQLite's bind as an OverflowError."""
     assert api.get(path, params={param: str(2**64)}).status_code == 422
     assert api.get(path, params={param: str(2**63)}).status_code == 422
-    assert api.get(path, params={param: str(2**63 - 1)}).status_code == 200
+    top = 2**63 - 1
+    if param == "limit":
+        assert api.get(path, params={param: str(top)}).status_code == 400, "not a page size"
+    elif param in ("from_pos", "from_index"):
+        # Cursors are page-aligned (audit-4 B3): the last aligned page is fine.
+        assert api.get(path, params={param: str(top)}).status_code == 400
+        assert api.get(path, params={param: str(top - top % 1000)}).status_code == 200
+    else:
+        assert api.get(path, params={param: str(top)}).status_code == 200
 
 
 def _racing(monkeypatch, path, table_sql_marker):

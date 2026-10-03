@@ -58,6 +58,21 @@ can never change (notes, nullifiers and zeroings are append-only and blocks
 are final), so it is served immutable and any CDN can keep it. The page that
 reaches the synced tip, the identity leaves (a leaf can be zeroed later),
 roots, rates and status get short max-ages.
+
+Paging (audit-4 B3): limit is one of PRIVACY_PAGE_SIZES (100, 1000) and
+nothing else, and a position- or index-paged stream (notes, identity,
+stake/notes, stake/nullifier-tree) takes only a page-aligned cursor:
+from_pos / from_index a multiple of limit, else 400. Page k of size L is
+exactly [k*L, (k+1)*L). Every client asks for the same few URLs, so one
+CDN entry serves them all; an uncached page is no longer a URL an attacker
+can mint at will (each distinct from_pos was a distinct cache key, and an
+uncached 5000-row page cost ~8 MiB of heap and ~0.3 s on a laptop, several
+times that on the 0.1-CPU lease). A wallet whose sync
+ends mid-page asks for the page containing its cursor and skips the rows
+it holds. Height-paged streams end at a block boundary, so their cursor
+(next_height) cannot be aligned; their rows are small (32-byte values) and
+they share the limits on sizes, the per-client rate and the concurrency
+cap (services/privacygate) with the rest.
 """
 import base64
 import sqlite3
@@ -142,10 +157,29 @@ router = APIRouter(tags=["privacy"])
 chain = APIRouter(prefix="/privacy/{chain_id}/{genesis}", dependencies=[Depends(_this_chain)])
 
 
+def _sizes() -> tuple[int, ...]:
+    return tuple(n for n in config.PRIVACY_PAGE_SIZES if 0 < n <= config.PRIVACY_PAGE_MAX)
+
+
 def _limit(limit: int | None) -> int:
+    """The page size: PRIVACY_PAGE_DEFAULT, or one of PRIVACY_PAGE_SIZES (else 400)."""
     if limit is None:
         return config.PRIVACY_PAGE_DEFAULT
-    return max(1, min(limit, config.PRIVACY_PAGE_MAX))
+    if limit not in _sizes():
+        raise HTTPException(status_code=400, detail=f"limit must be one of {list(_sizes())}",
+                            headers={"Cache-Control": "no-store"})
+    return limit
+
+
+def _aligned(start: int, limit: int | None, name: str) -> tuple[int, int]:
+    """(page size, last position) of an aligned page [start, start + n); 400 if start is not a multiple of n."""
+    n = _limit(limit)
+    if start % n:
+        raise HTTPException(status_code=400,
+                            detail=f"{name} must be a multiple of limit ({n}): ask for page "
+                                   f"{name}={start - start % n} and skip the rows before {start}",
+                            headers={"Cache-Control": "no-store"})
+    return n, min(start + n - 1, MAX_INT)
 
 
 def _height_page(c: sqlite3.Connection, sql: str, from_height: int, limit: int):
@@ -204,13 +238,13 @@ def status(response: Response):
 
 @chain.get("/notes")
 def notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    n, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
-        n = _limit(limit)
         rows = c.execute(
-            "SELECT position, height, cm, ciphertext, amount FROM notes WHERE position >= ? ORDER BY position LIMIT ?",
-            (from_pos, n),
+            "SELECT position, height, cm, ciphertext, amount FROM notes WHERE position BETWEEN ? AND ? ORDER BY position",
+            (from_pos, last),
         ).fetchall()
-        complete = len(rows) == n
+        complete = bool(rows) and rows[-1][0] == last
         response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
         return {
             "fields": ["position", "height", "cm", "ciphertext", "amount"],
@@ -240,19 +274,19 @@ def nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT)
 
 @chain.get("/identity")
 def identity(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    n, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
-        n = _limit(limit)
         rows = c.execute(
             # time: the block time (unix seconds) of the leaf's height; every
             # applied block is in `blocks`, written in the same transaction.
             "SELECT l.idx, l.height, l.leaf, l.zeroed_height, b.time FROM identity_leaves l"
-            " JOIN blocks b ON b.height = l.height WHERE l.idx >= ? ORDER BY l.idx LIMIT ?",
-            (from_index, n),
+            " JOIN blocks b ON b.height = l.height WHERE l.idx BETWEEN ? AND ? ORDER BY l.idx",
+            (from_index, last),
         ).fetchall()
         (size,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM identity_leaves").fetchone()
         # Not immutable: a leaf on this page may be zeroed later. Clients that
         # already hold a range follow /identity/zeroed instead of re-reading it.
-        response.headers["Cache-Control"] = SHORT if len(rows) == n else TIP
+        response.headers["Cache-Control"] = SHORT if rows and rows[-1][0] == last else TIP
         return {
             "fields": ["index", "height", "leaf", "zeroed_height", "time"],
             "synced_height": _synced(c),
@@ -340,14 +374,14 @@ def _hex_or_none(v: bytes | None) -> str | None:
 
 @chain.get("/stake/notes")
 def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    n, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
-        n = _limit(limit)
         rows = c.execute(
             "SELECT position, height, cm, ciphertext, denom, amount, spc FROM stake_notes"
-            " WHERE position >= ? ORDER BY position LIMIT ?",
-            (from_pos, n),
+            " WHERE position BETWEEN ? AND ? ORDER BY position",
+            (from_pos, last),
         ).fetchall()
-        complete = len(rows) == n
+        complete = bool(rows) and rows[-1][0] == last
         response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
         return {
             "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
@@ -377,22 +411,24 @@ def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MA
 
 
 @chain.get("/stake/nullifier-tree")
-def stake_nullifier_tree(response: Response, from_index: int = Query(1, ge=0, le=MAX_INT),
+def stake_nullifier_tree(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
                          limit: int | None = Query(None, ge=1, le=MAX_INT)):
     """The stake nullifier tree's values by leaf index (insertion order), from from_index.
 
-    Leaf 0 is the sentinel and never a row; the first value is leaf 1. size
-    is the tree's leaf count as the chain counts it (values + 1, 0 when
-    empty). A wallet building a vote at a snapshot takes leaves 1 ..
-    nf_size - 1 and rebuilds the indexed tree in that order.
+    Leaf 0 is the sentinel and never a row; the first value is leaf 1, so
+    the first page (from_index=0, aligned like every index cursor) holds
+    leaves 1 .. limit-1. size is the tree's leaf count as the chain counts
+    it (values + 1, 0 when empty). A wallet building a vote at a snapshot
+    takes leaves 1 .. nf_size - 1 and rebuilds the indexed tree in that
+    order.
     """
+    n, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
-        n = _limit(limit)
         rows = c.execute(
-            "SELECT idx, nf, height FROM stake_nullifiers WHERE idx >= ? ORDER BY idx LIMIT ?",
-            (from_index, n),
+            "SELECT idx, nf, height FROM stake_nullifiers WHERE idx BETWEEN ? AND ? ORDER BY idx",
+            (from_index, last),
         ).fetchall()
-        complete = len(rows) == n
+        complete = bool(rows) and rows[-1][0] == last
         response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
         return {
             "fields": ["index", "nullifier", "height"],

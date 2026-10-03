@@ -260,6 +260,11 @@ def test_malformed_stake_notes_are_refused(attrs):
         events.parse_block(1, 0, "H", res)
 
 
+@pytest.fixture(autouse=True)
+def small_pages(monkeypatch):
+    monkeypatch.setattr(config, "PRIVACY_PAGE_SIZES", (1, 2, 100, 1000))
+
+
 @pytest.fixture
 def api(indexed, monkeypatch):
     store, _ = indexed

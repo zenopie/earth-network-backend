@@ -47,6 +47,33 @@ part of the queue is reserved for passports from known Document Signers
 read from `EARTH_RPC_URL` (rpc.erth.network) every 10 minutes; if that is
 unreachable the lane is simply unused.
 
+## /privacy behind Cloudflare (set this up)
+
+The streams are public and cacheable; Cloudflare is what serves them. The
+origin admits at most `PRIVACY_MAX_CONCURRENT` (4) /privacy responses in
+flight (503 past it) and `PRIVACY_IP_MAX_PER_WINDOW` (240) a minute per
+client (429), and takes only fixed page sizes (100, 1000) with page-aligned
+cursors, so every wallet asks for the same URLs (audit-4 B3). Those bound
+what one burst costs the 0.1-CPU lease; they do not stop a burst reaching
+the tunnel. In the erth.network zone:
+
+1. **Cache rule** — *Caching → Cache Rules*: `starts_with(http.request.uri.path,
+   "/privacy/")` → *Eligible for cache*, *Edge TTL: use cache-control header
+   if present*, *Cache key: include the query string* (all of it; the origin
+   refuses any other limit/cursor, so the key space is the page set). Without
+   it Cloudflare does not cache JSON and every page is a miss.
+2. **Rate-limiting rule** — *Security → WAF → Rate limiting rules*:
+   - If: `starts_with(http.request.uri.path, "/privacy/")`
+   - Characteristics: *IP*; *Increment counter when*: `not cf.cache_status in
+     {"HIT" "STALE" "UPDATING" "REVALIDATED"}` where the plan allows counting
+     on the response (Pro+; on Free count every request and raise the rate)
+   - Rate: **120 requests / 10 seconds** (Free: one 10 s period, which is fine)
+   - Action: *Block* for 10 seconds (answers 429; wallets back off and retry)
+
+   A first sync of 100k notes is ~100 pages of 1000, mostly cache hits, so
+   that rate refuses no wallet. Change it with the origin's
+   `PRIVACY_IP_MAX_PER_WINDOW` in mind: the edge rule should trip first.
+
 Exposed on a mapped port, not `as: 80`. The chain repo's SDL explains why: the
 provider's generated ingress hostname returned nginx 404 for ten minutes with a
 ready pod, and a mapped port worked immediately.

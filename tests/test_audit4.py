@@ -229,3 +229,122 @@ def test_ordinary_lane_cheap_refusals_still_count_nothing(client, chain):
         chain["refuse"][73000 + i] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
         assert post(client, body(73000 + i)).status_code == 403  # no work: ordinary lane
     assert not ratelimit.dsc_cooling(dsc) and ratelimit.shedding(dsc, None) is None
+
+
+# --- B3: /privacy page cost ---------------------------------------------------
+#
+# poc_privacy_page_cost.py: an uncached 5000-row /notes page cost ~8 MiB of
+# heap and ~0.3 s here (seconds on the 0.1-CPU lease), and every distinct
+# from_pos was a distinct CDN key, so the cache was bypassed at will. Now:
+# fixed page sizes, aligned cursors, an in-flight cap and a per-client rate.
+
+import asyncio  # noqa: E402
+import tracemalloc  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from routers import privacy as privacy_router  # noqa: E402
+from services.privacy import store as store_mod  # noqa: E402
+from services.privacygate import PrivacyGate  # noqa: E402
+
+BASE = "/privacy/earth-1/" + "ab" * 8
+
+
+@pytest.fixture
+def notes_index(tmp_path, monkeypatch):
+    db = str(tmp_path / "idx.db")
+    monkeypatch.setattr(config, "INDEX_DB", db)
+    c = store_mod.connect(db)
+    c.execute("BEGIN")
+    c.executemany("INSERT INTO meta VALUES (?,?)",
+                  [("chain_id", "earth-1"), ("genesis_hash", "ab" * 32), ("last_height", "10")])
+    c.execute("INSERT INTO blocks VALUES (1,'x',0)")
+    c.executemany("INSERT INTO notes VALUES (?,?,?,?,?)",
+                  ((i, os.urandom(32), os.urandom(177), 1, None) for i in range(5500)))
+    c.execute("COMMIT")
+    c.close()
+    app = FastAPI()
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(PrivacyGate)
+    app.include_router(privacy_router.router)
+    return TestClient(app)
+
+
+def test_only_aligned_pages_of_fixed_sizes(notes_index):
+    get = notes_index.get
+    for params in ({"from_pos": 1}, {"from_pos": 999}, {"from_pos": 100, "limit": 1000},
+                   {"from_pos": 0, "limit": 5000}, {"from_pos": 0, "limit": 999}):
+        r = get(BASE + "/notes", params=params)
+        assert r.status_code == 400, params
+        assert r.headers["cache-control"] == "no-store"
+    r = get(BASE + "/notes", params={"from_pos": 1000})
+    body = r.json()
+    assert [n[0] for n in body["notes"]] == list(range(1000, 2000))
+    assert body["complete"] and body["next_pos"] == 2000 and "immutable" in r.headers["cache-control"]
+    tip = get(BASE + "/notes", params={"from_pos": 5000}).json()
+    assert [n[0] for n in tip["notes"]] == list(range(5000, 5500)) and not tip["complete"]
+    assert tip["next_pos"] == 5500, "where the data ends; the wallet asks for page 5000 again later"
+    r = get(BASE + "/notes", params={"from_pos": 200, "limit": 100})
+    assert [n[0] for n in r.json()["notes"]] == list(range(200, 300))
+
+
+def test_a_max_page_is_bounded(notes_index):
+    tracemalloc.start()
+    r = notes_index.get(BASE + "/notes", params={"from_pos": 0, "limit": config.PRIVACY_PAGE_MAX},
+                        headers={"accept-encoding": "gzip"})
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert r.status_code == 200 and len(r.json()["notes"]) == 1000
+    assert peak < 4 * 2**20, f"peak heap {peak / 2**20:.1f} MiB for one max page"
+
+
+def test_privacy_rate_limit_per_client(notes_index, monkeypatch):
+    monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", True)
+    monkeypatch.setattr(config, "PRIVACY_IP_MAX_PER_WINDOW", 3)
+    a, b = {"cf-connecting-ip": "203.0.113.1"}, {"cf-connecting-ip": "203.0.113.2"}
+    for _ in range(3):
+        assert notes_index.get("/privacy/status", headers=a).status_code == 200
+    r = notes_index.get(BASE + "/notes", headers=a)
+    assert r.status_code == 429 and r.headers["cache-control"] == "no-store" and r.headers["retry-after"]
+    assert notes_index.get("/privacy/status", headers=b).status_code == 200, "another client is not limited"
+
+
+def test_privacy_in_flight_cap():
+    """Past PRIVACY_MAX_CONCURRENT the gate answers 503 at once; other paths pass."""
+    release = asyncio.Event()
+    entered = []
+
+    async def slow_app(scope, receive, send):
+        entered.append(scope["path"])
+        await release.wait()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    gate = PrivacyGate(slow_app)
+
+    async def call(path):
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        await gate({"type": "http", "path": path, "headers": [], "client": ("198.51.100.9", 1)}, receive, send)
+        return sent[0]["status"]
+
+    async def go():
+        slots = [asyncio.create_task(call(BASE + "/notes")) for _ in range(config.PRIVACY_MAX_CONCURRENT)]
+        await asyncio.sleep(0.01)
+        refused = await call(BASE + "/notes")
+        other = asyncio.create_task(call("/gas/pow"))
+        await asyncio.sleep(0.01)
+        release.set()
+        return refused, await asyncio.gather(*slots), await other
+
+    refused, ok, other = asyncio.run(go())
+    assert refused == 503 and ok == [200] * config.PRIVACY_MAX_CONCURRENT and other == 200
+    assert gate.in_flight == 0

@@ -282,8 +282,32 @@ A wallet that wants to pin the chain independently can compare
 `genesis_hash` with its own node's hash for the chain's first block.
 The old unkeyed stream paths (`/privacy/notes`, ...) are gone.
 
-Compact JSON (rows as arrays, field order in `fields`), gzip'd. Pages default
-to 1000 rows and cap at `PRIVACY_PAGE_MAX` (5000). Height-paged streams never
+Compact JSON (rows as arrays, field order in `fields`), gzip'd.
+
+**Paging rule (wallets implement this; audit-4 B3).** `limit` is one of
+`PRIVACY_PAGE_SIZES` — 100 or 1000; default 1000; anything else is 400. A
+position- or index-paged stream (`notes`, `identity`, `stake/notes`,
+`stake/nullifier-tree`) takes only a page-aligned cursor: `from_pos` /
+`from_index` must be a multiple of `limit` (else 400, `no-store`), and page
+`k` is exactly positions `[k*limit, (k+1)*limit)`. A full page's
+`next_pos`/`next_index` is the next aligned cursor. A page that reaches the
+tip is short (`complete: false`) and its `next_*` is one past the last row;
+to continue later, ask for the page that contains it,
+`from = next - next % limit`, and drop the rows already held. The stake
+nullifier tree's first page is `from_index=0` (leaf 0, the sentinel, is never
+a row, so it holds leaves 1..limit-1). Every wallet thus asks for the same
+URLs, a CDN keeps one copy of each, and an uncached page is no longer a URL
+anyone can mint (every distinct `from_pos` used to be a distinct cache key,
+and a 5000-row page cost ~8 MiB of heap and ~0.3 s on a laptop, seconds on
+the lease; a 1000-row page is ~1.6 MiB). Height-paged streams keep a free
+`from_height` (a page ends at a block boundary, so `next_height` cannot be
+aligned); their rows are 32-byte values and the fixed sizes apply. All of
+/privacy is behind an in-flight cap (`PRIVACY_MAX_CONCURRENT`, 4: 503 with
+`Retry-After: 1`) and a per-client rate (`PRIVACY_IP_MAX_PER_WINDOW`, 240 per
+`PRIVACY_IP_WINDOW_SECONDS`, 60: 429), counting only what misses the CDN; the
+Cloudflare cache and rate-limit rules are in deploy/akash/README.md.
+
+Height-paged streams never
 split a block, so `next_height` is always a clean cursor; a response's rows
 and its `synced_height`/`next_height` are read in one SQLite snapshot, so a
 block committed mid-request is never skipped by following `next_height`.
@@ -336,15 +360,16 @@ positions are insertion order (leaf 0 the sentinel, the first nullifier leaf
 1). A wallet must rebuild it in exactly the chain's order, so the backend
 serves it by leaf index:
 
-    GET {base}/stake/nullifier-tree?from_index=1&limit=1000
+    GET {base}/stake/nullifier-tree?from_index=0&limit=1000
 
     {"fields": ["index", "nullifier", "height"],
      "synced_height": H, "size": S,           // leaf count, sentinel included; 0 when empty
-     "from_index": 1, "next_index": N, "complete": true|false,
+     "from_index": 0, "next_index": N, "complete": true|false,
      "nullifiers": [[1, "<hex32>", 9], [2, "<hex32>", 16], ...]}
 
-`from_index` defaults to 1 (0 is accepted; no row has it). Follow
-`next_index` while `complete` is true; full pages are `immutable`. Rows are
+`from_index` defaults to 0 and, like every index cursor, must be a multiple
+of `limit` (the first page holds leaves 1..limit-1; no row has index 0).
+Follow `next_index` while `complete` is true; full pages are `immutable`. Rows are
 gap-free and every nullifier appears once: the indexer halts on an `index`
 attribute that is not exactly the next one or a repeated nullifier. Failed
 txs' nullifiers are included (a claim spends in the private ante, so its

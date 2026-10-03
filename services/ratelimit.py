@@ -123,19 +123,33 @@ def _estimate(prev: int, cur: int, now: float, window: float) -> float:
     return prev * overlap + cur
 
 
-def allow(key, now: float | None = None) -> bool:
-    """Counts a request from client key; False when it is over the window's limit."""
+def _allow(table: OrderedDict, key, now: float | None, limit: int, window: float, tracked: int) -> bool:
     now = time.monotonic() if now is None else now
-    window = config.REGISTER_IP_WINDOW_SECONDS
-    entry = _windows.pop(key, 0)
+    entry = table.pop(key, 0)
     idx, prev, cur = _count(entry, now, window)
-    ok = _estimate(prev, cur, now, window) < config.REGISTER_IP_MAX_PER_WINDOW
+    ok = _estimate(prev, cur, now, window) < limit
     if ok:
         cur = min(cur + 1, 0xFFFF)
-    _windows[key] = idx << 32 | prev << 16 | cur  # re-inserted: now the most recent
-    while len(_windows) > config.REGISTER_IP_MAX_TRACKED:
-        _windows.popitem(last=False)
+    table[key] = idx << 32 | prev << 16 | cur  # re-inserted: now the most recent
+    while len(table) > tracked:
+        table.popitem(last=False)
     return ok
+
+
+def allow(key, now: float | None = None) -> bool:
+    """Counts a /gas/register request from client key; False when it is over the window's limit."""
+    return _allow(_windows, key, now, config.REGISTER_IP_MAX_PER_WINDOW, config.REGISTER_IP_WINDOW_SECONDS,
+                  config.REGISTER_IP_MAX_TRACKED)
+
+
+# /privacy requests that reach the origin (services/privacygate), same shape.
+_privacy_windows: "OrderedDict[int | str, int]" = OrderedDict()
+
+
+def allow_privacy(key, now: float | None = None) -> bool:
+    """Counts a /privacy request from client key; False when it is over PRIVACY_IP_MAX_PER_WINDOW."""
+    return _allow(_privacy_windows, key, now, config.PRIVACY_IP_MAX_PER_WINDOW, config.PRIVACY_IP_WINDOW_SECONDS,
+                  config.REGISTER_IP_MAX_TRACKED)
 
 
 def _bump(table: OrderedDict, key, now: float, window: float) -> None:
@@ -216,6 +230,7 @@ def one_at_a_time(key):
 
 def reset() -> None:
     _windows.clear()
+    _privacy_windows.clear()
     _busy.clear()
     _refusals.clear()
     _dsc_failures.clear()

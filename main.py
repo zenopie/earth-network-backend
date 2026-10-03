@@ -16,6 +16,7 @@ import config
 from routers import gas, privacy
 from services import chain
 from services.bodylimit import BodyLimit
+from services.privacygate import PrivacyGate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(title="earth network backend", version="3.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+# Outside GZip: a /privacy response holds its slot until its last
+# compressed byte is sent.
+app.add_middleware(PrivacyGate)
 # Added last, so outermost: an oversized body is refused before any other
 # layer, or FastAPI's JSON parsing, reads it.
 app.add_middleware(BodyLimit)

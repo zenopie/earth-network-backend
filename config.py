@@ -138,6 +138,19 @@ INDEXER_START_HEIGHT = int(os.getenv("INDEXER_START_HEIGHT", "0"))
 INDEXER_BATCH = int(os.getenv("INDEXER_BATCH", "20"))
 INDEXER_CONCURRENCY = int(os.getenv("INDEXER_CONCURRENCY", "8"))
 INDEXER_POLL_SECONDS = float(os.getenv("INDEXER_POLL_SECONDS", "2"))
-# Page size limits for the /privacy streams.
+# Page sizes for the /privacy streams (routers/privacy, audit-4 B3): limit
+# must be one of PRIVACY_PAGE_SIZES (each at most PRIVACY_PAGE_MAX), and a
+# position/index cursor a multiple of it, so every wallet asks for the same
+# few URLs and the CDN keeps one copy of each page.
 PRIVACY_PAGE_DEFAULT = int(os.getenv("PRIVACY_PAGE_DEFAULT", "1000"))
-PRIVACY_PAGE_MAX = int(os.getenv("PRIVACY_PAGE_MAX", "5000"))
+PRIVACY_PAGE_MAX = int(os.getenv("PRIVACY_PAGE_MAX", "1000"))
+PRIVACY_PAGE_SIZES = tuple(int(x) for x in os.getenv("PRIVACY_PAGE_SIZES", "100,1000").split(",") if x.strip())
+# What reaches the origin under /privacy (services/privacygate): at most
+# PRIVACY_MAX_CONCURRENT responses in flight (503 past it; bounds memory on
+# the 256 MiB lease), and per client (an IPv4 /32 or IPv6
+# /REGISTER_IPV6_PREFIX, CF-Connecting-IP when trusted)
+# PRIVACY_IP_MAX_PER_WINDOW requests in PRIVACY_IP_WINDOW_SECONDS (429). CDN
+# hits never reach the origin, so these count only misses.
+PRIVACY_MAX_CONCURRENT = int(os.getenv("PRIVACY_MAX_CONCURRENT", "4"))
+PRIVACY_IP_MAX_PER_WINDOW = int(os.getenv("PRIVACY_IP_MAX_PER_WINDOW", "240"))
+PRIVACY_IP_WINDOW_SECONDS = float(os.getenv("PRIVACY_IP_WINDOW_SECONDS", "60"))
