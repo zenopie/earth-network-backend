@@ -40,7 +40,7 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   (CF-Connecting-IP if TRUST_CF_CONNECTING_IP), ValidateBasic bounds,
   canonical decimal signals, RegistrationBinding at address_index (Python,
   pinned to new Go vector), current_date skew, replay key
-  passport:<public_signals[2]>:<YYYY-MM> (nullifier_index 2 per
+  passport:<public_signals[2]>:<YYYY-MM> (since audit 3: :<YYYY-MM-DD>, 30-day window) (nullifier_index 2 per
   chain-orch networks/genesis.json), daily cap. One gas-check per client in
   flight (429). gas-check nullifier != ours -> 503, unclaimed.
 - Daily cap is REGISTER_GRANT_MAX_PER_DAY, counting passport: ids only.
@@ -69,10 +69,29 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
 - Fixtures re-recorded from fced976. No Groundworks/allocation events are
   indexed (none to change).
 
+## Audit-3 fixes (2026-10-03)
+- IPv6 clients keyed by /48 (REGISTER_IPV6_PREFIX, default 48).
+- Refusal budgets: only "invalid registration proof" refusals count; per
+  DSC commitment, per issuing country (DSC issuer C=), network backstop.
+  Shed requests need a proof of work (428 without). Reserved lane needs a
+  proof of work; a DSC with 5 verification failures/hour leaves it.
+  services/pow + GET /gas/pow; wallet spec in README "Proof of work".
+- Grants once per passport in a sliding 30 days (ids :YYYY-MM-DD).
+- Refusal logs: kind only (no affiliate/country).
+- Mempool claim of the gas note: documented, accepted.
+- Indexer: genesis re-checked every prepare (and re-prepare after RPC
+  errors); tip below index halts unless catching_up; size-check skip at
+  WARNING; rates of a >200-validator sweep keep their epoch; trusted RPC
+  documented (last_results_hash covers no events).
+- /privacy: one read snapshot per response; int params le=2^63-1 (422).
+- Ported PoCs: tests/test_register_dos.py, test_ratelimit (ipv6),
+  test_privacy_api (race, overflow), test_privacy_indexer (relaunch).
+
 ## Left
 - Wallet apps must move to /privacy/status -> base (old unkeyed stream paths
-  are gone) and stop calling the removed gas endpoints.
-- nothing else (pytest: 142 passed, 1 skipped = live-earthd test)
+  are gone), stop calling the removed gas endpoints, and implement the
+  /gas/register proof of work (README "Proof of work").
+- nothing else (pytest: 213 passed, 1 skipped = live-earthd test)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit

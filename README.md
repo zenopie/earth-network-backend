@@ -273,7 +273,10 @@ The old unkeyed stream paths (`/privacy/notes`, ...) are gone.
 
 Compact JSON (rows as arrays, field order in `fields`), gzip'd. Pages default
 to 1000 rows and cap at `PRIVACY_PAGE_MAX` (5000). Height-paged streams never
-split a block, so `next_height` is always a clean cursor. A page that filled
+split a block, so `next_height` is always a clean cursor; a response's rows
+and its `synced_height`/`next_height` are read in one SQLite snapshot, so a
+block committed mid-request is never skipped by following `next_height`.
+Integer parameters are bounded to int64 (larger: 422). A page that filled
 its limit covers a closed range and is served `immutable`; the tip page,
 identity leaves (zeroable later), roots, rates and status get short max-ages.
 `amount` is set only for notes whose value is already public (a shield or a
@@ -351,14 +354,32 @@ It refuses, and halts until an operator steps in, rather than serve trees that
 cannot match the chain: a note position out of sequence, a nullifier twice, a
 root event whose size differs from the index, a different chain id or block
 hash behind the RPC than the one indexed (the chain's first-block hash is
-recorded once, and is the `genesis` in the URLs; the last indexed block's
-hash is checked on every start), a block whose parent (`header.last_block_id`)
+recorded once, and is the `genesis` in the URLs; on every prepare — every
+start, and again after any RPC error — the block at the genesis height must
+still have it, and the last indexed block's hash must match), an RPC whose
+tip is below the indexed height and which is not catching up (a relaunch
+under the same chain id restarts low; before, that was retried forever with
+`halted` null), a block whose parent (`header.last_block_id`)
 is not the block indexed before it (checked on every block, so an RPC
 swapped mid-run halts at the first block of the other chain), or tree sizes that differ from the
 chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree` at each batch's last height —
 this is what catches notes imported at genesis, which emit no events, or a
-start height past the first private tx). The reason is in `/privacy/status`;
-clear it by wiping `INDEX_DB`.
+start height past the first private tx; when the node cannot answer that
+query — state pruned at old heights — the skip is logged at WARNING). The
+reason is in `/privacy/status` `halted`; clear it by wiping `INDEX_DB`.
+
+**The RPC is trusted for `block_results`.** The next header's
+`last_results_hash` would not authenticate them: CometBFT v0.38 hashes only
+each tx result's deterministic fields (code, data, gas), no events, and not
+`finalize_block_events` at all — which is where mints, roots and rates are.
+The tree-size check and `bin/verify-trees.py` (below) bound a lying RPC;
+point `INDEXER_RPC_URL` at a node you run or trust.
+
+**Rates past 200 validators.** x/shieldedstaking sweeps 200 validator books
+a block (`EpochValidatorLimit`); with more, an epoch's later validators come
+in following blocks without an epoch event. They are stored under the epoch
+the sweep belongs to (the last `shieldedstaking_epoch` seen), so
+`/rates?epoch=` lists every validator.
 
 The node behind `INDEXER_RPC_URL` (CometBFT RPC, default
 `https://rpc.erth.network:443`) must keep block results from the start height
