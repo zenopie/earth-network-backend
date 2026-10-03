@@ -283,7 +283,7 @@ derives from its keys.
 and under `base` = `/privacy/<chain_id>/<genesis>`:
 
     GET {base}/status
-    GET {base}/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount]
+    GET {base}/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount, owner_pk, rho, rcm]  (format 2)
     GET {base}/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
     GET {base}/identity?from_index=&limit=          [index, height, leaf, zeroed_height, time]
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
@@ -384,6 +384,64 @@ decryption alone.
 root the chain recorded (one per block that moved the tree), so a wallet can
 pick any anchor still in the window or a proposal's snapshot root.
 
+### Note stream format 2 (chain 203d3b2, audit round 5)
+
+The chain now mints the referral note itself (chain ORCHARD_DESIGN.md
+section 16): to the referrer handle's address, with an opening it derives
+and publishes, and **no ciphertext**. Trial decryption cannot find it, so
+the notes stream carries the opening. Every notes page has `"format": 2`
+and `/privacy/status` (and `{base}/status`) has `"note_format": 2`.
+
+    GET {base}/notes?from_pos=0&limit=1000
+
+    {"format": 2,
+     "fields": ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"],
+     "synced_height": H, "from_pos": 0, "next_pos": N, "complete": true|false,
+     "notes": [[position, height, cm, ciphertext, amount, owner_pk, rho, rcm], ...]}
+
+| column | type | value |
+|---|---|---|
+| `position` | int | leaf position in the note tree |
+| `height` | int | block height that appended it |
+| `cm` | hex, 64 chars | note commitment |
+| `ciphertext` | base64 string, or `null` | the note's ciphertext; `null` exactly for an open note |
+| `amount` | string `"<n><denom>"`, or `null` | public value (shield, chain mint, open note); `null` for a bundle output |
+| `owner_pk` | hex, 64 chars, or `null` | an open note's owner_pk; `null` on every other row |
+| `rho` | hex, 64 chars, or `null` | an open note's rho |
+| `rcm` | hex, 64 chars, or `null` | an open note's rcm |
+
+`owner_pk`, `rho`, `rcm` are all set or all `null`. Three kinds of row:
+
+1. **Bundle output** (`amount` null, `ciphertext` set, opening null):
+   trial-decrypt as before.
+2. **Minted or shielded note** (`amount` and `ciphertext` set, opening
+   null): `DecryptBlindNote`, recompute `pc`, check
+   `cm = H(TAG_CM, AssetID(denom), amount, pc)` with the row's amount.
+3. **Open note** (`ciphertext` null, `amount` and the opening set): today
+   only the referral note. A wallet takes every row whose `owner_pk`
+   equals its own, computes `pc = H(TAG_PC, owner_pk, rho, rcm)` and checks
+   `cm = H(TAG_CM, AssetID(denom), amount, pc)`; the note is then its own at
+   `position`, spendable with its nk (rho is the row's). Matching is local:
+   there is no per-owner lookup, the wallet scans the rows it downloads
+   anyway. The opening is `rho = H(TAG_REFERRAL, passport nullifier,
+   leaf_index, 0)`, `rcm = H(..., 1)` (TAG_REFERRAL = "earth.referral"),
+   which the wallet need not recompute (the cm check suffices).
+
+**Split LP payouts.** An LP payout leg above 2^64-1 is minted as up to 64
+notes (`MintNoteSplit`): consecutive kind-2 rows with the **same**
+`ciphertext` and each its own `position` and `amount` (2^64-1 each, the
+last the remainder). Decrypt once, then check each row's `cm` with that
+row's amount; every row is a separate note the wallet owns. A wallet that
+stops at the first row a ciphertext decrypts to, or dedupes by ciphertext,
+loses the rest.
+
+Migration: format 1 rows had five columns and `ciphertext` never null.
+Read columns by name from `fields`, and refuse a notes page whose `format`
+is not 2 (an old backend). The chain change is a fresh genesis, so the
+`base` changes and no format-1 page exists under the new one; an index
+built by an earlier backend refuses to open ("predates open notes": wipe
+`INDEX_DB`).
+
 ### Stake nullifier tree (stake votes, chain ORCHARD_DESIGN.md section 15)
 
 Stake votes no longer spend the note. A vote proves the note's spend
@@ -478,7 +536,11 @@ the API process (`INDEXER_ENABLED=true`) or alone:
 Events it reads (privacy/orchard): `shielded_note`, `shielded_nullifier`
 (every bundle action, MsgSend's included), `shielded_root`,
 `shielded_shield`/`shielded_mint` (public amounts; their `ciphertext` must
-equal the note's), `identity_leaf` (append,
+equal the note's; a `shielded_mint` with `owner_pk`/`rho`/`rcm` is an open
+note: all three 32-byte hex, ciphertext empty), `register` (`handle`,
+`referral`, `referral_position`: a paid referral must name an open-note mint
+of the same block with that amount, else the block is refused; nothing of it
+is stored), `identity_leaf` (append,
 or zero when the leaf is all zeros), `identity_root`,
 `shieldedstaking_epoch_validator`, `shieldedstaking_epoch`, and the stake
 tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,

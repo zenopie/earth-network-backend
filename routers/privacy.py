@@ -13,7 +13,7 @@ keys.
 and, under base = /privacy/<chain_id>/<genesis>:
 
     GET {base}/status
-    GET {base}/notes?from_pos=&limit=            [position, height, cm, ciphertext, amount]
+    GET {base}/notes?from_pos=&limit=            [position, height, cm, ciphertext, amount, owner_pk, rho, rcm]
     GET {base}/nullifiers?from_height=&limit=    [[height, [nf, ...]], ...]
     GET {base}/identity?from_index=&limit=       [index, height, leaf, zeroed_height, time]
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
@@ -40,8 +40,14 @@ derth/<valoper> and unbond/<valoper>/<epoch> notes), served exactly like the
 pool's. Every stake note has a ciphertext (a minted one its 177-byte blind
 stake ciphertext, a created one the stake proof's); a note the chain minted
 also has public denom, amount and stake pc (spc), a note a stake proof
-created has them null. Every pool note, minted ones included, has a
-ciphertext too (minted: the 177-byte amount-blind v2 one).
+created has them null. Every pool note but an open one has a ciphertext
+(minted: the 177-byte amount-blind v2 one). An open note (the referral note
+the chain mints to a referrer handle's address, chain ORCHARD_DESIGN.md
+section 16) has ciphertext null and its public opening in owner_pk, rho and
+rcm (hex), null on every other row; the owner's wallet matches rows whose
+owner_pk is its own and checks cm = H(TAG_CM, AssetID(denom), amount,
+PC(owner_pk, rho, rcm)). Note rows are format NOTE_FORMAT (2), stated on
+every notes page ("format") and in status ("note_format").
 
 The stake nullifier tree (x/shieldedstaking, ORCHARD_DESIGN.md section 15)
 is an indexed Merkle tree whose leaves are in insertion order: a wallet
@@ -262,6 +268,13 @@ def _group(rows, fmt) -> list:
     return out
 
 
+# The notes stream's row format. 1: [position, height, cm, ciphertext,
+# amount]. 2 (chain audit round 5): + owner_pk, rho, rcm; ciphertext null for
+# an open note.
+NOTE_FORMAT = 2
+NOTE_FIELDS = ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"]
+
+
 @router.get("/privacy/status")
 @chain.get("/status")
 def status(response: Response):
@@ -280,6 +293,7 @@ def status(response: Response):
             "synced_time": int(last_time) if last_time else None,
             "start_height": int(start) if start else None,
             "notes": notes,
+            "note_format": NOTE_FORMAT,
             "identity_leaves": ids,
             "nullifiers": nfs,
             "stake_notes": stake_notes,
@@ -297,18 +311,22 @@ def notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit:
     n, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
         rows = c.execute(
-            "SELECT position, height, cm, ciphertext, amount FROM notes WHERE position BETWEEN ? AND ? ORDER BY position",
+            "SELECT position, height, cm, ciphertext, amount, owner_pk, rho, rcm FROM notes"
+            " WHERE position BETWEEN ? AND ? ORDER BY position",
             (from_pos, last),
         ).fetchall()
         complete = bool(rows) and rows[-1][0] == last
         response.headers["Cache-Control"] = _closed(complete, rows[-1][1] if rows else 0, c)
         return {
-            "fields": ["position", "height", "cm", "ciphertext", "amount"],
+            "format": NOTE_FORMAT,
+            "fields": NOTE_FIELDS,
             "synced_height": _synced(c),
             "from_pos": from_pos,
             "next_pos": rows[-1][0] + 1 if rows else from_pos,
             "complete": complete,
-            "notes": [[p, h, cm.hex(), base64.b64encode(ct).decode(), amt] for p, h, cm, ct, amt in rows],
+            "notes": [[p, h, cm.hex(), base64.b64encode(ct).decode() if ct else None, amt,
+                       _hex_or_none(opk), _hex_or_none(rho), _hex_or_none(rcm)]
+                      for p, h, cm, ct, amt, opk, rho, rcm in rows],
         }
 
 

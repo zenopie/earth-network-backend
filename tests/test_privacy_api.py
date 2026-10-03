@@ -68,10 +68,39 @@ def test_notes_pages_cover_everything_once_and_full_pages_are_immutable(api):
         pos = body["next_pos"]
         assert pos % 7 == 0, "a full page's next_pos is the next aligned cursor"
     assert [n[0] for n in seen] == list(range(total))
-    pos_, height, cm, ct, amount = seen[0]
+    pos_, height, cm, ct, amount, owner_pk, rho, rcm = seen[0]
     assert len(bytes.fromhex(cm)) == 32
     base64.b64decode(ct, validate=True)
-    assert body["fields"] == ["position", "height", "cm", "ciphertext", "amount"]
+    assert owner_pk is rho is rcm is None
+    assert body["format"] == 2
+    assert body["fields"] == ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"]
+
+
+def test_referral_mint_rows_carry_their_opening_and_match_locally(api):
+    # Format 2 (chain audit round 5): the referral note the chain mints to a
+    # handle's address has no ciphertext; its row carries owner_pk, rho, rcm.
+    # A wallet that knows its owner_pk matches the row from the row alone:
+    # cm == H(TAG_CM, AssetID(denom), amount, PC(owner_pk, rho, rcm)).
+    from services.zk import privacy as zp
+    assert api.get("/privacy/status").json()["note_format"] == 2
+    body = api.get("/privacy/notes", params={"limit": 1000}).json()
+    assert body["format"] == 2
+    rows = [dict(zip(body["fields"], r)) for r in body["notes"]]
+    open_rows = [r for r in rows if r["owner_pk"] is not None]
+    assert len(open_rows) == 2  # C2 and D1 name "amy"
+    for r in open_rows:
+        assert r["ciphertext"] is None
+        assert r["rho"] and r["rcm"] and r["amount"].endswith("uerth")
+        value = int(r["amount"][:-len("uerth")])
+        pc_ = zp.pc(*(int(r[k], 16) for k in ("owner_pk", "rho", "rcm")))
+        assert zp.cm(zp.asset_id("uerth"), value, pc_) == int(r["cm"], 16)
+    # Both pay amy, so both rows name the same owner_pk, with distinct openings.
+    assert open_rows[0]["owner_pk"] == open_rows[1]["owner_pk"]
+    assert open_rows[0]["rho"] != open_rows[1]["rho"]
+    # Every other row: a ciphertext, no opening.
+    for r in rows:
+        if r["owner_pk"] is None:
+            assert r["ciphertext"] and r["rho"] is None and r["rcm"] is None
 
 
 def test_nullifier_pages_never_split_a_height(api):
