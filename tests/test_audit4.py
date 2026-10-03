@@ -274,7 +274,7 @@ def notes_index(tmp_path, monkeypatch):
                   [("chain_id", "earth-1"), ("genesis_hash", "ab" * 32), ("last_height", "10"),
                    ("verified_height", "10")])
     c.execute("INSERT INTO blocks VALUES (1,'x',0)")
-    c.executemany("INSERT INTO notes VALUES (?,?,?,?,?)",
+    c.executemany("INSERT INTO notes (position, cm, ciphertext, height, amount) VALUES (?,?,?,?,?)",
                   ((i, os.urandom(32), os.urandom(177), 1, None) for i in range(5500)))
     c.execute("COMMIT")
     c.close()

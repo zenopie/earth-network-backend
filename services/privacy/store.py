@@ -53,9 +53,12 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE TABLE IF NOT EXISTS notes (
     position   INTEGER PRIMARY KEY,
     cm         BLOB NOT NULL,
-    ciphertext BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,       -- empty for an open note
     height     INTEGER NOT NULL,
-    amount     TEXT
+    amount     TEXT,
+    owner_pk   BLOB,                -- an open note's public opening (the
+    rho        BLOB,                -- referral note): all three or none
+    rcm        BLOB
 );
 CREATE INDEX IF NOT EXISTS notes_by_height ON notes (height);
 CREATE TABLE IF NOT EXISTS nullifiers (
@@ -174,6 +177,11 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
         conn.close()
         raise RuntimeError(f"{path} predates the stake nullifier tree (stake nullifiers without leaf indexes, "
                            f"from a chain before it): wipe INDEX_DB and index again")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(notes)")]
+    if cols and "owner_pk" not in cols:
+        conn.close()
+        raise RuntimeError(f"{path} predates open notes (note rows without owner_pk/rho/rcm, from a chain "
+                           f"before audit round 5): wipe INDEX_DB and index again")
     # Readers create the schema too, so an API started before the indexer
     # serves empty streams rather than errors.
     conn.executescript(SCHEMA)
@@ -282,8 +290,9 @@ class Store:
                         f"block {d.height}: note at position {n.position}, expected {notes}"
                         + (" (history before the start height is missing)" if not last and notes == 0 else "")
                     )
-                c.execute("INSERT INTO notes (position, cm, ciphertext, height, amount) VALUES (?, ?, ?, ?, ?)",
-                          (n.position, n.cm, n.ciphertext, d.height, n.amount))
+                c.execute("INSERT INTO notes (position, cm, ciphertext, height, amount, owner_pk, rho, rcm)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                          (n.position, n.cm, n.ciphertext, d.height, n.amount, n.owner_pk, n.rho, n.rcm))
                 notes += 1
 
             for nf in d.nullifiers:

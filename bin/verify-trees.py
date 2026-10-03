@@ -43,7 +43,8 @@ def main() -> int:
     conn = store.connect(args.db, readonly=True)
     started = time.monotonic()
     rep = verify.rebuild(conn, all_roots=args.all_roots)
-    print(f"index synced to height {rep.synced_height}: {rep.note_size} notes, {rep.identity_size} identity leaves, "
+    print(f"index synced to height {rep.synced_height}: {rep.note_size} notes ({rep.open_notes_checked} open, "
+          f"commitments checked), {rep.identity_size} identity leaves, "
           f"{rep.stake_size} stake notes ({rep.stake_minted_checked} minted, commitments checked)")
     print(f"rebuilt in {time.monotonic() - started:.1f}s; {rep.roots_checked} recorded roots checked")
     print(f"note root     {rep.note_root.hex()}")

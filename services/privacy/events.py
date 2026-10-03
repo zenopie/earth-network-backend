@@ -10,7 +10,21 @@ x/shieldedstaking/keeper/stake_tree.go):
                          is its required 177-byte amount-blind v2 one)
     shielded_shield      sender, amount, position, ciphertext  (a public-value note)
     shielded_mint        module, amount, position, ciphertext  (a public-value note)
-                         ciphertext repeats the shielded_note's; checked equal
+                         ciphertext repeats the shielded_note's; checked equal.
+                         An open note (x/shielded MintOpenNote: the referral
+                         note a registration mints to its referrer handle's
+                         address) has no ciphertext ("" on both events) and
+                         adds owner_pk, rho, rcm (hex): the opening, public,
+                         so the owner matches it by owner_pk and recomputes
+                         pc and cm. A split payout (MintNoteSplit: an LP
+                         payout leg above 2^64-1) is several notes, each its
+                         own shielded_note + shielded_mint at its own
+                         position, all with the same ciphertext.
+    register             nullifier, leaf_index, reward, switched, and for a
+                         referred registration handle, referral (amount)
+                         and, when the referral was paid, referral_position:
+                         checked to name an open-note mint of this block
+                         with that amount (nothing about it is stored)
     shielded_nullifier   nullifier (hex)
     shielded_root        root (hex), tree_size, height        EndBlock
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
@@ -94,8 +108,19 @@ class EventError(Exception):
 class Note:
     position: int
     cm: bytes
-    ciphertext: bytes
+    ciphertext: bytes  # b"" for an open note (no ciphertext)
     amount: str | None = None  # "<n><denom>" when the note's value is public (shield, mint)
+    # An open note's opening (shielded_mint owner_pk, rho, rcm), else None.
+    owner_pk: bytes | None = None
+    rho: bytes | None = None
+    rcm: bytes | None = None
+
+
+@dataclass
+class Referral:
+    """A register event's paid referral: where the note is and its amount."""
+    position: int
+    amount: int
 
 
 @dataclass
@@ -165,6 +190,8 @@ class BlockDelta:
     epoch_ended: int | None = None
     # A handle directory record changed in this block.
     handles_changed: bool = False
+    # Paid referrals (register events), checked against the open notes.
+    referrals: list[Referral] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -255,6 +282,17 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             n.amount = a.get("amount") or None
             if "ciphertext" in a and _b64(a["ciphertext"], f"{t} ciphertext") != n.ciphertext:
                 raise EventError(f"{t} at position {n.position}: ciphertext differs from its shielded_note's")
+            if t == "shielded_mint" and ("owner_pk" in a or "rho" in a or "rcm" in a):
+                if n.ciphertext:
+                    raise EventError(f"shielded_mint at position {n.position}: an opening and a ciphertext")
+                n.owner_pk = _hex32(a.get("owner_pk", ""), "shielded_mint owner_pk")
+                n.rho = _hex32(a.get("rho", ""), "shielded_mint rho")
+                n.rcm = _hex32(a.get("rcm", ""), "shielded_mint rcm")
+        elif t == "register":
+            a = _attrs(ev)
+            if "referral_position" in a:
+                d.referrals.append(Referral(_int(a["referral_position"], "register referral_position"),
+                                            _int(a.get("referral"), "register referral")))
         elif t == "shielded_nullifier":
             d.nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shielded_nullifier"))
         elif t == "shielded_root":
@@ -321,4 +359,18 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             pending_rates = []
             d.epoch_ended = epoch
     d.rates.extend(pending_rates)
+    for r in d.referrals:
+        n = notes_by_pos.get(r.position)
+        if n is None or n.owner_pk is None:
+            raise EventError(f"register names referral_position {r.position}, not an open note of this block")
+        if n.amount is None or _amount_value(n.amount) != r.amount:
+            raise EventError(f"register referral {r.amount} differs from the note at {r.position} ({n.amount})")
     return d
+
+
+def _amount_value(coin: str) -> int | None:
+    """The integer part of a coin string "<n><denom>"."""
+    i = 0
+    while i < len(coin) and coin[i].isdigit():
+        i += 1
+    return int(coin[:i]) if i else None

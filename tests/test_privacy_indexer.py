@@ -62,8 +62,16 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
         assert rep.stake_root.hex() == last["stake_latest_root"]
     # One note-discovery rule: every note the chain minted or shielded
     # carries its 177-byte amount-blind v2 ciphertext.
-    bad = store.conn.execute("SELECT COUNT(*) FROM notes WHERE amount IS NOT NULL AND length(ciphertext) != 177").fetchone()[0]
+    # The exception is an open note (the referral note): no ciphertext, its
+    # opening public.
+    bad = store.conn.execute("SELECT COUNT(*) FROM notes WHERE amount IS NOT NULL AND owner_pk IS NULL"
+                             " AND length(ciphertext) != 177").fetchone()[0]
     assert bad == 0
+    bad = store.conn.execute("SELECT COUNT(*) FROM notes WHERE owner_pk IS NOT NULL AND (length(ciphertext) != 0"
+                             " OR amount IS NULL OR rho IS NULL OR rcm IS NULL)").fetchone()[0]
+    assert bad == 0
+    assert rep.open_notes_checked == store.conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE owner_pk IS NOT NULL").fetchone()[0]
     bad = store.conn.execute("SELECT COUNT(*) FROM stake_notes WHERE spc IS NOT NULL AND length(ciphertext) IS NOT 177").fetchone()[0]
     assert bad == 0
 
@@ -497,13 +505,16 @@ def test_rates_of_a_sweep_past_200_validators_keep_their_epoch(db):
     assert rows == [(7, 250)]
 
 
-def test_a_referred_registrations_referral_note_is_indexed_like_every_mint(db):
-    # Chain 4a663d5: a registration naming a live handle mints the
-    # referrer's half of the reward as a note to affiliate_pc, with the
-    # registrant's 177-byte affiliate_ciphertext (no transparent payout).
+def test_a_referred_registrations_referral_note_is_indexed_with_its_opening(db):
+    # Chain 203d3b2 (audit round 5): a registration naming a live handle has
+    # the chain mint the referrer's half to the handle's owner_pk with
+    # rho/rcm = H("earth.referral", passport nullifier, leaf index, 0|1),
+    # no ciphertext; the shielded_mint event carries the opening and the
+    # register event handle, referral and referral_position.
     # In TestPrivatePersonhood C2 and D1 name "amy": their register txs mint
     # three personhood notes (1 ANML, the registrant's ERTH, the referral
     # ERTH); the unreferred ones two, a switch none.
+    from services.zk import privacy as zp
     sc = load("TestPrivatePersonhood")
     store = Store(db)
     sync(Indexer(store, FakeRPC(sc)))
@@ -520,19 +531,26 @@ def test_a_referred_registrations_referral_note_is_indexed_like_every_mint(db):
             if attrs["switched"] == "true":
                 assert mints == []
                 continue
-            erth = [m for m in mints if m["amount"].endswith("uerth")]
-            if len(erth) == 1:
+            if "referral_position" not in attrs:
+                assert not any("owner_pk" in m for m in mints)
                 continue
-            assert len(erth) == 2, b["height"]
             referred += 1
-            reward = int(attrs["reward"])
-            mine, theirs = (int(m["amount"][:-len("uerth")]) for m in erth)
-            # registrant = payout - payout/2 (the reward event), referrer = payout/2.
-            assert mine == reward and theirs in (reward, reward - 1)
-            note = store.conn.execute("SELECT height, ciphertext, amount FROM notes WHERE position = ?",
-                                      (int(erth[1]["position"]),)).fetchone()
+            assert attrs["handle"] == "amy"
+            pos = int(attrs["referral_position"])
+            note = store.conn.execute("SELECT height, ciphertext, amount, owner_pk, rho, rcm, cm FROM notes"
+                                      " WHERE position = ?", (pos,)).fetchone()
             assert note is not None and note[0] == b["height"]
-            assert note[2] == erth[1]["amount"]
-            assert len(note[1]) == 177 and base64.b64encode(note[1]).decode() == erth[1]["ciphertext"]
+            height, ct, amount, opk, rho, rcm, cm = note
+            assert ct == b"" and amount == attrs["referral"] + "uerth"
+            mint = next(m for m in mints if m["position"] == str(pos))
+            assert (opk.hex(), rho.hex(), rcm.hex()) == (mint["owner_pk"], mint["rho"], mint["rcm"])
+            # The opening is the chain's ReferralOpening of this registration.
+            want = zp.referral_opening(int(attrs["nullifier"], 16), int(attrs["leaf_index"]))
+            assert (int.from_bytes(rho, "big"), int.from_bytes(rcm, "big")) == want
+            pc_ = zp.pc(int.from_bytes(opk, "big"), *want)
+            assert zp.cm(zp.asset_id("uerth"), int(attrs["referral"]), pc_) == int.from_bytes(cm, "big")
+            # The registrant's own ERTH note is an ordinary minted note.
+            other = [m for m in mints if m["position"] != str(pos)]
+            assert other and all(len(base64.b64decode(m["ciphertext"])) == 177 for m in other)
     assert referred == 2  # C2 and D1
     store.close()

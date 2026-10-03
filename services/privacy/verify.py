@@ -16,7 +16,10 @@ Two checks, the second optional:
    rebuilt from the nullifiers in leaf-index order and its root checked at
    every proposal snapshot's nf_size against the snapshot's nf_root (the
    chain emits no per-block nullifier root; snapshots are where it is
-   published), always, not only with all_roots.
+   published), always, not only with all_roots. Every open note (the
+   referral note, published with its opening) is checked the same way:
+   cm == H(TAG_CM, AssetID(denom), amount, PC(owner_pk, rho, rcm)), exactly
+   what its owner's wallet recomputes from the row.
 2. Against the chain itself, at the index's synced height, over CometBFT
    abci_query: x/shielded Query/Tree (size, current root, latest anchor),
    x/personhood Query/IdentityTree (size, latest root) and x/shieldedstaking
@@ -24,6 +27,7 @@ Two checks, the second optional:
    current root). This is what proves
    the index — and so every wallet syncing from it — sees the chain's trees.
 """
+import re
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -38,6 +42,7 @@ IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"
 STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"
 STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
 STAKE_NF_TREE_REQUEST = b"\x10\x01"  # limit 1: only size and roots are read
+_COIN = re.compile(r"([0-9]+)([a-zA-Z][a-zA-Z0-9/:._-]*)")
 
 
 @dataclass
@@ -50,6 +55,7 @@ class Report:
     stake_size: int = 0
     stake_root: bytes | None = None
     stake_minted_checked: int = 0
+    open_notes_checked: int = 0
     stake_nf_size: int = 0
     stake_nf_root: bytes | None = None
     snapshots_checked: int = 0
@@ -90,6 +96,18 @@ def rebuild(conn: sqlite3.Connection, all_roots: bool = False) -> Report:
         pending = notes.fetchone()
     rep.note_size = t.size
     rep.note_root = _b(t.root())
+    for pos, cm, amount, opk, rho, rcm in conn.execute(
+            "SELECT position, cm, amount, owner_pk, rho, rcm FROM notes WHERE owner_pk IS NOT NULL ORDER BY position"):
+        rep.open_notes_checked += 1
+        m = _COIN.fullmatch(amount or "")
+        if m is None:
+            rep.errors.append(f"open note {pos}: amount {amount!r} is not a coin")
+            continue
+        pc_ = privacy.pc(*(int.from_bytes(v, "big") for v in (opk, rho, rcm)))
+        want = privacy.cm(privacy.asset_id(m[2]), int(m[1]), pc_)
+        if _b(want) != cm:
+            rep.errors.append(f"open note {pos}: commitment {cm.hex()} is not H(TAG_CM, {m[2]}, {m[1]}, "
+                              f"PC(owner_pk, rho, rcm)), {_b(want).hex()}")
 
     # --- identity tree ---
     roots = conn.execute("SELECT height, root, tree_size FROM identity_roots ORDER BY height").fetchall()
