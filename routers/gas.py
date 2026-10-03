@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 import config
 
-from services import chain, gascheck, ratelimit, replay, shielded_msg
+from services import chain, gascheck, knowndsc, ratelimit, replay, shielded_msg
 from services.zk import privacy
 from services.zk.poseidon2 import P
 
@@ -150,11 +150,11 @@ class _Refuse(Exception):
         self.status_code = status_code
 
 
-def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
+def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes | None]:
     """Everything about a registration that needs no gas-check, cheapest first.
 
     Returns (passport nullifier hex, grant id, pc_gas, ciphertext_gas,
-    affiliate) or raises _Refuse.
+    affiliate, DSC commitment or None) or raises _Refuse.
     Every value checked here is a public input the chain then verifies the
     proof against, so refusing on it early never refuses what the chain would
     take — it only stops a replay, a stale or mis-bound proof, or junk from
@@ -211,7 +211,9 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
 
     nullifier = privacy.field_bytes(signals[config.PASSPORT_NULLIFIER_INDEX]).hex()
     month = time.strftime("%Y-%m", time.gmtime())
-    return nullifier, f"{PASSPORT_PREFIX}{nullifier}:{month}", pc_gas, ciphertext_gas, affiliate
+    # Not refused when absent: whether a DSC is required is the chain's call.
+    dsc = privacy.field_bytes(signals[config.PASSPORT_DSC_KEY_INDEX]) if config.PASSPORT_DSC_KEY_INDEX < n else None
+    return nullifier, f"{PASSPORT_PREFIX}{nullifier}:{month}", pc_gas, ciphertext_gas, affiliate, dsc
 
 
 @router.post("/register", summary="Fund a fee note for a registration the chain would accept")
@@ -220,7 +222,7 @@ async def register(body: RegisterGrant, request: Request):
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
     try:
-        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate = _precheck(body)
+        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate, dsc = _precheck(body)
     except _Refuse as exc:
         return _reply(exc.status_code, "error", str(exc))
     # Replay and cap before the check: both are a table read, the check is a
@@ -229,6 +231,12 @@ async def register(body: RegisterGrant, request: Request):
         return _reply(409, "error", "already granted")
     if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY):
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
+    # The reserved lane: a passport not yet granted (peek, above) from a
+    # Document Signer the chain already holds registrations from. While the
+    # refusal budget is spent, nothing else is queued at all.
+    priority = dsc is not None and knowndsc.is_known(dsc)
+    if not priority and ratelimit.shedding():
+        return _reply(429, "error", "too many failed registrations right now; try again in a minute")
 
     # MsgRegister in proto JSON, without its fee bundle (gas-check does not
     # look at it): bytes fields are standard base64, exactly as the app holds
@@ -247,13 +255,14 @@ async def register(body: RegisterGrant, request: Request):
     }
     try:
         with ratelimit.one_at_a_time(client):
-            verdict = await gascheck.registration(msg)
+            verdict = await gascheck.registration(msg, priority=priority)
     except ratelimit.Busy:
         return _reply(429, "error", "a check for this client is already running; wait for it")
     except gascheck.Unavailable as exc:
         logger.error("registration check unavailable: %s", exc)
         return _reply(503, "error", "verification is unavailable; try again shortly")
     if not verdict.get("ok"):
+        ratelimit.note_refusal()
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send.
         logger.info("registration check refused: %s", verdict.get("error"))

@@ -85,7 +85,8 @@ def chain_says(monkeypatch):
     """Sets the verdict gas-check returns; records the MsgRegister it was asked about."""
     state = {"registration": None, "asked": []}
 
-    async def registration(msg):
+    async def registration(msg, priority=False):
+        state.setdefault("priority", []).append(priority)
         state["asked"].append(msg)
         v = state["registration"]
         if isinstance(v, Exception):

@@ -11,16 +11,60 @@ One check at a time. A proof verification peaks near 120 MB, and this lease has
 bounded, so a burst is refused quickly instead of queueing forever, and
 routers/gas lets each client hold at most one place in it (services/ratelimit)
 after every check that needs no proof verification has passed.
+
+Two lanes. GAS_CHECK_RESERVED_WAITING of the GAS_CHECK_MAX_WAITING places
+are kept for `priority` checks (routers/gas: a new passport from a Document
+Signer the chain already knows, services/knowndsc), and a priority check
+takes the slot ahead of any ordinary one waiting. Junk that fills the
+ordinary lane neither refuses nor delays a registration in the reserved one.
 """
 import asyncio
 import json
 import logging
+from collections import deque
+from contextlib import asynccontextmanager
 
 import config
 
 logger = logging.getLogger(__name__)
 
-_slot = asyncio.Semaphore(1)
+
+class _PrioritySlot:
+    """A one-holder lock whose waiters are served priority first, FIFO within each."""
+
+    def __init__(self) -> None:
+        self._held = False
+        self._queues = (deque(), deque())  # priority, ordinary
+
+    def _release(self) -> None:
+        for q in self._queues:
+            while q:
+                fut = q.popleft()
+                if not fut.done():
+                    fut.set_result(None)  # handed over: still held
+                    return
+        self._held = False
+
+    @asynccontextmanager
+    async def hold(self, priority: bool = False):
+        if self._held:
+            fut = asyncio.get_running_loop().create_future()
+            self._queues[0 if priority else 1].append(fut)
+            try:
+                await fut
+            except asyncio.CancelledError:
+                if fut.done() and not fut.cancelled():
+                    self._release()  # it was handed to us as we were cancelled
+                raise
+        else:
+            self._held = True
+        try:
+            yield
+        finally:
+            self._release()
+
+
+_slot = _PrioritySlot()
 _waiting = 0
 
 
@@ -28,13 +72,16 @@ class Unavailable(Exception):
     """The check could not be made (node unreachable, timed out, busy) — not a refusal."""
 
 
-async def _run(args: list[str], stdin: bytes | None = None) -> dict:
+async def _run(args: list[str], stdin: bytes | None = None, priority: bool = False) -> dict:
     global _waiting
-    if _waiting >= config.GAS_CHECK_MAX_WAITING:
+    places = config.GAS_CHECK_MAX_WAITING
+    if not priority:
+        places -= config.GAS_CHECK_RESERVED_WAITING
+    if _waiting >= places:
         raise Unavailable("too many checks waiting")
     _waiting += 1
     try:
-        async with _slot:
+        async with _slot.hold(priority):
             proc = await asyncio.create_subprocess_exec(
                 config.EARTHD_BIN, "gas-check", *args,
                 "--node", config.EARTH_RPC_URL, "--home", config.EARTHD_HOME,
@@ -61,7 +108,7 @@ async def _run(args: list[str], stdin: bytes | None = None) -> dict:
         raise Unavailable("gas-check printed no result") from exc
 
 
-async def registration(msg: dict) -> dict:
+async def registration(msg: dict, priority: bool = False) -> dict:
     """{"ok": true, "nullifier", "switched"} or {"ok": false, "error"} for a MsgRegister in proto JSON."""
-    return await _run(["registration"], json.dumps(msg).encode())
+    return await _run(["registration"], json.dumps(msg).encode(), priority)
 

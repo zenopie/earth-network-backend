@@ -43,6 +43,11 @@ EARTH_RPC_URL = os.getenv("EARTH_RPC_URL", "https://rpc.erth.network:443")
 GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
 # Checks run one at a time (memory); beyond this many waiting, refuse with 503.
 GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
+# Of those places, how many only a priority check may take: a new passport
+# whose DSC commitment the chain already holds registrations from
+# (services/knowndsc, refreshed every KNOWN_DSC_REFRESH_SECONDS).
+GAS_CHECK_RESERVED_WAITING = int(os.getenv("GAS_CHECK_RESERVED_WAITING", "5"))
+KNOWN_DSC_REFRESH_SECONDS = float(os.getenv("KNOWN_DSC_REFRESH_SECONDS", "600"))
 
 # Where MsgRegister's passport proof keeps its public inputs: personhood params
 # nullifier_index, address_index and current_date_index (earth-1 genesis: 2, 1,
@@ -54,6 +59,8 @@ GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
 PASSPORT_NULLIFIER_INDEX = int(os.getenv("PASSPORT_NULLIFIER_INDEX", "2"))
 PASSPORT_ADDRESS_INDEX = int(os.getenv("PASSPORT_ADDRESS_INDEX", "1"))
 PASSPORT_CURRENT_DATE_INDEX = int(os.getenv("PASSPORT_CURRENT_DATE_INDEX", "0"))
+# dsc_key_index (earth-1: 3): the DSC commitment the reserved lane looks up.
+PASSPORT_DSC_KEY_INDEX = int(os.getenv("PASSPORT_DSC_KEY_INDEX", "3"))
 PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS", "172800"))
 
 # Per-client limits on /gas/register (services/ratelimit): requests per sliding

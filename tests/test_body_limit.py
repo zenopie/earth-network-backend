@@ -78,7 +78,7 @@ def test_the_largest_real_registration_fits(client, monkeypatch):
 
     from services import gascheck
 
-    async def refuse(msg):
+    async def refuse(msg, priority=False):
         return {"ok": False, "error": "stand-in"}
     monkeypatch.setattr(gascheck, "registration", refuse)
     # A 32 KiB proof and an 8 KiB certificate, the chain's own maxima.
