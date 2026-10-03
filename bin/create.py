@@ -23,6 +23,7 @@ level.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,31 @@ def env() -> dict:
     return out
 
 
+# A value runs to a quote, backslash, comma, bracket or line end, not to a
+# space: a mnemonic is twelve or more words.
+_SECRET = re.compile(r'((?:MNEMONIC|TUNNEL_TOKEN|API_KEY)[^\s",]*=)[^"\\,\]\n]+')
+
+
+def redact(raw: str) -> str:
+    """An error body with the secrets cut out, as deploy.sh prints it (audit-5 L9).
+
+    The Console API echoes the SDL and manifest in its errors, and both
+    carry the injected GAS_WALLET_MNEMONIC and TUNNEL_TOKEN.
+    """
+    raw = _SECRET.sub(r"\1<redacted>", raw)
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return raw[:800]
+    if isinstance(d, dict):
+        for k in ("manifest", "sdl"):
+            if isinstance(d.get("data"), dict) and k in d["data"]:
+                d["data"][k] = "<redacted>"
+            if k in d:
+                d[k] = "<redacted>"
+    return json.dumps(d)[:800]
+
+
 def call(method: str, path: str, key: str, body=None) -> tuple[int, dict]:
     req = urllib.request.Request(API + path, method=method,
                                  data=json.dumps(body).encode() if body is not None else None)
@@ -53,7 +79,7 @@ def call(method: str, path: str, key: str, body=None) -> tuple[int, dict]:
         with urllib.request.urlopen(req, timeout=300) as resp:
             return resp.status, json.load(resp)
     except urllib.error.HTTPError as exc:
-        return exc.code, {"error": exc.read().decode(errors="replace")[:600]}
+        return exc.code, {"error": redact(exc.read().decode(errors="replace"))}
 
 
 def dig(o, key):

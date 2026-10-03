@@ -285,3 +285,25 @@ def test_entrypoint_chowns_no_symlink_target_and_logs_no_client():
     (execvp,) = [c for c in calls if c.func.attr == "execvp"]
     argv = [e.value for e in execvp.args[1].elts]
     assert "--no-access-log" in argv and "--no-proxy-headers" in argv
+
+
+# --- L9: bin/create.py prints no secret ---------------------------------------
+
+def test_create_redacts_console_errors():
+    import importlib.util
+    import json
+
+    spec = importlib.util.spec_from_file_location("create", os.path.join(_ROOT, "bin", "create.py"))
+    create = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(create)
+    words = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+    raw = json.dumps({"error": "bad manifest", "manifest": f"env: [GAS_WALLET_MNEMONIC={words}]",
+                      "data": {"sdl": "TUNNEL_TOKEN=eyJhIjoi"},
+                      "message": "GAS_WALLET_MNEMONIC=abandon,TUNNEL_TOKEN=eyJhIjoi AKASH_API_KEY=ak_123"})
+    out = create.redact(raw)
+    for secret in ("abandon", "eyJhIjoi", "ak_123"):
+        assert secret not in out
+    assert "bad manifest" in out
+    assert "eyJhIjoi" not in create.redact("not json: TUNNEL_TOKEN=eyJhIjoi trailing")
+    out = create.redact(json.dumps({"error": f"env [GAS_WALLET_MNEMONIC={words}] refused"}))
+    assert not any(w in out for w in words.split())

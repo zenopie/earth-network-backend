@@ -61,7 +61,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
 - [x] L13 /gas/register validates its body after counting the client (422s count)
 - [x] L1 .dockerignore, L2 chown(follow_symlinks=False), L11 --no-access-log
       --no-proxy-headers
-- [ ] L9 create.py redaction
+- [x] L9 create.py redacts Console API errors (deploy.sh's rule, and a
+      mnemonic's words past the first space)
 - [ ] L12 base image digest / --require-hashes
 - [ ] L3 /health cached
 - [ ] L6 halted index: 503 on {base}/*

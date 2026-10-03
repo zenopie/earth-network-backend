@@ -59,7 +59,7 @@ case "$CODE" in
        python3 -c "
 import json,re,sys
 raw=open(sys.argv[1]).read()
-raw=re.sub(r'((?:MNEMONIC|TUNNEL_TOKEN|API_KEY)[^\s\",]*=)[^\"\\\\,\s]+', r'\1<redacted>', raw)
+raw=re.sub(r'((?:MNEMONIC|TUNNEL_TOKEN|API_KEY)[^\s\",]*=)[^\"\\\\,\]\n]+', r'\1<redacted>', raw)
 try:
     d=json.loads(raw)
     for k in ('manifest','sdl'):
