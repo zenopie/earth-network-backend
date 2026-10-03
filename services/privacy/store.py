@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- Only the blocks something reads (audit-5 L7): the last applied one (its
+-- hash is what the next block must name as parent) and every height that
+-- appended an identity leaf (the identity stream serves its time). Every
+-- other row is deleted once the next block is applied: one row a block
+-- forever was several hundred MB a year on the volume the replay DB shares.
 CREATE TABLE IF NOT EXISTS blocks (
     height INTEGER PRIMARY KEY,
     hash   TEXT NOT NULL,
@@ -65,6 +70,7 @@ CREATE TABLE IF NOT EXISTS identity_leaves (
     height        INTEGER NOT NULL,
     zeroed_height INTEGER
 );
+CREATE INDEX IF NOT EXISTS identity_leaves_by_height ON identity_leaves (height);
 CREATE TABLE IF NOT EXISTS identity_writes (
     seq    INTEGER PRIMARY KEY,
     idx    INTEGER NOT NULL,
@@ -193,6 +199,9 @@ class Store:
         self.path = path
         self.conn = connect(path)
         self._lock = threading.Lock()
+        # An index from before pruning holds a row for every block.
+        self.conn.execute("DELETE FROM blocks WHERE height < (SELECT MAX(height) FROM blocks)"
+                          " AND height NOT IN (SELECT height FROM identity_leaves)")
 
     def close(self) -> None:
         self.conn.close()
@@ -251,6 +260,11 @@ class Store:
             (stakes,) = c.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM stake_notes").fetchone()
 
             c.execute("INSERT INTO blocks (height, hash, time) VALUES (?, ?, ?)", (d.height, d.hash, d.time))
+            if last:
+                # The block before is no longer the last; keep it only if
+                # the identity stream joins against it.
+                c.execute("DELETE FROM blocks WHERE height = ? AND NOT EXISTS"
+                          " (SELECT 1 FROM identity_leaves WHERE height = ?)", (last, last))
 
             for n in d.notes:
                 if n.position != notes:

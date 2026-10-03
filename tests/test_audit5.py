@@ -410,3 +410,43 @@ def test_the_indexer_records_the_verified_height(tmp_path):
     asyncio.run(go())
     assert store.meta("verified_height") == str(sc["blocks"][-1]["height"])
     store.close()
+
+
+# --- L7: the blocks table keeps only what is read -----------------------------
+
+def test_blocks_keep_only_the_last_and_identity_heights(tmp_path):
+    import asyncio
+    import sqlite3
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+    from tests.privacy_fixtures import FakeRPC, load
+
+    path = str(tmp_path / "i.db")
+    store = Store(path)
+    sc = load("TestPrivatePersonhood")
+    idx = Indexer(store, FakeRPC(sc))
+
+    async def go():
+        await idx.prepare()
+        while await idx.step():
+            pass
+    asyncio.run(go())
+    rows = {h for (h,) in store.conn.execute("SELECT height FROM blocks")}
+    leaves = {h for (h,) in store.conn.execute("SELECT DISTINCT height FROM identity_leaves")}
+    last = store.last_height()
+    assert leaves and rows == leaves | {last}
+    assert len(rows) < len(sc["blocks"])
+    # A restart resumes from the last block's hash.
+    store.close()
+    store = Store(path)
+    assert store.block_hash(last)
+    # An index from before pruning is pruned on open.
+    c = sqlite3.connect(path)
+    c.execute("INSERT INTO blocks VALUES (?, 'x', 0)", (min(rows) - 1,))
+    c.commit()
+    c.close()
+    store.close()
+    store = Store(path)
+    assert {h for (h,) in store.conn.execute("SELECT height FROM blocks")} == rows
+    store.close()

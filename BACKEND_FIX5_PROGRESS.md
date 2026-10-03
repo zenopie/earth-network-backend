@@ -69,7 +69,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
 - [x] L3 /health serves a background reading (every 30 s), cacheable
 - [x] L6 halted index: 503 no-store on {base}/*; pages immutable only up to
       meta verified_height (set after the tree-size check passes)
-- [ ] L7 blocks table pruned
+- [x] L7 blocks table keeps the last block and identity-leaf heights only
+      (pruned per block, and on open for an older index)
 - [ ] L4 handle refresh bounded, off the loop; L5 stale flag
 
 ## Notes
