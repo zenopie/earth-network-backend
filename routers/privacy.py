@@ -8,16 +8,29 @@ asking would tell this server which notes are whose. Pages are addressed by
 position, index or height alone, never by anything a wallet derives from its
 keys.
 
-    GET /privacy/status
-    GET /privacy/notes?from_pos=&limit=            [position, height, cm, ciphertext, amount]
-    GET /privacy/nullifiers?from_height=&limit=    [[height, [nf, ...]], ...]
-    GET /privacy/identity?from_index=&limit=       [index, height, leaf, zeroed_height]
-    GET /privacy/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
-    GET /privacy/roots/latest
-    GET /privacy/rates?epoch=
-    GET /privacy/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext, denom, amount, spc]
-    GET /privacy/stake/nullifiers?from_height=&limit=  [[height, [nf, ...]], ...]
-    GET /privacy/stake/roots?from_height=&limit=       [height, root, tree_size, time]
+    GET /privacy/status                  -> chain_id, genesis, base, synced height, ...
+
+and, under base = /privacy/<chain_id>/<genesis>:
+
+    GET {base}/status
+    GET {base}/notes?from_pos=&limit=            [position, height, cm, ciphertext, amount]
+    GET {base}/nullifiers?from_height=&limit=    [[height, [nf, ...]], ...]
+    GET {base}/identity?from_index=&limit=       [index, height, leaf, zeroed_height]
+    GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
+    GET {base}/roots/latest
+    GET {base}/rates?epoch=
+    GET {base}/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext, denom, amount, spc]
+    GET {base}/stake/nullifiers?from_height=&limit=  [[height, [nf, ...]], ...]
+    GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
+
+genesis is the first 16 hex digits (lowercase) of the hash of the chain's
+first block. earth-1 has been relaunched under the same chain id, so the chain
+id alone does not name a chain; the pair does. A path naming any other chain
+is 404 (no-store), so a page some CDN cached as immutable for an earlier
+chain can never be served to a wallet following this one: the wallet reads
+`base` from the unkeyed /privacy/status (cached 2 s) and only ever asks for
+URLs under it. A wallet should keep the (chain_id, genesis) its local sync
+was built from and start over when status names another.
 
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
 derth/<valoper> and unbond/<valoper>/<epoch> notes), served exactly like the
@@ -38,12 +51,12 @@ import base64
 import sqlite3
 import threading
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 import config
 from services.privacy import store as store_mod
 
-router = APIRouter(prefix="/privacy", tags=["privacy"])
+GENESIS_PREFIX_HEX = 16
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 TIP = "public, max-age=2"
@@ -70,6 +83,28 @@ def _meta(c: sqlite3.Connection, key: str) -> str | None:
 def _synced(c: sqlite3.Connection) -> int:
     v = _meta(c, "last_height")
     return int(v) if v else 0
+
+
+def _genesis(c: sqlite3.Connection) -> str | None:
+    g = _meta(c, "genesis_hash")
+    return g[:GENESIS_PREFIX_HEX] if g else None
+
+
+def _base(c: sqlite3.Connection) -> str | None:
+    chain_id, genesis = _meta(c, "chain_id"), _genesis(c)
+    return f"/privacy/{chain_id}/{genesis}" if chain_id and genesis else None
+
+
+def _this_chain(chain_id: str, genesis: str) -> None:
+    """404 unless the path names the chain the index holds (see the module doc)."""
+    c = _db()
+    if chain_id != _meta(c, "chain_id") or genesis != _genesis(c) or genesis is None:
+        raise HTTPException(status_code=404, detail="not the chain this index holds; read base from /privacy/status",
+                            headers={"Cache-Control": "no-store"})
+
+
+router = APIRouter(tags=["privacy"])
+chain = APIRouter(prefix="/privacy/{chain_id}/{genesis}", dependencies=[Depends(_this_chain)])
 
 
 def _limit(limit: int | None) -> int:
@@ -105,7 +140,8 @@ def _group(rows, fmt) -> list:
     return out
 
 
-@router.get("/status")
+@router.get("/privacy/status")
+@chain.get("/status")
 def status(response: Response):
     c = _db()
     notes, ids, nfs = store_mod.counts(c)
@@ -115,6 +151,9 @@ def status(response: Response):
     start = _meta(c, "start_height")
     return {
         "chain_id": _meta(c, "chain_id"),
+        "genesis": _genesis(c),
+        "genesis_hash": _meta(c, "genesis_hash"),
+        "base": _base(c),
         "synced_height": _synced(c),
         "synced_time": int(last_time) if last_time else None,
         "start_height": int(start) if start else None,
@@ -127,7 +166,7 @@ def status(response: Response):
     }
 
 
-@router.get("/notes")
+@chain.get("/notes")
 def notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     n = _limit(limit)
@@ -147,7 +186,7 @@ def notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None 
     }
 
 
-@router.get("/nullifiers")
+@chain.get("/nullifiers")
 def nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     rows, nxt, complete = _height_page(
@@ -163,7 +202,7 @@ def nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int
     }
 
 
-@router.get("/identity")
+@chain.get("/identity")
 def identity(response: Response, from_index: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     n = _limit(limit)
@@ -185,7 +224,7 @@ def identity(response: Response, from_index: int = Query(0, ge=0), limit: int | 
     }
 
 
-@router.get("/identity/zeroed")
+@chain.get("/identity/zeroed")
 def identity_zeroed(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     rows, nxt, complete = _height_page(
@@ -209,7 +248,7 @@ def _root(c: sqlite3.Connection, table: str):
     return {"root": row[0].hex(), "tree_size": row[1], "height": row[2], "time": row[3]}
 
 
-@router.get("/roots/latest")
+@chain.get("/roots/latest")
 def roots_latest(response: Response):
     c = _db()
     response.headers["Cache-Control"] = TIP
@@ -221,7 +260,7 @@ def roots_latest(response: Response):
     }
 
 
-@router.get("/rates")
+@chain.get("/rates")
 def rates(response: Response, epoch: int | None = Query(None, ge=0)):
     """Each validator's derth rate: at the end of `epoch`, or the latest."""
     c = _db()
@@ -260,7 +299,7 @@ def _hex_or_none(v: bytes | None) -> str | None:
     return None if v is None else v.hex()
 
 
-@router.get("/stake/notes")
+@chain.get("/stake/notes")
 def stake_notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     n = _limit(limit)
@@ -282,7 +321,7 @@ def stake_notes(response: Response, from_pos: int = Query(0, ge=0), limit: int |
     }
 
 
-@router.get("/stake/nullifiers")
+@chain.get("/stake/nullifiers")
 def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     c = _db()
     rows, nxt, complete = _height_page(
@@ -298,7 +337,7 @@ def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0), limi
     }
 
 
-@router.get("/stake/roots")
+@chain.get("/stake/roots")
 def stake_roots(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
     """Every stake root the chain recorded (one per block that moved the tree), oldest first.
 
@@ -322,3 +361,6 @@ def stake_roots(response: Response, from_height: int = Query(0, ge=0), limit: in
         "complete": complete,
         "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
     }
+
+
+router.include_router(chain)

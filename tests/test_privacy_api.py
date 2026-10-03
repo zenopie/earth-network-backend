@@ -10,7 +10,7 @@ import config
 from routers import privacy
 from services.privacy.indexer import Indexer
 from services.privacy.store import Store
-from tests.privacy_fixtures import FakeRPC, load
+from tests.privacy_fixtures import ChainClient, FakeRPC, load, seed_chain
 
 
 def _index(path: str, name: str, tip: int | None = None) -> None:
@@ -33,7 +33,7 @@ def api(tmp_path, monkeypatch):
     _index(path, "TestPrivatePersonhood")
     app = FastAPI()
     app.include_router(privacy.router)
-    return TestClient(app)
+    return ChainClient(TestClient(app))
 
 
 def test_status(api):
@@ -125,7 +125,7 @@ def test_rates(tmp_path, monkeypatch):
     _index(path, "TestPrivateStakingLifecycle")
     app = FastAPI()
     app.include_router(privacy.router)
-    c = TestClient(app)
+    c = ChainClient(TestClient(app))
     latest = c.get("/privacy/rates").json()
     assert latest["rates"] and latest["latest_epoch"] is not None
     v, rate, supply, epoch, height = latest["rates"][0]
@@ -144,18 +144,55 @@ def test_limits_are_clamped_and_validated(api, monkeypatch):
 
 def test_empty_index_serves_empty_streams(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INDEX_DB", str(tmp_path / "empty.db"))
+    seed_chain(config.INDEX_DB)
     app = FastAPI()
     app.include_router(privacy.router)
-    c = TestClient(app)
+    c = ChainClient(TestClient(app))
     assert c.get("/privacy/status").json()["synced_height"] == 0
     assert c.get("/privacy/notes").json()["notes"] == []
     assert c.get("/privacy/roots/latest").json()["note"] is None
 
 
 def test_no_per_user_lookups():
-    paths = {r.path for r in privacy.router.routes}
-    assert paths == {
-        "/privacy/status", "/privacy/notes", "/privacy/nullifiers", "/privacy/identity",
-        "/privacy/identity/zeroed", "/privacy/roots/latest", "/privacy/rates",
-        "/privacy/stake/notes", "/privacy/stake/nullifiers", "/privacy/stake/roots",
-    }
+    app = FastAPI()
+    app.include_router(privacy.router)
+    paths = set(app.openapi()["paths"])
+    base = "/privacy/{chain_id}/{genesis}"
+    assert paths == {"/privacy/status"} | {base + p for p in (
+        "/status", "/notes", "/nullifiers", "/identity", "/identity/zeroed", "/roots/latest", "/rates",
+        "/stake/notes", "/stake/nullifiers", "/stake/roots",
+    )}
+
+
+def test_streams_live_under_the_chain_and_its_genesis(api):
+    s = api.get("/privacy/status").json()
+    sc = load("TestPrivatePersonhood")
+    first = min(sc["blocks"], key=lambda b: b["height"])
+    assert s["genesis_hash"] == first["hash"].lower()
+    assert s["genesis"] == first["hash"].lower()[:16]
+    assert s["base"] == f"/privacy/{sc['chain_id']}/{s['genesis']}"
+    assert api.client.get(s["base"] + "/status").json()["base"] == s["base"]
+    assert api.client.get(s["base"] + "/notes").status_code == 200
+
+
+@pytest.mark.parametrize("path", [
+    "/privacy/notes",                                   # unkeyed: gone
+    "/privacy/earth-shielded-test/0000000000000000/notes",  # an earlier chain, same id
+    "/privacy/earth-1/{genesis}/notes",                 # another chain id
+])
+def test_another_chain_is_404_and_never_cached(api, path):
+    g = api.get("/privacy/status").json()["genesis"]
+    r = api.client.get(path.format(genesis=g))
+    assert r.status_code == 404
+    if path != "/privacy/notes":
+        assert r.headers["cache-control"] == "no-store"
+
+
+def test_an_index_that_never_met_its_chain_serves_no_streams(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "INDEX_DB", str(tmp_path / "new.db"))
+    app = FastAPI()
+    app.include_router(privacy.router)
+    c = TestClient(app)
+    s = c.get("/privacy/status").json()
+    assert s["base"] is None and s["genesis"] is None
+    assert c.get("/privacy/None/None/notes").status_code == 404

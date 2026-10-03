@@ -107,3 +107,28 @@ class FakeRPC:
 
     async def close(self):
         pass
+
+
+class ChainClient:
+    """A TestClient that asks for /privacy/<x> under the base /privacy/status names,
+    as a wallet does (/privacy/<chain_id>/<genesis>/<x>)."""
+
+    def __init__(self, client):
+        self.client = client
+        self.base = client.get("/privacy/status").json()["base"]
+        assert self.base, "the index holds no chain id / genesis yet"
+
+    def get(self, path: str, **kw):
+        if path.startswith("/privacy/") and path != "/privacy/status":
+            path = self.base + path[len("/privacy"):]
+        return self.client.get(path, **kw)
+
+
+def seed_chain(path: str, chain_id: str = "earth-test", genesis_hash: str = "ab" * 32) -> None:
+    """An index that has met its chain (prepare ran) but holds no blocks."""
+    from services.privacy.store import Store
+
+    store = Store(path)
+    store.set_meta("chain_id", chain_id)
+    store.set_meta("genesis_hash", genesis_hash)
+    store.close()

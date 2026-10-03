@@ -181,6 +181,11 @@ def ordered_events(results: dict) -> list[dict]:
     after = [e for e in finalize if _attrs(e).get("mode") == "EndBlock"]
     txs = []
     for tx in results.get("txs_results") or []:
+        # Every tx, whatever its code. Do NOT skip code != 0: a failed private
+        # tx's ante already appended its notes and nullifiers to the trees, and
+        # dropping them would put every later position (and every root) out of
+        # step with the chain. See "Failed txs" above and
+        # test_failed_tx_ante_events_are_indexed.
         txs.extend(tx.get("events") or [])
     return before + txs + after
 

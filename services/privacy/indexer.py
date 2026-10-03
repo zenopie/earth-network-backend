@@ -71,6 +71,18 @@ class Indexer:
             self.store.set_meta("chain_id", st["chain_id"])
         elif known != st["chain_id"]:
             self._halt(f"RPC serves chain {st['chain_id']}, index holds {known}")
+        if self.store.meta("genesis_hash") is None:
+            # The chain's identity across relaunches (earth-1 has been
+            # relaunched under the same chain id): the hash of its first
+            # block, read once from a full-history node and never changed.
+            # The /privacy URLs carry it, so a CDN-cached page of an earlier
+            # chain is never what a wallet asks for.
+            e = st["earliest_height"]
+            metas = await self.rpc.block_metas(e, e)
+            if e not in metas:
+                raise RPCError(f"no block meta for the node's earliest block {e}")
+            self.store.set_meta("genesis_hash", metas[e][0].lower())
+            self.store.set_meta("genesis_height", str(e))
         last = self.store.last_height()
         if last:
             metas = await self.rpc.block_metas(last, last)

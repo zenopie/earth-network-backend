@@ -12,7 +12,7 @@ from routers import privacy as privacy_router
 from services.privacy import events, verify
 from services.privacy.indexer import Halted, Indexer
 from services.privacy.store import Inconsistent, Store
-from tests.privacy_fixtures import FakeRPC
+from tests.privacy_fixtures import ChainClient, FakeRPC, seed_chain
 from tests.stake_fixtures import STAKE_SCENARIOS, scenario, summary
 
 
@@ -144,7 +144,7 @@ def api(indexed, monkeypatch):
     monkeypatch.setattr(config, "INDEX_DB", store.path)
     app = FastAPI()
     app.include_router(privacy_router.router)
-    return TestClient(app)
+    return ChainClient(TestClient(app))
 
 
 def test_stake_notes_stream(api):
@@ -198,9 +198,10 @@ def test_status_and_latest_roots_carry_the_stake_tree(api):
 
 def test_empty_stake_streams(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INDEX_DB", str(tmp_path / "empty.db"))
+    seed_chain(config.INDEX_DB)
     app = FastAPI()
     app.include_router(privacy_router.router)
-    c = TestClient(app)
+    c = ChainClient(TestClient(app))
     assert c.get("/privacy/stake/notes").json()["notes"] == []
     assert c.get("/privacy/stake/nullifiers").json()["blocks"] == []
     assert c.get("/privacy/stake/roots").json()["roots"] == []

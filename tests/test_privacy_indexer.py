@@ -269,3 +269,31 @@ def test_parse_time_and_proto_fields():
     assert parse_time("2026-09-30T12:00:00Z") == 1790769600
     msg = bytes([0x08, 0x96, 0x01, 0x12, 0x02, 0x61, 0x62])
     assert proto_fields(msg) == {1: [150], 2: [b"ab"]}
+
+
+def test_the_chain_genesis_is_recorded_once(db):
+    sc = load("TestPrivatePersonhood")
+    first = min(sc["blocks"], key=lambda b: b["height"])
+    store = Store(db)
+    # Even when indexing starts past it: the identity is the chain's first block.
+    run(Indexer(store, FakeRPC(sc, tip=5), start_height=3).prepare())
+    assert store.meta("genesis_hash") == first["hash"].lower()
+    assert store.meta("genesis_height") == str(first["height"])
+    # A later prepare never rewrites it (the block-hash check is what catches
+    # a different chain behind the RPC).
+    run(Indexer(store, FakeRPC(sc, earliest=3)).prepare())
+    assert store.meta("genesis_hash") == first["hash"].lower()
+
+
+def test_failed_tx_with_only_failure_code_still_counts_every_event(db):
+    """L4 guard: a tx result with code != 0 is not filtered anywhere in parse_block."""
+    sc = load("TestShieldedPoolEndToEnd")
+    blocks = copy.deepcopy(sc["blocks"])
+    for b in blocks:
+        for tx in b["block_results"].get("txs_results") or []:
+            tx["code"] = 11  # every tx "failed"; events unchanged
+    want = Store(str(db) + ".ok")
+    sync(Indexer(want, FakeRPC(sc)))
+    got = Store(db)
+    sync(Indexer(got, FakeRPC(dict(sc, blocks=blocks))))
+    assert got.counts() == want.counts()
