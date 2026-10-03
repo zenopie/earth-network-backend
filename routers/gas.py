@@ -37,11 +37,12 @@ import binascii
 import calendar
 import logging
 import time
+from typing import Annotated
 
 import bech32
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
 
 import config
 
@@ -57,24 +58,35 @@ router = APIRouter(prefix="/gas")
 PASSPORT_PREFIX = "passport:"
 
 
+def _b64_len(n: int) -> int:
+    return 4 * ((n + 2) // 3)
+
+
+# Field caps, checked while the body is validated: loose upper bounds that
+# keep any one field (and the decoded model) small. The exact bounds the
+# chain enforces are _precheck's, which answers 400 with a reason.
+_SHORT = Annotated[str, StringConstraints(max_length=2048)]
+_SIGNAL = Annotated[str, StringConstraints(max_length=128)]
+
+
 class RegisterGrant(BaseModel):
     # MsgRegister's own fields, bytes as standard base64 (proto JSON), except
     # its fee bundle, which the app proves only once it holds the gas note.
-    proof: str
-    public_signals: list[str]
-    signature_algorithm: str
-    dsc_der: str
-    idc: str
-    pc_anml: str
-    pc_erth: str
-    ciphertext_anml: str
-    ciphertext_erth: str
-    affiliate: str = ""
+    proof: Annotated[str, StringConstraints(max_length=_b64_len(32 * 1024) + 64)]
+    public_signals: list[_SIGNAL] = Field(max_length=64)
+    signature_algorithm: Annotated[str, StringConstraints(max_length=256)]
+    dsc_der: Annotated[str, StringConstraints(max_length=_b64_len(8 * 1024) + 64)]
+    idc: _SHORT
+    pc_anml: _SHORT
+    pc_erth: _SHORT
+    ciphertext_anml: _SHORT
+    ciphertext_erth: _SHORT
+    affiliate: Annotated[str, StringConstraints(max_length=256)] = ""
     # Where the gas goes: the pc of a note the app will spend MsgRegister's
     # fee from, and that note's amount-blind v2 ciphertext (MsgShield's,
     # required).
-    pc_gas: str
-    ciphertext_gas: str
+    pc_gas: _SHORT
+    ciphertext_gas: _SHORT
 
 
 def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse:

@@ -23,10 +23,18 @@ def fresh_state(tmp_path, monkeypatch):
         replay._conn.close()
 
 
-@pytest.fixture
-def client():
+def gas_app():
+    """The gas router behind the same body cap main.py installs."""
     from fastapi import FastAPI
 
+    from services.bodylimit import BodyLimit
+
     app = FastAPI()
+    app.add_middleware(BodyLimit)
     app.include_router(gas.router)
-    return TestClient(app)
+    return app
+
+
+@pytest.fixture
+def client():
+    return TestClient(gas_app())

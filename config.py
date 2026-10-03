@@ -11,6 +11,9 @@ load_dotenv()
 
 # --- HTTP ---
 PORT = int(os.getenv("PORT", "8000"))
+# Largest request body accepted, refused (413) before anything parses it
+# (services/bodylimit). The largest real one, a /gas/register, is ~56 KiB.
+MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(64 * 1024)))
 
 # --- earth chain ---
 # cosmpy takes a scheme-prefixed URL: "rest+http://host:1317" or
