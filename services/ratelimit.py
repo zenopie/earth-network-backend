@@ -36,19 +36,24 @@ at the shedding difficulty (services/pow), and refused 428 without one.
 Junk that names one signer or country sheds that signer's or country's
 registrants (who can still pay the work), not everyone's.
 
-Reserved-lane refusals: a request that held the reserved lane and was
-refused for any reason at all (not only a failed proof) counts against its
-signer's budget and cooldown (note_dsc_failure) — but not the network's or
-a country's, since it may be a real registrant meeting a cap (audit-4 B1).
+Client refusals (audit-5 M3): every gas-check refusal, of any kind and in
+either lane, also counts against the client that sent it
+(REGISTER_CLIENT_REFUSALS_PER_WINDOW in REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS,
+sliding). A client past it is refused 429 before the queue until its
+refusals age out: one that only produces refusals — cheap ones included,
+which spend no other budget — loses its place in the queue. A real
+registrant meets a refusal or two (an expired passport, a cap) and is not
+held up.
 
-DSC cooldown: REGISTER_DSC_FAILURES_BEFORE_COOLDOWN failures naming one DSC
-within REGISTER_DSC_COOLDOWN_SECONDS (verification failures, and any
-refusal in the reserved lane) take it out of the reserved lane
-(routers/gas) until they age out of that sliding window. A commitment is
-public, and the lane also requires the request's dsc_der to hash to it
-(services/dsccommit); a DSC certificate is public too (every passport it
-signed carries it), so junk can still hold the lane with a real signer's
-certificate — at a proof of work a request, until the signer is demoted.
+The reserved lane, per signer (audit-5 M3): at most one priority check per
+DSC commitment waits or runs at a time (take_signer_lane). A second request
+naming a signer whose check is in flight takes the ordinary lane. Refusals
+never demote a signer: a DSC certificate and its commitment are public, so
+demotion by refusals let anyone evict a signer's real registrants from the
+lane with five junk requests an hour. Junk naming one signer now holds one
+place, only while its check waits or runs; holding five places takes five
+known certificates, a proof of work each and a client each, and the client
+refusal budget takes those clients' places back.
 
 The client address is CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on
 (right only where Cloudflare is the sole ingress — the Akash lease is
@@ -73,9 +78,11 @@ _busy: set = set()
 # country): one packed sliding-minute counter each, least recently touched
 # first, at most REGISTER_REFUSAL_KEYS_TRACKED.
 _refusals: "OrderedDict[object, int]" = OrderedDict()
-# Verification failures per DSC commitment, a sliding window of
-# REGISTER_DSC_COOLDOWN_SECONDS each, same bound.
-_dsc_failures: "OrderedDict[bytes, int]" = OrderedDict()
+# Gas-check refusals per client, a sliding window of
+# REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS each, at most REGISTER_IP_MAX_TRACKED.
+_client_refusals: "OrderedDict[int | str, int]" = OrderedDict()
+# DSC commitments with a priority check waiting or running.
+_signer_lane: set = set()
 NETWORK = "*"
 
 _V6_TAG = 1 << 128  # keeps an IPv6 prefix's key apart from every IPv4 address's
@@ -180,16 +187,24 @@ def note_refusal(dsc: bytes | None = None, country: str | None = None, now: floa
     now = time.monotonic() if now is None else now
     for key, _ in _budgets(dsc, country):
         _bump(_refusals, key, now, 60.0)
-    if dsc is not None:
-        _bump(_dsc_failures, dsc, now, config.REGISTER_DSC_COOLDOWN_SECONDS)
 
 
-def note_dsc_failure(dsc: bytes, now: float | None = None) -> None:
-    """Counts one refusal of a reserved-lane request against its signer only:
-    the signer's budget and its cooldown, not the network's or a country's."""
+def note_client_refusal(client, now: float | None = None) -> None:
+    """Counts one gas-check refusal (any kind, either lane) against the client that sent it."""
     now = time.monotonic() if now is None else now
-    _bump(_refusals, ("dsc", dsc), now, 60.0)
-    _bump(_dsc_failures, dsc, now, config.REGISTER_DSC_COOLDOWN_SECONDS)
+    idx, prev, cur = _count(_client_refusals.pop(client, 0), now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS)
+    _client_refusals[client] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
+    while len(_client_refusals) > config.REGISTER_IP_MAX_TRACKED:
+        _client_refusals.popitem(last=False)
+
+
+def client_refused_out(client, now: float | None = None) -> bool:
+    """Whether a client has had too many refusals lately to be queued again."""
+    limit = config.REGISTER_CLIENT_REFUSALS_PER_WINDOW
+    if limit <= 0:
+        return False
+    now = time.monotonic() if now is None else now
+    return _rate(_client_refusals, client, now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS) >= limit
 
 
 def shedding(dsc: bytes | None = None, country: str | None = None, now: float | None = None) -> str | None:
@@ -201,15 +216,6 @@ def shedding(dsc: bytes | None = None, country: str | None = None, now: float | 
         if limit > 0 and _rate(_refusals, key, now, 60.0) >= limit:
             return names.get(key) or ("signer" if key[0] == "dsc" else "country")
     return None
-
-
-def dsc_cooling(dsc: bytes, now: float | None = None) -> bool:
-    """Whether a DSC is out of the reserved lane: too many verification failures name it."""
-    if config.REGISTER_DSC_FAILURES_BEFORE_COOLDOWN <= 0:
-        return False
-    now = time.monotonic() if now is None else now
-    window = config.REGISTER_DSC_COOLDOWN_SECONDS
-    return _rate(_dsc_failures, dsc, now, window) >= config.REGISTER_DSC_FAILURES_BEFORE_COOLDOWN
 
 
 class Busy(Exception):
@@ -228,9 +234,22 @@ def one_at_a_time(key):
         _busy.discard(key)
 
 
+def take_signer_lane(dsc: bytes) -> bool:
+    """Takes dsc's one priority place; False if a check naming it already waits or runs."""
+    if dsc in _signer_lane:
+        return False
+    _signer_lane.add(dsc)
+    return True
+
+
+def release_signer_lane(dsc: bytes) -> None:
+    _signer_lane.discard(dsc)
+
+
 def reset() -> None:
     _windows.clear()
     _privacy_windows.clear()
     _busy.clear()
     _refusals.clear()
-    _dsc_failures.clear()
+    _client_refusals.clear()
+    _signer_lane.clear()

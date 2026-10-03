@@ -86,3 +86,64 @@ def test_a_real_signer_still_takes_the_lane(client, chain, hashes):
     knowndsc.set_known({privacy.field_bytes(DSC_KEY)})
     assert post(client, with_pow(body(90200, der=DSC_DER_B64), config.POW_RESERVED_BITS)).status_code == 200
     assert chain["priority"][-1] is True
+
+
+# --- M3: the reserved lane per signer, refusals per client --------------------
+
+def test_five_junk_requests_no_longer_evict_a_signers_real_registrants(client, chain):
+    """The PoC: five refused requests with a signer's public certificate."""
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    for i in range(5):  # attacker: real public cert, junk proof, the work done
+        chain["refuse"][91000 + i] = "invalid registration proof"
+        assert post(client, with_pow(body(91000 + i), config.POW_SHED_BITS)).status_code == 403
+    # A genuine registrant of the same signer, with the work done, from another IP.
+    assert post(client, with_pow(body(91999), config.POW_SHED_BITS)).status_code == 200
+    assert chain["priority"][-1] is True, "still the reserved lane"
+
+
+def test_one_priority_check_per_signer_at_a_time(chain, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from services import gascheck
+    from tests.conftest import gas_app
+
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    release = None
+
+    async def slow(msg, priority=False):
+        chain["priority"].append(priority)
+        if len(chain["priority"]) == 1:
+            await release.wait()
+        nf = int(msg["public_signals"][2])
+        return {"ok": True, "nullifier": privacy.field_bytes(nf).hex(), "switched": False}
+    monkeypatch.setattr(gascheck, "registration", slow)
+
+    async def go():
+        nonlocal release
+        release = asyncio.Event()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gas_app()), base_url="http://t") as c:
+            def send(nf, ip):
+                return c.post("/gas/register", json=with_pow(body(nf), config.POW_RESERVED_BITS),
+                              headers={"cf-connecting-ip": ip})
+            first = asyncio.create_task(send(92000, "198.51.100.1"))
+            while not chain["priority"]:
+                await asyncio.sleep(0.001)
+            second = await send(92001, "198.51.100.2")  # while the first waits
+            release.set()
+            done = await first
+            third = await send(92002, "198.51.100.3")  # after: the place is free again
+            return done, second, third
+    a, b, c = asyncio.run(go())
+    assert (a.status_code, b.status_code, c.status_code) == (200, 200, 200)
+    assert chain["priority"] == [True, False, True]
+    assert not ratelimit._signer_lane
+
+
+def test_the_network_budget_fits_what_the_lease_can_verify():
+    # ~10 s an earthd run on 0.1 CPU, one at a time: ~6 a minute at most.
+    assert 0 < config.REGISTER_REFUSALS_PER_MINUTE <= 6
+    assert config.REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE <= config.REGISTER_REFUSALS_PER_MINUTE

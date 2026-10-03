@@ -356,6 +356,8 @@ async def register(body: RegisterGrant, request: Request):
     client = ratelimit.client_key(ratelimit.client_ip(request))
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
+    if ratelimit.client_refused_out(client):
+        return _reply(429, "error", "too many refused registrations from this network lately; try again later")
     try:
         nullifier, grant_id, pc_gas, ciphertext_gas, dsc, dsc_der = _precheck(body)
     except _Refuse as exc:
@@ -377,13 +379,13 @@ async def register(body: RegisterGrant, request: Request):
     country = _dsc_country(dsc_der)
     shed = ratelimit.shedding(dsc, country)
     # The reserved lane: a passport not yet granted (peek, above) from a
-    # Document Signer the chain already holds registrations from, not
-    # cooling down after failures naming it, with a proof of work, whose
+    # Document Signer the chain already holds registrations from, with a
+    # proof of work, whose
     # dsc_der really is the signer public_signals names (checked last: it
     # hashes the key, and only a request that paid the work gets that far;
     # a key past dsccommit.LANE_MAX_KEY_BYTES is never hashed and takes the
     # ordinary lane).
-    candidate = dsc is not None and knowndsc.is_known(dsc) and not ratelimit.dsc_cooling(dsc)
+    candidate = dsc is not None and knowndsc.is_known(dsc)
     need = pow.required_bits(shedding=shed is not None)
     bits, digest = 0, None
     if body.pow is not None and (shed or candidate):
@@ -407,7 +409,10 @@ async def register(body: RegisterGrant, request: Request):
         lane = await dsccommit.lane_commitment(dsc_der)
         if lane is not None and lane != dsc:
             return _reply(400, "error", "dsc_der is not the Document Signer public_signals names")
-        priority = lane == dsc
+        # At most one priority check per signer waits or runs (audit-5
+        # M3); a second one naming it takes the ordinary lane. Taken here
+        # and given back in the finally below, with no await between.
+        priority = lane == dsc and ratelimit.take_signer_lane(dsc)
     if (shed or priority) and digest is not None:
         pow.consume(digest)
     else:
@@ -440,6 +445,9 @@ async def register(body: RegisterGrant, request: Request):
         pow.forget(digest)
         logger.error("registration check unavailable: %s", _coarse(exc))
         return _reply(503, "error", "verification is unavailable; try again shortly")
+    finally:
+        if priority:
+            ratelimit.release_signer_lane(dsc)
     if not verdict.get("ok"):
         kind = _refusal_kind(verdict.get("error"))
         if kind == "invalid proof":
@@ -449,15 +457,13 @@ async def register(body: RegisterGrant, request: Request):
             # verifier ran, and a real registrant meeting a cap must not
             # shed anyone else.
             ratelimit.note_refusal(dsc, country)
-        elif priority:
-            # But in the reserved lane every refusal counts against the
-            # signer it named (audit-4 B1): the lane is a place ahead of
-            # the queue, and a request that held it and was turned away for
-            # any reason — a used binding, a dead affiliate, mismatched
-            # inputs, the signer at its cap — demotes that signer as a
-            # failed proof would, so the lane cannot be held indefinitely by
-            # requests that are cheap for the chain to refuse.
-            ratelimit.note_dsc_failure(dsc)
+        # Every refusal, cheap ones included and in either lane, counts
+        # against the client that sent it (audit-5 M3): a client that only
+        # produces refusals loses its place in the queue for a while. No
+        # refusal demotes the signer it named: that was anyone's to
+        # trigger with the signer's public certificate, and it evicted the
+        # signer's real registrants from the lane.
+        ratelimit.note_client_refusal(client)
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send. The
         # log keeps only its kind: no nullifier, handle or country.

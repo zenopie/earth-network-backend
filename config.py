@@ -83,14 +83,21 @@ REGISTER_IP_MAX_TRACKED = int(os.getenv("REGISTER_IP_MAX_TRACKED", "20000"))
 # never count), per minute, per DSC commitment, per issuing country and
 # network-wide. Past one, a request under it is queued only with a proof of
 # work at POW_SHED_BITS (428 without). 0 turns that budget off.
+# The network's is set by what the lease can verify (audit-5 M3): checks
+# run one at a time, and one earthd run on the 0.1-CPU lease (Go start-up,
+# remote store reads, the verifier) is roughly ten seconds of wall time, so
+# about six verifications a minute at most. A budget above that (it was 30)
+# never trips; at 5, junk that keeps the verifier busy sheds the network.
 REGISTER_REFUSALS_PER_DSC_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_DSC_PER_MINUTE", "3"))
-REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE", "10"))
-REGISTER_REFUSALS_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_MINUTE", "30"))
+REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE", "4"))
+REGISTER_REFUSALS_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_MINUTE", "5"))
 REGISTER_REFUSAL_KEYS_TRACKED = int(os.getenv("REGISTER_REFUSAL_KEYS_TRACKED", "10000"))
-# A DSC named by this many verification failures within the cooldown window
-# (sliding) leaves the reserved lane until they age out. 0 turns it off.
-REGISTER_DSC_FAILURES_BEFORE_COOLDOWN = int(os.getenv("REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", "5"))
-REGISTER_DSC_COOLDOWN_SECONDS = float(os.getenv("REGISTER_DSC_COOLDOWN_SECONDS", "3600"))
+# Every gas-check refusal (any kind, either lane, cheap ones included) also
+# counts against its client: this many in the window (sliding) and the
+# client is refused 429 before the queue until they age out (audit-5 M3).
+# 0 turns it off.
+REGISTER_CLIENT_REFUSALS_PER_WINDOW = int(os.getenv("REGISTER_CLIENT_REFUSALS_PER_WINDOW", "3"))
+REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS = float(os.getenv("REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS", "3600"))
 
 # Proof of work (services/pow; the spec wallets implement is in its module
 # doc and the README): SHA-256 leading zero bits. Required for the reserved

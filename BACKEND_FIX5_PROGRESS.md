@@ -40,3 +40,31 @@ public referrer addresses; predecessor-aware activation; error codes
   never an address.
 
 pytest: 321 passed, 1 skipped (live-earthd test).
+
+---
+
+# Audit round 5 fixes (scratchpad audit5-backend.md)
+
+Baseline: 321 passed, 1 skipped. Regressions in tests/test_audit5.py (the
+PoCs of scratchpad/a5/test_poc_a5.py, now refused).
+
+## Steps
+- [x] M1 DSC commitment: key capped at 512 B, worker thread one at a time,
+      cached by (tag, key), mismatch 400 before the queue
+- [x] M3 signer demotion removed: one priority check per DSC commitment;
+      every refusal counts per client (3/h, then 429 before the queue);
+      network budget 30 -> 5 a minute, country 10 -> 4
+- [ ] M2 PrivacyGate canonical URLs (400 no-store)
+- [ ] CORS on /privacy (erth.network, localhost)
+- [ ] L13 count 422s
+- [ ] L1 .dockerignore, L2 lchown, L11 uvicorn flags
+- [ ] L9 create.py redaction
+- [ ] L12 base image digest / --require-hashes
+- [ ] L3 /health cached
+- [ ] L6 halted index: 503 on {base}/*
+- [ ] L7 blocks table pruned
+- [ ] L4 handle refresh bounded, off the loop; L5 stale flag
+
+## Notes
+- M3 network budget: ~10 s an earthd run on the 0.1-CPU lease is an
+  estimate (not timed here), so ~6 verifications a minute.

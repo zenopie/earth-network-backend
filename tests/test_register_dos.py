@@ -149,26 +149,28 @@ def test_the_network_backstop(client, chain, monkeypatch):
     assert client.get("/gas/pow").json()["shedding"] is True
 
 
-def test_a_dsc_named_by_failures_leaves_the_reserved_lane(client, chain, monkeypatch):
-    monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_DSC_PER_MINUTE", 0)
+def test_failures_naming_a_dsc_never_take_it_out_of_the_reserved_lane(client, chain, monkeypatch):
+    """Audit 3 demoted a signer after failures naming it; audit-5 M3: that
+    was anyone's to trigger with its public certificate. Failed proofs shed
+    the signer (work at the shedding difficulty), and the lane stays."""
     monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_MINUTE", 0)
-    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 3)
     knowndsc.set_known({privacy.field_bytes(KNOWN_DSC)})
-    for i in range(3):
+    for i in range(5):
         chain["refuse"][600 + i] = PROOF
-        assert post(client, with_pow(body(600 + i), config.POW_RESERVED_BITS)).status_code == 403
+        assert post(client, with_pow(body(600 + i), config.POW_SHED_BITS)).status_code == 403
         assert chain["priority"][-1] is True
-    assert ratelimit.dsc_cooling(privacy.field_bytes(KNOWN_DSC))
-    assert post(client, with_pow(body(610), config.POW_RESERVED_BITS)).status_code == 200
-    assert chain["priority"][-1] is False, "cooling down: the ordinary lane"
+    assert ratelimit.shedding(privacy.field_bytes(KNOWN_DSC)) == "signer"
+    assert post(client, with_pow(body(610), config.POW_SHED_BITS)).status_code == 200
+    assert chain["priority"][-1] is True
 
 
-def test_the_cooldown_ages_out():
-    dsc = b"\x01" * 32
-    for _ in range(config.REGISTER_DSC_FAILURES_BEFORE_COOLDOWN):
-        ratelimit.note_refusal(dsc, None, now=1000.0)
-    assert ratelimit.dsc_cooling(dsc, now=1001.0)
-    assert not ratelimit.dsc_cooling(dsc, now=1000.0 + 2 * config.REGISTER_DSC_COOLDOWN_SECONDS + 1)
+def test_client_refusals_age_out(monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_CLIENT_REFUSALS_PER_WINDOW", 3)
+    for _ in range(3):
+        ratelimit.note_client_refusal("c", now=1000.0)
+    assert ratelimit.client_refused_out("c", now=1001.0)
+    assert not ratelimit.client_refused_out("d", now=1001.0)
+    assert not ratelimit.client_refused_out("c", now=1000.0 + 2 * config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS + 1)
 
 
 def test_a_stamp_is_used_once_and_must_be_fresh(client, chain, monkeypatch):

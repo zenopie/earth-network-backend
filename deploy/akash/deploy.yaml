@@ -56,16 +56,18 @@ services:
       - REGISTER_IP_WINDOW_SECONDS=3600
       - REGISTER_IPV6_PREFIX=48
       # Refusal budgets: proof-verification failures a minute per DSC, per
-      # issuing country, network-wide. Past one, requests under it need a
-      # proof of work (POW_SHED_BITS) to be queued. A DSC named by 5
-      # failures an hour leaves the reserved lane (5 of the 20 queue places,
-      # for a new passport from a DSC the chain already knows, with a
-      # POW_RESERVED_BITS stamp).
+      # issuing country, network-wide (at most what this 0.1-CPU lease can
+      # verify, ~6 a minute). Past one, requests under it need a proof of
+      # work (POW_SHED_BITS) to be queued. Every refusal also counts against
+      # its client: 3 an hour and it is refused before the queue. The
+      # reserved lane (5 of the 20 queue places, for a new passport from a
+      # DSC the chain already knows, with a POW_RESERVED_BITS stamp) holds
+      # at most one check per DSC at a time.
       - REGISTER_REFUSALS_PER_DSC_PER_MINUTE=3
-      - REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE=10
-      - REGISTER_REFUSALS_PER_MINUTE=30
-      - REGISTER_DSC_FAILURES_BEFORE_COOLDOWN=5
-      - REGISTER_DSC_COOLDOWN_SECONDS=3600
+      - REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE=4
+      - REGISTER_REFUSALS_PER_MINUTE=5
+      - REGISTER_CLIENT_REFUSALS_PER_WINDOW=3
+      - REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS=3600
       - POW_RESERVED_BITS=16
       - POW_SHED_BITS=20
       - POW_LOAD_EXTRA_BITS=2

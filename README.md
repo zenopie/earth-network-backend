@@ -136,15 +136,21 @@ everything that can refuse a request without one runs first, in this order:
    before the verifier runs, and a real registrant meeting a cap must not
    shed anyone. Those refusals are counted per minute against three
    budgets: the DSC commitment's (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`, 3),
-   the issuing country's (`REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE`, 10;
+   the issuing country's (`REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE`, 4;
    the DSC certificate's issuer `C=`, which for a DSC that chains is the
    CSCA's country the chain caps by) and the network's
-   (`REGISTER_REFUSALS_PER_MINUTE`, 30, a backstop). A request whose signer,
+   (`REGISTER_REFUSALS_PER_MINUTE`, 5: at most what the 0.1-CPU lease can
+   verify, about six a minute, so verified junk trips it). A request whose signer,
    country or the network has spent its budget is *shed*: it is queued only
    with a proof of work at the shedding difficulty, and answered **428**
    (with `pow.bits`) before the queue without one. Junk naming one signer
    sheds that signer's registrants — who can still pay the work — and no
-   one else.
+   one else. Every refusal, cheap ones included and in either lane, also
+   counts against the client that sent it
+   (`REGISTER_CLIENT_REFUSALS_PER_WINDOW`, 3 in
+   `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS`, 3600, sliding): past it the
+   client is answered **429** before the queue until they age out
+   (audit-5 M3).
 8. **One check per client**: a client with a gas-check already queued or
    running gets 429 at once rather than a second place in the queue; the queue
    as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
@@ -168,15 +174,14 @@ key, and only over a key of at most 512 bytes (RSA 4096, the largest real
 DSC): a larger key, which the chain accepts up to 2048 bytes, takes the
 ordinary lane unhashed. Both the commitment and the certificate are
 public (every registration publishes them), so junk can still copy a real
-pair; that costs a proof of work a request, and **every** refusal of a
-request that held the lane — not only a failed proof: a used binding, a
-affiliate handle that is not live, mismatched inputs, the signer at its cap — counts against
-that signer's budget (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`) and its
-cooldown: `REGISTER_DSC_FAILURES_BEFORE_COOLDOWN` (5) such failures naming
-one DSC within `REGISTER_DSC_COOLDOWN_SECONDS` (3600, sliding) take it out
-of the lane until they age out — its registrants fall back to the ordinary
-lane, nobody else is touched (the network and country budgets count only
-failed proofs). A signer's first passport is not in
+pair, at a proof of work a request. So at most **one** priority check per
+DSC commitment waits or runs at a time; a second request naming that
+signer meanwhile takes the ordinary lane. No refusal demotes a signer
+(audit-5 M3: audit 4's cooldown, five refusals naming a DSC in an hour,
+was anyone's to trigger with the signer's public certificate, and evicted
+its real registrants from the lane). Junk naming one signer holds one place,
+only while its check runs, and its clients lose their places to the client
+refusal budget. A signer's first passport is not in
 the set and takes the ordinary lane, which only fills under a flood.
 
 ### Proof of work (wallets implement this)

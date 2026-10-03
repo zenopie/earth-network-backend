@@ -181,7 +181,6 @@ def test_curve_constants_match_ecdsa():
 
 def test_a_copied_commitment_without_its_certificate_gets_no_priority(client, chain, monkeypatch):
     """The PoC's flood: a known commitment beside junk (or another signer's) dsc_der."""
-    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 5)
     knowndsc.set_known({privacy.field_bytes(DSC_KEY)})
     r = post(client, with_pow(body(70000, der="AAAA"), config.POW_RESERVED_BITS))
     assert r.status_code == 200
@@ -196,43 +195,52 @@ def test_a_copied_commitment_without_its_certificate_gets_no_priority(client, ch
 
 
 def test_every_refusal_in_the_reserved_lane_counts(client, chain, monkeypatch):
-    """The PoC's flood with the real certificate: cheap refusals now demote the signer."""
-    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 5)
-    monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_DSC_PER_MINUTE", 30)
+    """The PoC's flood with the real certificate. Audit 4 demoted the signer
+    after five; audit-5 M3 found that demotion was anyone's to trigger, so
+    now every refusal counts against the client instead, and the signer
+    keeps its place."""
     monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_MINUTE", 3)
+    monkeypatch.setattr(config, "REGISTER_CLIENT_REFUSALS_PER_WINDOW", 3)
     dsc = privacy.field_bytes(DSC_KEY)
     knowndsc.set_known({dsc})
-    held = 0
-    for i in range(20):
-        nf = 71000 + i
-        chain["refuse"][nf] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
-        r = post(client, with_pow(body(nf), config.POW_RESERVED_BITS))
+    ip = {"cf-connecting-ip": "203.0.113.77"}
+    for i in range(3):
+        chain["refuse"][71000 + i] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
+        r = client.post("/gas/register", json=with_pow(body(71000 + i), config.POW_RESERVED_BITS), headers=ip)
         assert r.status_code == 403, r.text
-        held += chain["priority"][-1]
-    assert held == 5, "the lane is lost after REGISTER_DSC_FAILURES_BEFORE_COOLDOWN refusals"
-    assert ratelimit.dsc_cooling(dsc)
-    # Counted against the signer only: the network budget (3) is untouched.
+        assert chain["priority"][-1] is True
+    asked = len(chain["priority"])
+    r = client.post("/gas/register", json=with_pow(body(71010), config.POW_RESERVED_BITS), headers=ip)
+    assert r.status_code == 429 and "refused" in r.json()["message"]
+    assert len(chain["priority"]) == asked, "the client lost its place, before the queue"
+    # Counted against the client only: the network budget (3) is untouched.
     assert ratelimit.shedding(None, None) is None
+    # And the signer's real registrants keep the lane.
+    assert post(client, with_pow(body(71020), config.POW_RESERVED_BITS)).status_code == 200
+    assert chain["priority"][-1] is True
 
 
-def test_reserved_lane_refusals_spend_the_signers_budget(client, chain, monkeypatch):
-    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 0)
+def test_cheap_reserved_lane_refusals_spend_no_signer_budget(client, chain, monkeypatch):
     monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_DSC_PER_MINUTE", 3)
     dsc = privacy.field_bytes(DSC_KEY)
     knowndsc.set_known({dsc})
     for i in range(3):
         chain["refuse"][72000 + i] = CHEAP_REFUSALS[2]
         assert post(client, with_pow(body(72000 + i), config.POW_RESERVED_BITS)).status_code == 403
-    assert ratelimit.shedding(dsc, None) == "signer"
+    assert ratelimit.shedding(dsc, None) is None
 
 
-def test_ordinary_lane_cheap_refusals_still_count_nothing(client, chain):
+def test_ordinary_lane_cheap_refusals_count_against_the_client(client, chain):
     dsc = privacy.field_bytes(DSC_KEY)
     knowndsc.set_known({dsc})
-    for i in range(10):
+    ip = {"cf-connecting-ip": "203.0.113.78"}
+    codes = []
+    for i in range(5):
         chain["refuse"][73000 + i] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
-        assert post(client, body(73000 + i)).status_code == 403  # no work: ordinary lane
-    assert not ratelimit.dsc_cooling(dsc) and ratelimit.shedding(dsc, None) is None
+        codes.append(client.post("/gas/register", json=body(73000 + i), headers=ip).status_code)  # no work: ordinary lane
+    n = config.REGISTER_CLIENT_REFUSALS_PER_WINDOW
+    assert codes == [403] * n + [429] * (5 - n)
+    assert ratelimit.shedding(dsc, None) is None, "no other budget"
 
 
 # --- B3: /privacy page cost ---------------------------------------------------
