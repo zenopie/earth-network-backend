@@ -143,9 +143,14 @@ def test_different_passports_each_get_a_grant(client, shields, chain_says):
 
 def test_daily_cap_applies(client, shields, chain_says, monkeypatch):
     monkeypatch.setattr(config, "REGISTER_GRANT_MAX_PER_DAY", 1)
+    monkeypatch.setattr(config, "REGISTER_SWITCH_GRANT_MAX_PER_DAY", 0)
     assert client.post("/gas/register", json=reg_body()).status_code == 200
     assert client.post("/gas/register", json=reg_body(nf=5)).status_code == 429
-    assert len(chain_says["asked"]) == 1, "the cap is checked before gas-check"
+    assert len(chain_says["asked"]) == 1, "with both caps spent, checked before gas-check"
+    # A switch cap left: the check runs, and a first registration is still refused.
+    monkeypatch.setattr(config, "REGISTER_SWITCH_GRANT_MAX_PER_DAY", 1)
+    assert client.post("/gas/register", json=reg_body(nf=6)).status_code == 429
+    assert len(chain_says["asked"]) == 2
 
 
 def test_register_refusal_carries_the_chains_reason(client, shields, chain_says):

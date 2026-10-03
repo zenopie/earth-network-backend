@@ -44,6 +44,7 @@ services:
       # Rolling 24h cap on /gas/register payouts: 500 x 0.1 ERTH = 50 ERTH a
       # day, whatever a run of fresh or stolen passports tries.
       - REGISTER_GRANT_MAX_PER_DAY=500
+      - REGISTER_SWITCH_GRANT_MAX_PER_DAY=100
       # Per-client limits on /gas/register, ahead of the one-at-a-time
       # gas-check: 10 requests an hour per IPv4 address or IPv6 /48, one
       # check in flight. The client is CF-Connecting-IP — correct only

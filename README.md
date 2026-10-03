@@ -55,10 +55,23 @@ month, a grant on the 31st and another on the 1st were two, a day apart),
 and gas-check accepts a *switch* (a passport already registered moving to a
 new identity) as readily as a first registration. So a holder can draw one
 grant every 30 days by switching. That is accepted: it costs `DUST_UERTH` per passport per 30 days at
-most, the rolling `REGISTER_GRANT_MAX_PER_DAY` bounds the total whatever the
-mix, and a switch is a real registration tx the chain charges a fee for (paid
+most, and a switch is a real registration tx the chain charges a fee for (paid
 from that very note). Keying the grant on the nullifier alone would strand a
 holder whose first gas note was lost.
+
+**Cap pressure (audit-4 B4).** Every registered passport can re-draw a
+grant every 30 days by switching, so the registered population is a
+standing claim on the daily cap: N holders cycling switches spend N/30
+grants a day without a single new human. Under one shared cap that crowded
+out first registrations, the grants the service exists for. Switches are
+therefore capped apart: gas-check's verdict says `switched`, and a switch
+grant counts only against `REGISTER_SWITCH_GRANT_MAX_PER_DAY` (100), a first
+registration only against `REGISTER_GRANT_MAX_PER_DAY` (500); the replay
+table records each grant's kind (`''` or `switch`, nothing else). The two
+together bound the hot wallet's daily spend. The before-check 429 fires only
+when both caps are spent (whether a request is a switch is gas-check's
+answer), so while only one is spent a request of that kind costs a check and
+is then refused 429.
 
 ### When the shield's outcome is unknown
 
@@ -108,8 +121,10 @@ everything that can refuse a request without one runs first, in this order:
    `current_date_max_skew_seconds` of now (+10 min) → 400.
 5. **Replay**: any `passport:<public_signals[nullifier_index] as 32-byte hex>:…`
    claimed in the last 30 days → 409.
-6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` passport grants in the last
-   24 h → 429.
+6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` first-registration grants
+   and `REGISTER_SWITCH_GRANT_MAX_PER_DAY` switch grants in the last 24 h,
+   counted apart (see "Cap pressure" above) → 429; refused here only when
+   both are spent, otherwise after gas-check names the kind.
 7. **Refusal budgets and proof of work**: junk with a forged binding passes
    every check above, and only gas-check refuses it. Only a refusal that
    cost a proof verification (the chain's `invalid registration proof`)

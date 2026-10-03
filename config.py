@@ -109,6 +109,11 @@ POW_MAX_TRACKED = int(os.getenv("POW_MAX_TRACKED", "100000"))
 # chain would register and is once per passport per month, so this bounds
 # what a run of fresh (or stolen) passports can drain from the hot wallet.
 REGISTER_GRANT_MAX_PER_DAY = int(os.getenv("REGISTER_GRANT_MAX_PER_DAY", "500"))
+# The same for switches (gas-check's "switched": a passport already
+# registered moving to a new identity), counted apart so holders re-drawing
+# a grant every 30 days by switching cannot spend the cap new registrants
+# need (audit-4 B4). 0 pays no switch grants.
+REGISTER_SWITCH_GRANT_MAX_PER_DAY = int(os.getenv("REGISTER_SWITCH_GRANT_MAX_PER_DAY", "100"))
 
 # Seconds any one request to the chain's REST endpoint may take. Sends are
 # serialised, so without a bound a single hung request stalls every payout.

@@ -12,7 +12,11 @@ loses entries the moment two requests land together.
 
 The table keeps its original name from the AdMob era, when the ids were SSV
 transaction ids, and its address column from the device-attestation grants;
-renaming either would drop the history the daily cap counts.
+renaming either would drop the history the daily cap counts. The address
+column now holds a grant's *kind* and nothing else: '' for a first
+registration, 'switch' for a passport already registered moving to a new
+identity (public on chain anyway). Each kind has its own daily cap, so
+switches cannot spend the cap new registrants need (audit-4 B4).
 """
 import sqlite3
 import threading
@@ -72,31 +76,33 @@ def peek(transaction_id: str, *, key_prefix: str | None = None, once_per: int | 
     return row is not None
 
 
-def _paid_today(prefix: str) -> int:
+def _paid_today(prefix: str, kind: str = "") -> int:
     since = int(time.time()) - _DAY
     (paid,) = _db().execute(
-        "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ? AND substr(transaction_id, 1, ?) = ?",
-        (since, len(prefix), prefix),
+        "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ? AND substr(transaction_id, 1, ?) = ?"
+        " AND address = ?",
+        (since, len(prefix), prefix, kind),
     ).fetchone()
     return paid
 
 
-def limit_reached(prefix: str, max_per_day: int) -> bool:
+def limit_reached(prefix: str, max_per_day: int, kind: str = "") -> bool:
     """Whether claim() would raise LimitReached now. Read-only, for refusing
     before the expensive check; claim() is still what decides."""
     with _lock:
-        return _paid_today(prefix) >= max_per_day
+        return _paid_today(prefix, kind) >= max_per_day
 
 
 def claim(transaction_id: str, *, prefix: str, max_per_day: int,
-          key_prefix: str | None = None, once_per: int | None = None) -> bool:
+          key_prefix: str | None = None, once_per: int | None = None, kind: str = "") -> bool:
     """Records a grant id, returning False if it was already used.
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
     two concurrent requests with the same id cannot both win.
 
-    Raises LimitReached, before claiming, when ids starting with `prefix` have
-    already been paid `max_per_day` times in the last 24 hours. Counted from
+    Raises LimitReached, before claiming, when ids of this `kind` starting
+    with `prefix` have already been paid `max_per_day` times in the last 24
+    hours. Counted from
     this table, under the same lock as the insert, so concurrent requests
     cannot both squeeze under the limit; a released id no longer counts,
     because it moved nothing.
@@ -106,14 +112,14 @@ def claim(transaction_id: str, *, prefix: str, max_per_day: int,
     as the insert.
     """
     with _lock:
-        if _paid_today(prefix) >= max_per_day:
+        if _paid_today(prefix, kind) >= max_per_day:
             raise LimitReached("daily")
         if key_prefix is not None and once_per is not None and _granted_within(key_prefix, once_per):
             return False
         try:
             _db().execute(
-                "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, '', ?)",
-                (transaction_id, int(time.time())),
+                "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, ?, ?)",
+                (transaction_id, kind, int(time.time())),
             )
             _db().commit()
             return True

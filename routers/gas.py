@@ -61,6 +61,9 @@ router = APIRouter(prefix="/gas")
 # per passport in any GRANT_ONCE_PER_SECONDS (ids from before this change end
 # in :<YYYY-MM>; they share the passport's prefix and count the same).
 PASSPORT_PREFIX = "passport:"
+# The replay kind of a grant for a switch (a passport already registered
+# moving to a new identity): capped apart from first registrations.
+SWITCH = "switch"
 GRANT_ONCE_PER_SECONDS = 30 * 86400
 
 
@@ -335,7 +338,11 @@ async def register(body: RegisterGrant, request: Request):
     # proof verification. claim() decides again after it, atomically.
     if replay.peek(grant_id, key_prefix=_passport_key(nullifier), once_per=GRANT_ONCE_PER_SECONDS):
         return _reply(409, "error", "already granted")
-    if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY):
+    # Whether this is a switch is gas-check's answer, so only when both caps
+    # are spent is the request refused before it; otherwise claim() decides
+    # by kind after the check.
+    if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY) and \
+            replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_SWITCH_GRANT_MAX_PER_DAY, kind=SWITCH):
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
 
     # Shedding: the network's, this signer's or this country's budget of
@@ -423,20 +430,26 @@ async def register(body: RegisterGrant, request: Request):
         logger.error("gas-check nullifier differs from public_signals[%d]; check PASSPORT_NULLIFIER_INDEX",
                      config.PASSPORT_NULLIFIER_INDEX)
         return _reply(503, "error", "verification is unavailable; try again shortly")
-    return await _grant_note(grant_id, _passport_key(nullifier), pc_gas, ciphertext_gas)
+    switched = verdict.get("switched") is True
+    return await _grant_note(grant_id, _passport_key(nullifier), pc_gas, ciphertext_gas, switched)
 
 
-async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: bytes) -> JSONResponse:
+async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: bytes,
+                      switched: bool = False) -> JSONResponse:
     """Claims grant_id, then shields the dust to pc. Claimed under its id alone, no address.
 
     Claim before sending: the insert is atomic, so two concurrent requests with
     the same id cannot both reach the chain.
     """
     try:
-        claimed = replay.claim(grant_id, prefix=PASSPORT_PREFIX, max_per_day=config.REGISTER_GRANT_MAX_PER_DAY,
-                               key_prefix=key_prefix, once_per=GRANT_ONCE_PER_SECONDS)
+        claimed = replay.claim(grant_id, prefix=PASSPORT_PREFIX,
+                               max_per_day=config.REGISTER_SWITCH_GRANT_MAX_PER_DAY if switched
+                               else config.REGISTER_GRANT_MAX_PER_DAY,
+                               key_prefix=key_prefix, once_per=GRANT_ONCE_PER_SECONDS,
+                               kind=SWITCH if switched else "")
     except replay.LimitReached as exc:
-        logger.warning("%s payout limit reached; refusing a registration grant", exc)
+        logger.warning("%s %s payout limit reached; refusing a registration grant", exc,
+                       "switch" if switched else "registration")
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
     if not claimed:
         return _reply(409, "error", "already granted")

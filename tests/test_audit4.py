@@ -348,3 +348,51 @@ def test_privacy_in_flight_cap():
     refused, ok, other = asyncio.run(go())
     assert refused == 503 and ok == [200] * config.PRIVACY_MAX_CONCURRENT and other == 200
     assert gate.in_flight == 0
+
+
+# --- B4: switch grants are capped apart ----------------------------------------
+
+from services import replay  # noqa: E402
+
+
+def _verdict(switched):
+    async def registration(msg, priority=False):
+        nf = int(msg["public_signals"][2])
+        return {"ok": True, "nullifier": privacy.field_bytes(nf).hex(), "switched": switched}
+    return registration
+
+
+def test_switch_grants_do_not_spend_the_new_registrant_cap(client, monkeypatch):
+    from routers import gas
+    from services import gascheck
+
+    async def shield(pc, ct):
+        return "H"
+    monkeypatch.setattr(gas.chain, "shield_dust", shield)
+    monkeypatch.setattr(config, "REGISTER_GRANT_MAX_PER_DAY", 2)
+    monkeypatch.setattr(config, "REGISTER_SWITCH_GRANT_MAX_PER_DAY", 3)
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 100)
+
+    monkeypatch.setattr(gascheck, "registration", _verdict(True))
+    codes = [client.post("/gas/register", json=body(80000 + i)).status_code for i in range(4)]
+    assert codes == [200, 200, 200, 429], "switches stop at their own cap"
+
+    monkeypatch.setattr(gascheck, "registration", _verdict(False))
+    codes = [client.post("/gas/register", json=body(81000 + i)).status_code for i in range(3)]
+    assert codes == [200, 200, 429], "first registrations still have their whole cap"
+    assert replay.limit_reached("passport:", 2) and replay.limit_reached("passport:", 3, kind="switch")
+
+
+def test_both_caps_spent_refuses_before_the_check(client, monkeypatch):
+    from services import gascheck
+
+    asked = []
+
+    async def registration(msg, priority=False):
+        asked.append(msg)
+        return {"ok": True}
+    monkeypatch.setattr(gascheck, "registration", registration)
+    monkeypatch.setattr(config, "REGISTER_GRANT_MAX_PER_DAY", 0)
+    monkeypatch.setattr(config, "REGISTER_SWITCH_GRANT_MAX_PER_DAY", 0)
+    assert client.post("/gas/register", json=body(82000)).status_code == 429
+    assert asked == []
