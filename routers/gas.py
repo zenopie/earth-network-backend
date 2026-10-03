@@ -163,8 +163,11 @@ def _yymmdd_unix(v: int) -> int:
     yy, mm, dd = v // 10000, (v // 100) % 100, v % 100
     if not (1 <= mm <= 12 and 1 <= dd <= 31):
         raise ValueError("current_date has an invalid month or day")
-    # Go's time.Date normalises an out-of-range day (Feb 31 -> Mar 3); so does this.
-    return calendar.timegm((2000 + yy, mm, 1, 0, 0, 0)) + (dd - 1) * 86400
+    # The chain refuses a date that does not round-trip (Feb 31): the circuit
+    # compares YYMMDD numerically, so 250231 would otherwise be dated Mar 3.
+    if dd > calendar.monthrange(2000 + yy, mm)[1]:
+        raise ValueError("current_date is not a calendar date")
+    return calendar.timegm((2000 + yy, mm, dd, 0, 0, 0))
 
 
 def _passport_key(nullifier_hex: str) -> str:
