@@ -1,16 +1,15 @@
 """Replay protection and payout limits for gas grants.
 
-A grant id — the passport key `passport:<nullifier>:<YYYY-MM>` for a
-registration grant, `gas-transparent:<nullifier>:<YYYY-MM>` for a membership
-(transparent) grant, the attested key for the device grants — may be honoured
-exactly once. A registration or membership grant is stored under its id alone, with an
-empty address: the backend never learns who took it, and the backend keeps nothing that names
-where the note went. SQLite rather than a JSON file: the id set is
+A grant id — the passport key `passport:<nullifier>:<YYYY-MM>` of a
+registration grant — may be honoured exactly once. It is stored under its id
+alone, with an empty address: the backend keeps nothing that names where the
+note went. SQLite rather than a JSON file: the id set is
 append-only and read on every request, and a file that gets rewritten wholesale
 loses entries the moment two requests land together.
 
 The table keeps its original name from the AdMob era, when the ids were SSV
-transaction ids; renaming it would drop the history the daily caps count.
+transaction ids, and its address column from the device-attestation grants;
+renaming either would drop the history the daily cap counts.
 """
 import sqlite3
 import threading
@@ -33,9 +32,6 @@ def _db() -> sqlite3.Connection:
                    granted_at     INTEGER NOT NULL
                )"""
         )
-        _conn.execute(
-            "CREATE INDEX IF NOT EXISTS used_by_address ON used_transactions (address, granted_at)"
-        )
         _conn.execute("CREATE INDEX IF NOT EXISTS used_by_time ON used_transactions (granted_at)")
         _conn.commit()
     return _conn
@@ -48,40 +44,40 @@ class LimitReached(Exception):
 _DAY = 86400
 
 
-def claim(transaction_id: str, address: str = "") -> bool:
+def peek(transaction_id: str) -> bool:
+    """Whether a grant id is already claimed. Read-only, for refusing a replay
+    before the expensive check; claim() is still what decides."""
+    with _lock:
+        row = _db().execute(
+            "SELECT 1 FROM used_transactions WHERE transaction_id = ?", (transaction_id,)
+        ).fetchone()
+    return row is not None
+
+
+def claim(transaction_id: str, *, prefix: str, max_per_day: int) -> bool:
     """Records a grant id, returning False if it was already used.
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
     two concurrent requests with the same id cannot both win.
 
-    Raises LimitReached, before claiming, when the address or the service as a
-    whole has already been paid its allowance in the last 24 hours. An
-    attestation proves a device, not a person, so every genuine one is
-    otherwise payable and the hot wallet could be drained as fast as one phone
-    can make addresses. Counted from this table, under the same lock as the
-    insert, so concurrent requests cannot both squeeze under a limit; a
-    released id no longer counts, because it moved nothing.
+    Raises LimitReached, before claiming, when ids starting with `prefix` have
+    already been paid `max_per_day` times in the last 24 hours. Counted from
+    this table, under the same lock as the insert, so concurrent requests
+    cannot both squeeze under the limit; a released id no longer counts,
+    because it moved nothing.
     """
     with _lock:
         since = int(time.time()) - _DAY
-        if address:
-            # A note grant has no address (""); its id is already one per
-            # passport per month.
-            (mine,) = _db().execute(
-                "SELECT COUNT(*) FROM used_transactions WHERE address = ? AND granted_at > ?",
-                (address, since),
-            ).fetchone()
-            if mine >= config.GRANT_MAX_PER_ADDRESS_PER_DAY:
-                raise LimitReached("address")
-        (everyone,) = _db().execute(
-            "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ?", (since,)
+        (paid,) = _db().execute(
+            "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ? AND substr(transaction_id, 1, ?) = ?",
+            (since, len(prefix), prefix),
         ).fetchone()
-        if everyone >= config.GRANT_MAX_PER_DAY:
+        if paid >= max_per_day:
             raise LimitReached("daily")
         try:
             _db().execute(
-                "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, ?, ?)",
-                (transaction_id, address, int(time.time())),
+                "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, '', ?)",
+                (transaction_id, int(time.time())),
             )
             _db().commit()
             return True
@@ -92,8 +88,8 @@ def claim(transaction_id: str, address: str = "") -> bool:
 def release(transaction_id: str) -> None:
     """Gives a claimed id back, for when the grant itself failed.
 
-    Without this a failed send would still count against the address's
-    allowance, with nothing to show for it.
+    Without this a failed send would still count against the daily limit, and
+    the passport could not try again this month.
     """
     with _lock:
         _db().execute("DELETE FROM used_transactions WHERE transaction_id = ?", (transaction_id,))

@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import sqlite3
+import time
 
 import pytest
 
@@ -64,12 +65,11 @@ def chain_says(monkeypatch):
     return state
 
 
-def test_register_grant_shields_to_pc_gas(client, shields, sends, chain_says):
+def test_register_grant_shields_to_pc_gas(client, shields, chain_says):
     resp = client.post("/gas/register", json=reg_body())
     assert resp.status_code == 200, resp.text
     assert resp.json()["tx_hash"] == "HASH1"
     assert shields == [(PC_GAS, b"x")]
-    assert sends == [], "no bank send to any address"
     asked = chain_says["asked"][0]
     assert "creator" not in asked and "pc_gas" not in asked
     assert asked["idc"] == field_b64(11) and asked["pc_erth"] == field_b64(13)
@@ -93,17 +93,15 @@ def test_register_is_once_per_passport_whatever_the_note(client, shields, chain_
     assert len(shields) == 1
 
 
-def test_different_passports_are_not_capped_per_address(client, shields, chain_says, monkeypatch):
-    # Note grants share the empty address; the per-address cap must not apply.
-    monkeypatch.setattr(config, "GRANT_MAX_PER_ADDRESS_PER_DAY", 1)
+def test_different_passports_each_get_a_grant(client, shields, chain_says):
     for i in range(3):
         chain_says["registration"] = {"ok": True, "nullifier": f"{i:064x}", "switched": False}
         assert client.post("/gas/register", json=reg_body()).status_code == 200
     assert len(shields) == 3
 
 
-def test_daily_cap_still_applies(client, shields, chain_says, monkeypatch):
-    monkeypatch.setattr(config, "GRANT_MAX_PER_DAY", 1)
+def test_daily_cap_applies(client, shields, chain_says, monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_GRANT_MAX_PER_DAY", 1)
     assert client.post("/gas/register", json=reg_body()).status_code == 200
     chain_says["registration"] = {"ok": True, "nullifier": "cc" * 32, "switched": False}
     assert client.post("/gas/register", json=reg_body()).status_code == 429
@@ -142,7 +140,7 @@ def test_failed_shield_gives_the_passport_back(client, chain_says, monkeypatch):
 
     monkeypatch.setattr(chain, "shield_dust", boom)
     assert client.post("/gas/register", json=reg_body()).status_code == 502
-    assert replay.claim(f"passport:{'aa' * 32}:x") is True  # db usable
+    assert replay.peek(f"passport:{'aa' * 32}:{time.strftime('%Y-%m', time.gmtime())}") is False
     sent = []
 
     async def ok(pc, ct):
@@ -163,9 +161,21 @@ def test_unresolved_shield_keeps_the_passport(client, chain_says, monkeypatch):
     assert client.post("/gas/register", json=reg_body()).status_code == 409
 
 
-def test_human_is_gone(client):
-    assert client.post("/gas/human", json={"address": "earth1x"}).status_code == 404
-    assert not hasattr(gascheck, "human")
+@pytest.mark.parametrize("path", ["/gas/human", "/gas/transparent", "/gas/challenge", "/gas/ios", "/gas/android"])
+def test_only_register_is_left(client, path):
+    assert client.post(path, json={"address": "earth1x"}).status_code == 404
+
+
+def test_removed_services_are_gone():
+    import importlib.util
+
+    for name in ("services.appattest", "services.keyattest", "services.challenges"):
+        assert importlib.util.find_spec(name) is None
+    assert not hasattr(gascheck, "human") and not hasattr(gascheck, "membership")
+    assert not hasattr(chain, "send_dust")
+    for name in ("IOS_APP_ID", "APP_ATTEST_ALLOW_DEVELOPMENT", "ANDROID_SIGNING_CERT_SHA256",
+                 "CHALLENGE_TTL_SECONDS", "GRANT_MAX_PER_ADDRESS_PER_DAY", "GRANT_MAX_PER_DAY"):
+        assert not hasattr(config, name)
 
 
 def test_gascheck_missing_binary_is_unavailable(monkeypatch):

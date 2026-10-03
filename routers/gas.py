@@ -1,5 +1,4 @@
-"""Gas for humans: new ones on proof of their registration, and — for app builds
-that predate it — on proof of a genuine app install.
+"""Gas for new humans, on proof of the registration they are about to make.
 
 A new human has no ERTH, so they cannot make their first transaction — the
 registration that would earn them ERTH. On the shielded chain a registration
@@ -19,28 +18,10 @@ MsgRegister and pays its fee from that note; the registration reward pays
 every later fee. The backend stores only the passport key, never pc_gas or
 anything else that names the note, and the note's spend is unlinkable to it.
 
-Once registered, a human may also want transparent ERTH, to pay fees from an
-ordinary account (an LP, an IBC transfer, a contract call):
-
-    POST /gas/transparent {address, proof, root, nullifier, max_activation, month?}
-
-takes a membership proof that its prover holds some live identity leaf —
-scope GasScope(month) = H(TAG_SCOPE, Bytes("gas"), YYYYMM), signal
-H(TAG_SIGNAL, Bytes("earth.gas.transparent"), Bytes(chain_id), Bytes(address
-bytes)), no exclusions — asks the chain whether it verifies against a live
-identity root (`earthd gas-check membership`), and bank-sends DUST_UERTH to the
-address, once per membership nullifier per month. The backend never learns
-which human asked; it keeps only `gas-transparent:<nullifier>:<YYYY-MM>`.
-
 /gas/human is gone: it paid an address the chain counted as a human, and
-nothing on chain links an address to a registration any more.
-
-The device-attestation endpoints stay until the app builds that call them are
-gone:
-
-    POST /gas/challenge   {address}                                -> {challenge, expires_in}
-    POST /gas/ios         {address, challenge, key_id, attestation} App Attest
-    POST /gas/android     {address, challenge, chain}               Key Attestation
+nothing on chain links an address to a registration any more. /gas/transparent
+(a membership-proof bank send) and the device-attestation grants (/gas/ios,
+/gas/android, /gas/challenge) are gone too: /gas/register is the only grant.
 
 Grant endpoints answer with {status, message, tx_hash?} and a status code the
 app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request cannot
@@ -58,16 +39,15 @@ from pydantic import BaseModel
 import config
 import time
 
-from services import appattest, chain, challenges, gascheck, keyattest, replay, shielded_msg
+from services import chain, gascheck, replay, shielded_msg
 from services.zk import privacy
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/gas")
 
-
-class ChallengeRequest(BaseModel):
-    address: str
+# Registration grant ids: passport:<nullifier hex>:<YYYY-MM>.
+PASSPORT_PREFIX = "passport:"
 
 
 class RegisterGrant(BaseModel):
@@ -87,32 +67,6 @@ class RegisterGrant(BaseModel):
     # fee from, and optionally that note encrypted to itself.
     pc_gas: str
     ciphertext_gas: str = ""
-
-
-class TransparentGrant(BaseModel):
-    # The account the grant pays, bound in the proof's signal.
-    address: str
-    # personhood Membership, bytes as standard base64 (proto JSON).
-    proof: str
-    root: str
-    nullifier: str
-    # The proof's max_activation (unix seconds), at most now.
-    max_activation: int
-    # The proof's scope month, YYYYMM (UTC). Must be this month; defaults to it.
-    month: int | None = None
-
-
-class IosGrant(BaseModel):
-    address: str
-    challenge: str
-    key_id: str
-    attestation: str
-
-
-class AndroidGrant(BaseModel):
-    address: str
-    challenge: str
-    chain: list[str]
 
 
 def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse:
@@ -177,82 +131,17 @@ async def register(body: RegisterGrant):
         logger.info("registration check refused: %s", verdict.get("error"))
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     month = time.strftime("%Y-%m", time.gmtime())
-    return await _grant_note(f"passport:{verdict['nullifier']}:{month}", pc_gas, ciphertext_gas)
-
-
-def _this_month() -> int:
-    """The current UTC month as YYYYMM."""
-    now = time.gmtime()
-    return now.tm_year * 100 + now.tm_mon
-
-
-@router.post("/transparent", summary="Send transparent ERTH to an address a live human names")
-async def transparent(body: TransparentGrant):
-    address = body.address.strip()
-    if not _valid_address(address):
-        return _reply(400, "error", "not an earth address")
-    try:
-        if not _b64(body.proof):
-            raise ValueError("empty proof")
-        _field(body.root)
-        nullifier = _field(body.nullifier)
-    except (binascii.Error, ValueError):
-        return _reply(400, "error", "proof must be base64; root and nullifier 32-byte field elements")
-    if body.max_activation < 0 or body.max_activation >= 1 << 63:
-        return _reply(400, "error", "max_activation out of range")
-    this_month = _this_month()
-    month = this_month if body.month is None else body.month
-    if month != this_month:
-        return _reply(400, "error", f"the grant is for this month ({this_month}); prove again with its scope")
-    m = {"proof": body.proof, "root": body.root, "nullifier": body.nullifier}
-    try:
-        verdict = await gascheck.membership(m, address, month, body.max_activation)
-    except gascheck.Unavailable as exc:
-        logger.error("membership check unavailable: %s", exc)
-        return _reply(503, "error", "verification is unavailable; try again shortly")
-    if not verdict.get("ok"):
-        logger.info("membership check refused: %s", verdict.get("error"))
-        return _reply(403, "error", f"the chain would not accept this proof: {verdict.get('error')}")
-    if verdict.get("nullifier") != nullifier.hex():
-        # gas-check verified the nullifier it was sent; anything else is a bug.
-        logger.error("gas-check answered for another nullifier")
-        return _reply(503, "error", "verification is unavailable; try again shortly")
-    grant_id = f"gas-transparent:{nullifier.hex()}:{month // 100:04d}-{month % 100:02d}"
-    return await _grant_transparent(grant_id, address)
-
-
-async def _grant_transparent(grant_id: str, address: str) -> JSONResponse:
-    """_grant for a membership grant: claimed under its id alone, no address.
-
-    The address is public in the send itself; keeping it next to the nullifier
-    here would add nothing but a record of which grants one address took.
-    """
-    try:
-        claimed = replay.claim(grant_id)
-    except replay.LimitReached as exc:
-        logger.warning("%s payout limit reached; refusing a transparent grant", exc)
-        return _reply(429, "error", "free gas limit reached; try again tomorrow")
-    if not claimed:
-        return _reply(409, "error", "already granted this month")
-
-    try:
-        tx_hash = await chain.send_dust(address)
-    except chain.SendUnresolved as exc:
-        logger.error("transparent grant is unresolved: %s", exc)
-        return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
-    except Exception:
-        replay.release(grant_id)
-        logger.exception("transparent grant send failed")
-        return _reply(502, "error", "the grant could not be sent; try again")
-
-    logger.info("sent %d%s as a transparent gas grant (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, tx_hash)
-    return _reply(200, "success", "gas sent", tx_hash=tx_hash)
+    return await _grant_note(f"{PASSPORT_PREFIX}{verdict['nullifier']}:{month}", pc_gas, ciphertext_gas)
 
 
 async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONResponse:
-    """_grant for a shielded note: claimed under its id alone, no address."""
+    """Claims grant_id, then shields the dust to pc. Claimed under its id alone, no address.
+
+    Claim before sending: the insert is atomic, so two concurrent requests with
+    the same id cannot both reach the chain.
+    """
     try:
-        claimed = replay.claim(grant_id)
+        claimed = replay.claim(grant_id, prefix=PASSPORT_PREFIX, max_per_day=config.REGISTER_GRANT_MAX_PER_DAY)
     except replay.LimitReached as exc:
         logger.warning("%s payout limit reached; refusing a registration grant", exc)
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
@@ -262,6 +151,8 @@ async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONRespon
     try:
         tx_hash = await chain.shield_dust(pc, ciphertext)
     except chain.SendUnresolved as exc:
+        # Broadcast, outcome unknown. The id stays claimed: a tx still in a
+        # mempool will land, and releasing would let it be paid twice.
         logger.error("gas note shield is unresolved: %s", exc)
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
     except Exception:
@@ -273,94 +164,3 @@ async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONRespon
     # this passport to this note need not be kept here as well.
     logger.info("shielded %d%s as a registration gas note (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, tx_hash)
     return _reply(200, "success", "gas note sent", tx_hash=tx_hash)
-
-
-@router.post("/challenge", summary="A single-use challenge to attest over")
-def challenge(body: ChallengeRequest):
-    address = body.address.strip()
-    if not _valid_address(address):
-        return _reply(400, "error", "not an earth address")
-    try:
-        value = challenges.issue(address)
-    except challenges.Busy:
-        return _reply(503, "error", "too many requests in flight; try again shortly")
-    return {"challenge": value, "expires_in": config.CHALLENGE_TTL_SECONDS}
-
-
-@router.post("/ios", summary="Grant gas on an App Attest attestation")
-async def ios(body: IosGrant):
-    address = body.address.strip()
-    digest = challenges.consume(body.challenge, address)
-    if digest is None:
-        return _reply(409, "error", "challenge expired or already used; start again")
-    try:
-        attestation = base64.b64decode(body.attestation, validate=True)
-    except (binascii.Error, ValueError):
-        return _reply(400, "error", "attestation is not base64")
-    try:
-        appattest.verify(
-            attestation,
-            body.key_id,
-            digest,
-            app_id=config.IOS_APP_ID,
-            allow_development=config.APP_ATTEST_ALLOW_DEVELOPMENT,
-        )
-    except appattest.AttestationError as exc:
-        logger.warning("App Attest refused for %s: %s", address, exc)
-        return _reply(403, "error", "this device could not verify the app")
-    # Keyed on the attested key: each one is a fresh Secure Enclave key, so a
-    # second grant from the same attestation is a replay, whatever the challenge.
-    return await _grant(f"ios:{body.key_id}", address)
-
-
-@router.post("/android", summary="Grant gas on a hardware key attestation")
-async def android(body: AndroidGrant):
-    address = body.address.strip()
-    if not config.ANDROID_SIGNING_CERT_SHA256:
-        return _reply(503, "error", "Android grants are not configured on this server")
-    digest = challenges.consume(body.challenge, address)
-    if digest is None:
-        return _reply(409, "error", "challenge expired or already used; start again")
-    try:
-        chain_der = [base64.b64decode(c, validate=True) for c in body.chain]
-    except (binascii.Error, ValueError):
-        return _reply(400, "error", "chain is not base64")
-    try:
-        key_hash = await keyattest.verify_async(chain_der, digest)
-    except keyattest.AttestationError as exc:
-        logger.warning("key attestation refused for %s: %s", address, exc)
-        return _reply(403, "error", "this device could not verify the app")
-    except keyattest.Unavailable as exc:
-        logger.error("key attestation unavailable: %s", exc)
-        return _reply(503, "error", "verification is unavailable; try again shortly")
-    # Keyed on the attested key, as on iOS: a fresh hardware key per request.
-    return await _grant(f"android:{key_hash.hex()}", address)
-
-
-async def _grant(grant_id: str, address: str) -> JSONResponse:
-    # Claim before sending. The insert is atomic, so two concurrent requests
-    # with the same id cannot both reach the chain.
-    try:
-        claimed = replay.claim(grant_id, address)
-    except replay.LimitReached as exc:
-        logger.warning("%s payout limit reached; refusing %s for %s", exc, grant_id, address)
-        return _reply(429, "error", "free gas limit reached; try again tomorrow")
-    if not claimed:
-        return _reply(409, "error", "already granted")
-
-    try:
-        tx_hash = await chain.send_dust(address)
-    except chain.SendUnresolved as exc:
-        # Broadcast, outcome unknown. The id stays claimed: a transaction still
-        # in a mempool will land, and releasing would let it be paid twice.
-        logger.error("dust send to %s is unresolved: %s", address, exc)
-        return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
-    except Exception:
-        # The send demonstrably moved nothing. Give the id back so it does not
-        # count against the address's allowance.
-        replay.release(grant_id)
-        logger.exception("dust send to %s failed", address)
-        return _reply(502, "error", "the grant could not be sent; try again")
-
-    logger.info("granted %d%s to %s (%s, tx %s)", config.DUST_UERTH, config.EARTH_DENOM, address, grant_id.split(":")[0], tx_hash)
-    return _reply(200, "success", "gas sent", tx_hash=tx_hash)

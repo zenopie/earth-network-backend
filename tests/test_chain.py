@@ -50,18 +50,14 @@ def test_rest_calls_time_out(monkeypatch, silent_server):
     assert time.monotonic() - started < 5
 
 
-class _Raising:
-    def __init__(self, exc):
-        self.exc = exc
-
-    def send_tokens(self, *args, **kwargs):
-        raise self.exc
-
-
 def _send_with(monkeypatch, exc):
-    monkeypatch.setattr(chain, "_client", _Raising(exc))
-    monkeypatch.setattr(chain, "_wallet", object())
-    return chain._send_blocking(object())
+    def raising(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(chain, "prepare_and_broadcast_basic_transaction", raising)
+    monkeypatch.setattr(chain, "_client", object())
+    monkeypatch.setattr(chain, "_wallet", type("W", (), {"address": lambda self: "earth1x"})())
+    return chain._shield_blocking(b"\x07" * 32, b"")
 
 
 def test_a_read_timeout_on_broadcast_is_unresolved(monkeypatch):

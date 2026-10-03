@@ -13,7 +13,6 @@ python-dotenv==1.2.3
 httpx==0.28.1
 ecdsa==0.19.2
 cosmpy==0.12.2
-# Device attestation: App Attest is CBOR around an X.509 chain, and Android key
-# attestation is an X.509 chain; both are verified locally with cryptography.
-cbor2==6.1.4
+# Not imported here: a transitive dependency (google-auth, under cosmpy),
+# pinned so the crypto under the hot key does not move on a rebuild.
 cryptography==50.0.1

@@ -89,8 +89,10 @@ assert "provider." not in node, (
     "rest+https://lcd.erth.network — or this hangs on startup if it is ever "
     "leased on the same provider as the chain." % node)
 
-# The app id an attestation must name. Wrong here, every iOS grant is refused.
-assert a.get("IOS_APP_ID", "").count(".") >= 2, "IOS_APP_ID must be TEAMID.bundle.id"
+# The device-attestation grants are gone; their settings must not linger.
+for k in ("IOS_APP_ID", "APP_ATTEST_ALLOW_DEVELOPMENT", "ANDROID_PACKAGE", "ANDROID_SIGNING_CERT_SHA256",
+          "ANDROID_REQUIRE_LOCKED_BOOTLOADER", "GRANT_MAX_PER_ADDRESS_PER_DAY", "GRANT_MAX_PER_DAY"):
+    assert k not in a, "%s is no longer read; remove it from deploy.yaml" % k
 
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
@@ -98,12 +100,7 @@ assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
 print("services:   ", ", ".join(sorted(svcs)))
 print("node:       ", node, " chain:", a.get("EARTH_CHAIN_ID"))
 print("dust:       ", a.get("DUST_UERTH"), "uerth")
-print("ios app:    ", a.get("IOS_APP_ID"), " development keys:", a.get("APP_ATTEST_ALLOW_DEVELOPMENT", "true"))
-certs = [d for d in a.get("ANDROID_SIGNING_CERT_SHA256", "").split(",") if d.strip()]
-for d in certs:
-    assert len(bytes.fromhex(d.replace(":", "").strip())) == 32, "ANDROID_SIGNING_CERT_SHA256 entry is not a SHA-256: %s" % d
-print("android:    ", a.get("ANDROID_PACKAGE", "network.erth.wallet"), " signing certs:", len(certs) or "NONE (Android grants off)",
-      " locked bootloader:", a.get("ANDROID_REQUIRE_LOCKED_BOOTLOADER", "true"))
+print("daily cap:  ", a.get("REGISTER_GRANT_MAX_PER_DAY", "500"), "register grants")
 print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars)" % (len(mn.split()), len(tok)))
 
 open(out, "w").write(s)

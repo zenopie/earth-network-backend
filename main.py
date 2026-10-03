@@ -57,8 +57,8 @@ async def shutdown() -> None:
 def health():
     """Reports the hot wallet's balance — the thing that silently stops onboarding.
 
-    When this runs dry every grant fails: the attestation verifies and the send
-    does not. Worth alerting on.
+    When this runs dry every grant fails: the registration checks out and the
+    shield does not. Worth alerting on.
     """
     if not config.GAS_ENABLED:
         return {"status": "ok", "gas": "disabled"}

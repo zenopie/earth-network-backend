@@ -1,9 +1,9 @@
 ---
 # Akash SDL — earth gas-grant service.
 #
-# One FastAPI app. It holds a hot key and turns an attested request from a
-# genuine app install (App Attest / Android key attestation) into enough ERTH for a new
-# human to make their first transaction.
+# One FastAPI app. It holds a hot key and turns a registration the chain would
+# accept (/gas/register, checked by `earthd gas-check`) into a shielded fee note
+# for a new human's first transaction, and serves the privacy indexer.
 #
 # See README.md in this directory. Read the note on GAS_WALLET_MNEMONIC before
 # deploying: it is the one thing here that is genuinely a secret, and Akash's
@@ -38,30 +38,12 @@ services:
       # fee it puts in the tx; leaving the default is harmless and survives the
       # node later requiring a real minimum.
       - EARTH_GAS_PRICE=0.025
-      # What one attested grant is worth. Has to materialise the account and
+      # What one /gas/register grant (a shielded fee note) is worth. Has to
       # cover a registration (6M gas limit at 0.005 uerth/gas = 30,000 uerth).
       - DUST_UERTH=100000
-      # The iOS app an App Attest attestation must name, as TEAMID.bundle-id.
-      - IOS_APP_ID=XD8VH8WKVX.network.erth.EarthWallet
-      # Accept keys from App Attest's development environment, i.e. a build run
-      # from Xcode. TestFlight and the App Store use production. Set false once
-      # nobody is testing from Xcode.
-      - APP_ATTEST_ALLOW_DEVELOPMENT=true
-      # The Android package a key attestation must name, and the SHA-256 of
-      # every certificate our APKs are signed with: the release/upload key for
-      # sideloads, and Play's app-signing key for Play installs. Empty, Android
-      # grants answer 503. Here: the release key (8f9d…, sideloads) and Play's
-      # app-signing key (9194…, Play installs).
-      - ANDROID_PACKAGE=network.erth.wallet
-      - ANDROID_SIGNING_CERT_SHA256=8f9d4bf1df38e9bcfa56c5bff64e0dbabf8223a6a3db589421222c3259abd36c,9194aa3796428970c80c628fe53fbca9a7b0d646f092b5c22f39cb7b6f942a26
-      # Refuse phones with an unlocked bootloader: there the OS can lie to the
-      # secure hardware about which app is asking.
-      - ANDROID_REQUIRE_LOCKED_BOOTLOADER=true
-      # Rolling 24h limits. An attestation proves a genuine app on a real
-      # device, not a new human, so the daily cap is what bounds one phone
-      # attesting for fresh addresses: 500 x 0.1 ERTH = 50 ERTH a day.
-      - GRANT_MAX_PER_ADDRESS_PER_DAY=3
-      - GRANT_MAX_PER_DAY=500
+      # Rolling 24h cap on /gas/register payouts: 500 x 0.1 ERTH = 50 ERTH a
+      # day, whatever a run of fresh or stolen passports tries.
+      - REGISTER_GRANT_MAX_PER_DAY=500
       # The privacy indexer (services/privacy): follows the chain over CometBFT
       # RPC into /app/state/privacy_index.db and serves /privacy/* to wallets.
       # The RPC must keep block results from the start height on — for a full
@@ -89,7 +71,7 @@ services:
       # goes to `cloudflared`, so the only way in is a Cloudflare hostname.
       # Verified serving before the mapped ports were removed, because dropping
       # them is a structural change and cannot be undone in place.
-      # HTTP API: /gas/* for the apps' grant requests, /privacy/* for wallet
+      # HTTP API: /gas/register for the apps' grant requests, /privacy/* for wallet
       # sync, /health for the balance. Exposed on a mapped port rather than `as: 80` — see the chain
       # repo's SDL for why; the generated ingress hostname was not reliable.
       - port: 8000
@@ -159,9 +141,9 @@ profiles:
         storage:
           # Root: python:3.11-slim plus cosmpy's dependency tree.
           - size: 2Gi
-          # The replay database. Losing it does not lose money, it loses the
-          # record of which SSV transaction ids were already honoured — and
-          # every one of them becomes replayable against the hot wallet.
+          # The replay database. Losing it loses the record of which passports
+          # were granted this month — each could be paid again — and resets
+          # the daily cap.
           - name: state
             # Also the privacy index: roughly 300 bytes a note (commitment plus
             # ciphertext), so 4Gi holds on the order of ten million notes.

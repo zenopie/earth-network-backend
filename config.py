@@ -26,40 +26,11 @@ EARTH_GAS_PRICE = float(os.getenv("EARTH_GAS_PRICE", "0.025"))
 # from a key nobody meant to use.
 GAS_WALLET_MNEMONIC = os.getenv("GAS_WALLET_MNEMONIC", "")
 
-# How much one attested grant is worth, in uerth.
-#
-# This has to do two jobs: materialise the account (an address with no on-chain
-# account cannot sign anything at all — the ante handler rejects it with
-# "account does not exist", regardless of who pays the fee), and cover the gas
-# for the transaction the user is trying to make. Registration is the expensive
-# one: the apps give it a 6M gas limit, which at the validator's 0.005 uerth/gas
-# is 30,000 uerth. 100,000 covers that with room for a few follow-ups.
+# How much one grant is worth, in uerth: the value of the fee note a new human
+# pays MsgRegister's fee from. Registration is the expensive tx (the apps give
+# it a 6M gas limit, 30,000 uerth at the validator's 0.005 uerth/gas); 100,000
+# covers that with room to spare. Every later fee comes from the reward note.
 DUST_UERTH = int(os.getenv("DUST_UERTH", "100000"))
-
-# --- attestation ---
-# iOS App Attest: the app id is TEAMID.bundle-id. An attestation names the app
-# it was made for, so this is what stops another team's app minting grants.
-IOS_APP_ID = os.getenv("IOS_APP_ID", "XD8VH8WKVX.network.erth.EarthWallet")
-# Accept keys made in App Attest's development environment — a build run from
-# Xcode. Still our team's signed app on a real device; TestFlight and the App
-# Store use production. Turn off once nobody is testing from Xcode.
-APP_ATTEST_ALLOW_DEVELOPMENT = os.getenv("APP_ATTEST_ALLOW_DEVELOPMENT", "true").lower() == "true"
-
-# Android key attestation: the package the attestation must name, and the
-# SHA-256 digests of the certificates our APKs are signed with, comma-separated
-# hex (colons allowed, as keytool and Play Console print them). Include both the
-# upload/release key and, if Play App Signing is on, Play's app-signing key: a
-# Play install is signed with the latter, a sideloaded release with the former.
-# Unset, /gas/android answers 503 and iOS is unaffected.
-ANDROID_PACKAGE = os.getenv("ANDROID_PACKAGE", "network.erth.wallet")
-ANDROID_SIGNING_CERT_SHA256 = frozenset(
-    bytes.fromhex(d.replace(":", "").strip())
-    for d in os.getenv("ANDROID_SIGNING_CERT_SHA256", "").split(",")
-    if d.strip()
-)
-# Refuse phones with an unlocked bootloader or unverified boot. On such a phone
-# the OS can lie to the secure hardware about which app is asking.
-ANDROID_REQUIRE_LOCKED_BOOTLOADER = os.getenv("ANDROID_REQUIRE_LOCKED_BOOTLOADER", "true").lower() == "true"
 
 # `earthd gas-check`: the chain release's binary, the node whose state it reads,
 # and a writable home (earthd insists on one, and the service user has none).
@@ -70,15 +41,10 @@ GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
 # Checks run one at a time (memory); beyond this many waiting, refuse with 503.
 GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
 
-# How long a challenge stays usable, and how many may be outstanding at once.
-CHALLENGE_TTL_SECONDS = int(os.getenv("CHALLENGE_TTL_SECONDS", "300"))
-CHALLENGE_MAX_PENDING = int(os.getenv("CHALLENGE_MAX_PENDING", "10000"))
-
-# Rolling 24-hour payout limits, per address and for the service as a whole.
-# An attestation proves a real device, not a new human: one phone can attest
-# for as many fresh addresses as it likes, so the daily cap is what bounds that.
-GRANT_MAX_PER_ADDRESS_PER_DAY = int(os.getenv("GRANT_MAX_PER_ADDRESS_PER_DAY", "3"))
-GRANT_MAX_PER_DAY = int(os.getenv("GRANT_MAX_PER_DAY", "500"))
+# Rolling 24-hour payout limit for /gas/register. A grant needs a passport the
+# chain would register and is once per passport per month, so this bounds
+# what a run of fresh (or stolen) passports can drain from the hot wallet.
+REGISTER_GRANT_MAX_PER_DAY = int(os.getenv("REGISTER_GRANT_MAX_PER_DAY", "500"))
 
 # Seconds any one request to the chain's REST endpoint may take. Sends are
 # serialised, so without a bound a single hung request stalls every payout.

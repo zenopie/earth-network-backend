@@ -1,16 +1,12 @@
 """Paying gas grants from the hot wallet on the earth chain.
 
-Two shapes of payment:
+One shape of payment:
 
 - shield_dust: a MsgShield of the dust into the shielded pool, as a note owned
   by whoever holds the opening of the pc the app sent. This is the
   registration grant. A private tx is unsigned and pays its fee from a note,
   so a new human needs a note, not an account; and the hot wallet learns only
   that some note was funded, never the account or key that will spend it.
-- send_dust: a bank send to an address, for the device-attestation grants
-  that predate the shielded pool. Dust rather than a fee grant, because an
-  address with no on-chain account cannot sign at all: the ante handler
-  rejects an unknown signer before it looks at who pays the fee.
 """
 import asyncio
 import logging
@@ -22,7 +18,6 @@ from cosmpy.aerial.client.utils import prepare_and_broadcast_basic_transaction
 from cosmpy.aerial.exceptions import BroadcastError, QueryTimeoutError
 from cosmpy.aerial.tx import Transaction
 from cosmpy.aerial.wallet import LocalWallet
-from cosmpy.crypto.address import Address
 
 import config
 from services import shielded_msg
@@ -110,29 +105,13 @@ class SendUnresolved(Exception):
         self.tx_hash = tx_hash
 
 
-async def send_dust(address: str) -> str:
-    """Sends DUST_UERTH to address. Returns the tx hash.
-
-    Runs the blocking cosmpy call on a worker thread so the event loop keeps
-    serving callbacks, but holds the lock across it so sends stay serialised.
-
-    Raises SendUnresolved when the transaction reached the chain but its result
-    could not be read, and an ordinary exception when it demonstrably did not
-    move any coins.
-    """
-    if _client is None or _wallet is None:
-        raise RuntimeError("chain service not initialised")
-
-    destination = Address(address)  # raises on a malformed bech32 address
-
-    async with _send_lock:
-        return await asyncio.to_thread(_send_blocking, destination)
-
-
 async def shield_dust(pc: bytes, ciphertext: bytes) -> str:
     """Shields DUST_UERTH from the hot wallet into a note to pc. Returns the tx hash.
 
-    The same contract as send_dust: SendUnresolved when the transaction may
+    Runs the blocking cosmpy call on a worker thread so the event loop keeps
+    serving, but holds the lock across it so sends stay serialised.
+
+    Raises SendUnresolved when the transaction may
     have landed, an ordinary exception when it demonstrably moved nothing.
     """
     if _client is None or _wallet is None:
@@ -148,10 +127,6 @@ def _shield_blocking(pc: bytes, ciphertext: bytes) -> str:
         return prepare_and_broadcast_basic_transaction(_client, tx, _wallet)
 
     return _broadcast(submit)
-
-
-def _send_blocking(destination: Address) -> str:
-    return _broadcast(lambda: _client.send_tokens(destination, config.DUST_UERTH, config.EARTH_DENOM, _wallet))
 
 
 def _broadcast(submit) -> str:
