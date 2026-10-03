@@ -263,7 +263,11 @@ blocks are replayed for the indexer.
 ## Watch the wallet
 
 `/health` reports `grants_remaining`. When the hot wallet runs dry every grant
-fails after the registration checks out. Alert on it.
+fails after the registration checks out. Alert on it. The balance is read
+in the background every `HEALTH_REFRESH_SECONDS` (30) and served from
+memory with `Cache-Control: public, max-age=30` (`read_at` says when), so a
+request never reaches the LCD (audit-5 L3); `"status": "degraded"` means
+the last read failed.
 
 ## Privacy indexer
 

@@ -125,6 +125,9 @@ REGISTER_SWITCH_GRANT_MAX_PER_DAY = int(os.getenv("REGISTER_SWITCH_GRANT_MAX_PER
 # Seconds any one request to the chain's REST endpoint may take. Sends are
 # serialised, so without a bound a single hung request stalls every payout.
 CHAIN_HTTP_TIMEOUT = float(os.getenv("CHAIN_HTTP_TIMEOUT", "15"))
+# /health serves the hot wallet's balance as read this often in the
+# background (services/health), cacheable for as long.
+HEALTH_REFRESH_SECONDS = float(os.getenv("HEALTH_REFRESH_SECONDS", "30"))
 
 # --- storage ---
 # Replay protection for grant ids, and the history the daily caps count.

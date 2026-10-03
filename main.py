@@ -11,6 +11,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 
 import config
 from routers import gas, privacy
@@ -39,16 +40,18 @@ _stop = asyncio.Event()
 _indexer_task: asyncio.Task | None = None
 _indexer = None
 _known_dsc_task: asyncio.Task | None = None
+_health_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _indexer_task, _indexer, _known_dsc_task
+    global _indexer_task, _indexer, _known_dsc_task, _health_task
     if config.GAS_ENABLED:
         chain.init()
-        from services import knowndsc
+        from services import health as health_mod, knowndsc
 
         _known_dsc_task = asyncio.create_task(knowndsc.run(_stop))
+        _health_task = asyncio.create_task(health_mod.run(_stop))
     if config.INDEXER_ENABLED:
         from services.privacy import indexer
 
@@ -61,6 +64,8 @@ async def shutdown() -> None:
     _stop.set()
     if _known_dsc_task is not None:
         await _known_dsc_task
+    if _health_task is not None:
+        await _health_task
     if _indexer_task is not None:
         await _indexer_task
         await _indexer.rpc.close()
@@ -72,22 +77,14 @@ def health():
     """Reports the hot wallet's balance — the thing that silently stops onboarding.
 
     When this runs dry every grant fails: the registration checks out and the
-    shield does not. Worth alerting on.
+    shield does not. Worth alerting on. The balance is read in the
+    background every HEALTH_REFRESH_SECONDS (services/health); a request
+    never reaches the LCD, and the answer is cacheable for as long.
     """
     if not config.GAS_ENABLED:
-        return {"status": "ok", "gas": "disabled"}
-    try:
-        remaining = chain.balance()
-    except Exception:
-        # Logged, not returned. This endpoint is reachable by anyone who can
-        # reach the service, and a cosmpy exception carries the node URL and
-        # internals that are nobody else's business.
-        logger.exception("health check could not read the hot wallet balance")
-        return {"status": "degraded"}
-    return {
-        "status": "ok",
-        "wallet": chain.wallet_address(),
-        "balance_uerth": remaining,
-        "dust_uerth": config.DUST_UERTH,
-        "grants_remaining": remaining // config.DUST_UERTH if config.DUST_UERTH else 0,
-    }
+        body = {"status": "ok", "gas": "disabled"}
+    else:
+        from services import health as health_mod
+
+        body = health_mod.snapshot()
+    return JSONResponse(body, headers={"Cache-Control": f"public, max-age={int(config.HEALTH_REFRESH_SECONDS)}"})

@@ -66,7 +66,7 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
 - [x] L12 base image by digest; requirements.lock (51 packages, all hashes,
       bin/lock-requirements.py) installed --require-hashes --only-binary;
       build-essential dropped (every package has a wheel)
-- [ ] L3 /health cached
+- [x] L3 /health serves a background reading (every 30 s), cacheable
 - [ ] L6 halted index: 503 on {base}/*
 - [ ] L7 blocks table pruned
 - [ ] L4 handle refresh bounded, off the loop; L5 stale flag
