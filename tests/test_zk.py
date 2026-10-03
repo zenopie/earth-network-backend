@@ -102,3 +102,11 @@ def test_stake_commitments_and_tree():
         assert hx(cm) == VEC["stake_cms"][i]
         t.append(cm)
         assert hx(t.root()) == want
+
+
+def test_registration_binding_matches_go():
+    v = VEC["registration_binding"]
+    idc_, a, e = (int(v[k], 16) for k in ("idc", "pc_anml", "pc_erth"))
+    assert hx(privacy.registration_binding(idc_, a, e, 0)) == v["none"]
+    aff = privacy.bytes_field(bytes.fromhex(v["affiliate_hex"]))
+    assert hx(privacy.registration_binding(idc_, a, e, aff)) == v["affiliate"]

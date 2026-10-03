@@ -18,6 +18,8 @@ TAG_CM = tag("earth.cm")
 TAG_ASSET = tag("earth.asset")
 TAG_STAKE = tag("earth.stake")
 TAG_SPC = tag("earth.spc")
+TAG_REG = tag("earth.reg")
+TAG_BYTES = tag("earth.bytes")
 
 
 def H(*xs: int) -> int:
@@ -81,3 +83,14 @@ def stake_pc(owner: int, rho: int, rcm: int) -> int:
 def stake_cm(asset: int, amount: int, spc: int) -> int:
     """privacy.StakeCM: a stake tree leaf, asset = asset_id(derth/<valoper> or unbond/<valoper>/<epoch>)."""
     return H(TAG_STAKE, asset, amount, spc)
+
+
+def bytes_field(b: bytes) -> int:
+    """privacy.Bytes: H(TAG_BYTES, len, 31-byte chunks...)."""
+    return H(TAG_BYTES, len(b), *_chunks31(b))
+
+
+def registration_binding(idc_: int, pc_anml: int, pc_erth: int, affiliate: int) -> int:
+    """privacy.RegistrationBinding: the passport proof's address input.
+    affiliate is 0 for none, else bytes_field(its address bytes)."""
+    return H(TAG_REG, idc_, pc_anml, pc_erth, affiliate)

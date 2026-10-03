@@ -80,6 +80,20 @@ func main() {
 	out["stake_cms"] = scms
 	out["stake_roots"] = sroots
 
+	// The registration binding: the passport proof's address input, as
+	// personhood's MsgRegister.Binding computes it (affiliate 0 for none, else
+	// Bytes(its address bytes)). The gas backend checks it before gas-check.
+	aff := make([]byte, 20)
+	for i := range aff {
+		aff[i] = byte(i + 1)
+	}
+	out["registration_binding"] = map[string]string{
+		"idc": hx(u(11)), "pc_anml": hx(u(12)), "pc_erth": hx(u(13)),
+		"none":          hx(privacy.RegistrationBinding(u(11), u(12), u(13), fr.Element{})),
+		"affiliate_hex": hex.EncodeToString(aff),
+		"affiliate":     hx(privacy.RegistrationBinding(u(11), u(12), u(13), privacy.Bytes(aff))),
+	}
+
 	// MsgShield as the chain encodes it, for the backend's hand-built proto.
 	shield := shieldedtypes.MsgShield{
 		Sender:     "earth1qqqsyqcyq5rqwzqfpg9scrgwpugpzysncc2uls",
