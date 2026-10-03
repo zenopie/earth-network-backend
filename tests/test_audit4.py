@@ -183,10 +183,14 @@ def test_a_copied_commitment_without_its_certificate_gets_no_priority(client, ch
     """The PoC's flood: a known commitment beside junk (or another signer's) dsc_der."""
     monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 5)
     knowndsc.set_known({privacy.field_bytes(DSC_KEY)})
-    for i, der in enumerate(["AAAA", DE]):
-        r = post(client, with_pow(body(70000 + i, der=der), config.POW_RESERVED_BITS))
-        assert r.status_code == 200
-        assert chain["priority"][-1] is False, "dsc_der is not the signer public_signals names"
+    r = post(client, with_pow(body(70000, der="AAAA"), config.POW_RESERVED_BITS))
+    assert r.status_code == 200
+    assert chain["priority"][-1] is False, "no commitment (not a certificate): the ordinary lane"
+    # Another signer's certificate: refused before the queue (audit-5 M1).
+    asked = len(chain["priority"])
+    r = post(client, with_pow(body(70001, der=DE), config.POW_RESERVED_BITS))
+    assert r.status_code == 400 and "dsc_der is not" in r.json()["message"]
+    assert len(chain["priority"]) == asked
     assert post(client, with_pow(body(70010, der=DSC_DER_B64), config.POW_RESERVED_BITS)).status_code == 200
     assert chain["priority"][-1] is True
 

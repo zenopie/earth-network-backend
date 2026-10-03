@@ -161,8 +161,12 @@ same request takes the ordinary lane. The known-DSC set is x/personhood's
 request's `dsc_der` must also be that signer: the backend recomputes the
 chain's DSC commitment from the certificate (`services/dsccommit`, the
 port of `x/pki/certs.DscCommitmentOf`, Brainpool and explicit-parameter
-curves included, pinned to the chain's output) and a mismatch takes the
-ordinary lane (audit-4 B1). Both the commitment and the certificate are
+curves included, pinned to the chain's output) and a mismatch is refused
+400 before the queue, since the chain refuses it for certain (audit-4 B1,
+audit-5 M1). The hash runs in a worker thread, one at a time, cached by
+key, and only over a key of at most 512 bytes (RSA 4096, the largest real
+DSC): a larger key, which the chain accepts up to 2048 bytes, takes the
+ordinary lane unhashed. Both the commitment and the certificate are
 public (every registration publishes them), so junk can still copy a real
 pair; that costs a proof of work a request, and **every** refusal of a
 request that held the lane — not only a failed proof: a used binding, a

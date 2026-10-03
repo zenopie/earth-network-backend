@@ -380,7 +380,9 @@ async def register(body: RegisterGrant, request: Request):
     # Document Signer the chain already holds registrations from, not
     # cooling down after failures naming it, with a proof of work, whose
     # dsc_der really is the signer public_signals names (checked last: it
-    # hashes the key, and only a request that paid the work gets that far).
+    # hashes the key, and only a request that paid the work gets that far;
+    # a key past dsccommit.LANE_MAX_KEY_BYTES is never hashed and takes the
+    # ordinary lane).
     candidate = dsc is not None and knowndsc.is_known(dsc) and not ratelimit.dsc_cooling(dsc)
     need = pow.required_bits(shedding=shed is not None)
     bits, digest = 0, None
@@ -396,7 +398,16 @@ async def register(body: RegisterGrant, request: Request):
     if shed and bits < need:
         return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
                                  f"attach a proof of work of {need} bits (GET /gas/pow)")
-    priority = candidate and bits >= need and dsccommit.commitment(dsc_der) == dsc
+    priority = False
+    if candidate and bits >= need:
+        # Off the event loop, one at a time, a key of at most RSA 4096
+        # (audit-5 M1). A certificate that is not the signer it names is
+        # refused here: the chain refuses it for certain ("proof is not
+        # bound to the supplied DSC"), so it is never queued.
+        lane = await dsccommit.lane_commitment(dsc_der)
+        if lane is not None and lane != dsc:
+            return _reply(400, "error", "dsc_der is not the Document Signer public_signals names")
+        priority = lane == dsc
     if (shed or priority) and digest is not None:
         pow.consume(digest)
     else:

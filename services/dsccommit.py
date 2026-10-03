@@ -10,7 +10,9 @@ to the supplied DSC").
 /gas/register uses it to admit a request to the reserved lane only when the
 dsc_der it sends really is the signer whose commitment it names (audit-4
 B1): a commitment is public, so without this junk could copy a known one
-into public_signals[3] beside any certificate at all.
+into public_signals[3] beside any certificate at all. The lane hashes with
+lane_commitment (audit-5 M1): a key of at most LANE_MAX_KEY_BYTES, in a
+worker thread, one at a time, cached by key.
 
 The certificate is parsed the way x/pki/certs.ParseCert does it (leniently:
 Brainpool and explicit-parameter curves, which the `cryptography` package
@@ -18,7 +20,7 @@ refuses, are ~31% of the real ICAO store). Anything this cannot parse, or a
 curve the chain has no tag for, is None: no reserved lane, which is the safe
 answer — the ordinary lane is still open, and gas-check is the authority.
 """
-import hashlib
+import asyncio
 from collections import OrderedDict
 
 from services.zk import poseidon2, privacy
@@ -195,28 +197,69 @@ def commitment_of_key(tag: int, key: bytes) -> bytes:
     return privacy.field_bytes(poseidon2.hash_fields([tag] + list(key)))
 
 
-# sha256(dsc_der) -> commitment or None. A passport's DSC is shared by every
-# passport it signed, and junk reuses one too; the hash is up to ~70 ms of
-# pure Python for the largest key, so it is computed once a certificate.
-_cache: "OrderedDict[bytes, bytes | None]" = OrderedDict()
+# (tag, canonical key) -> commitment. A passport's DSC is shared by every
+# passport it signed; keyed by the key itself, so a certificate re-issued
+# with a new serial or signature over the same key costs nothing again,
+# while a request that varies only the certificate around one key cannot
+# miss the cache.
+_cache: "OrderedDict[tuple[int, bytes], bytes]" = OrderedDict()
 _CACHE_MAX = 512
 
+# The reserved lane's own bound on the key it hashes (audit-5 M1): RSA 4096,
+# the largest real Document Signer key. The chain takes up to
+# MAX_PUBLIC_KEY_BYTES (consensus), and a key between the two still reaches
+# the ordinary lane; only the lane, which hashes on this process, is
+# stricter. Poseidon2 here is pure Python, one field element a byte.
+LANE_MAX_KEY_BYTES = 512
 
-def commitment(dsc_der: bytes) -> bytes | None:
-    """The chain's DSC commitment of a certificate, or None if it has none."""
-    k = hashlib.sha256(dsc_der).digest()
+# One commitment computed at a time, off the event loop: a burst of distinct
+# keys queues here instead of stalling every other request.
+_lock: asyncio.Lock | None = None
+
+
+def _cached(tag: int, key: bytes) -> bytes:
+    k = (tag, key)
     if k in _cache:
         _cache.move_to_end(k)
         return _cache[k]
-    try:
-        value = commitment_of_key(*canonical_key(dsc_der))
-    except ValueError:
-        value = None
+    value = commitment_of_key(tag, key)
     _cache[k] = value
     while len(_cache) > _CACHE_MAX:
         _cache.popitem(last=False)
     return value
 
 
+def commitment(dsc_der: bytes) -> bytes | None:
+    """The chain's DSC commitment of a certificate, or None if it has none."""
+    try:
+        tag, key = canonical_key(dsc_der)
+    except ValueError:
+        return None
+    return _cached(tag, key)
+
+
+async def lane_commitment(dsc_der: bytes) -> bytes | None:
+    """commitment(dsc_der) for the reserved lane: None for a key past
+    LANE_MAX_KEY_BYTES (never hashed), and computed in a worker thread, one
+    at a time, so the hash never runs on the event loop."""
+    global _lock
+    try:
+        tag, key = canonical_key(dsc_der)  # a DER walk: cheap
+    except ValueError:
+        return None
+    if len(key) > LANE_MAX_KEY_BYTES:
+        return None
+    hit = _cache.get((tag, key))
+    if hit is not None:
+        _cache.move_to_end((tag, key))
+        return hit
+    if _lock is None:
+        _lock = asyncio.Lock()
+    async with _lock:
+        return await asyncio.to_thread(_cached, tag, key)
+
+
 def reset() -> None:
+    global _lock
     _cache.clear()
+    _lock = None
