@@ -54,7 +54,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
 - [x] M3 signer demotion removed: one priority check per DSC commitment;
       every refusal counts per client (3/h, then 429 before the queue);
       network budget 30 -> 5 a minute, country 10 -> 4
-- [ ] M2 PrivacyGate canonical URLs (400 no-store)
+- [x] M2 PrivacyGate canonical URLs (400 no-store); unknown /privacy paths 404
+      no-store at the gate
 - [ ] CORS on /privacy (erth.network, localhost)
 - [ ] L13 count 422s
 - [ ] L1 .dockerignore, L2 lchown, L11 uvicorn flags

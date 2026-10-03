@@ -84,7 +84,10 @@ ends mid-page asks for the page containing its cursor and skips the rows
 it holds. Height-paged streams end at a block boundary, so their cursor
 (next_height) cannot be aligned; their rows are small (32-byte values) and
 they share the limits on sizes, the per-client rate and the concurrency
-cap (services/privacygate) with the rest.
+cap (services/privacygate) with the rest. The gate also refuses (400,
+no-store) any spelling of a URL but the canonical one: unknown or repeated
+parameters, integers with leading zeros, signs or percent-encoding
+(audit-5 M2), so one page is one cache key.
 """
 import base64
 import sqlite3

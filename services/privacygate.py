@@ -17,20 +17,86 @@ the threadpool (40 threads) and held their bodies in memory together
 Page sizes are fixed and cursors aligned (routers/privacy), so the CDN
 collapses every wallet onto the same URLs; deploy/akash/README.md has the
 Cloudflare rate-limit rule that bounds misses before they reach the tunnel.
+
+Canonical URLs only (audit-5 M2). The CDN keys on the full query string,
+so every spelling of a page is another cache entry and another miss: an
+unknown parameter (?cb=1, ?cb=2, ...), a repeated one, or an integer
+spelled any other way than its plain decimal (0001000, %2B1000, +1000).
+FastAPI took all of those as the same page, so one client could keep every
+origin slot busy with misses. The gate answers each with 400, no-store,
+before any handler runs: a query is name=value pairs joined by &, each name
+one the endpoint takes, at most once, each value 0 or a decimal without a
+leading zero, nothing percent-encoded. A path that is not one of the
+streams is 404, no-store. ENDPOINTS must list every /privacy route
+(tests/test_audit5 checks it against the router).
 """
 import json
+import re
 
 import config
 from services import ratelimit
 
 PREFIX = "/privacy"
 
+# Each stream under /privacy/<chain_id>/<genesis>/ and the query parameters it takes.
+ENDPOINTS: dict[str, frozenset[str]] = {
+    "status": frozenset(),
+    "notes": frozenset({"from_pos", "limit"}),
+    "nullifiers": frozenset({"from_height", "limit"}),
+    "identity": frozenset({"from_index", "limit"}),
+    "identity/zeroed": frozenset({"from_height", "limit"}),
+    "roots/latest": frozenset(),
+    "rates": frozenset({"epoch"}),
+    "stake/notes": frozenset({"from_pos", "limit"}),
+    "stake/nullifiers": frozenset({"from_height", "limit"}),
+    "stake/nullifier-tree": frozenset({"from_index", "limit"}),
+    "stake/roots": frozenset({"from_height", "limit"}),
+    "stake/snapshots": frozenset({"from_height", "limit"}),
+    "handles": frozenset({"from_index", "limit"}),
+}
+STATUS = PREFIX + "/status"  # the unkeyed status: no parameters
+_SEGMENT = re.compile(r"[^/]+")
+# A plain decimal: 0, or no leading zero; up to 20 digits (past int64 the
+# handler answers 422).
+_PAIR = re.compile(rb"([a-z_]{1,32})=(0|[1-9][0-9]{0,19})")
 
-async def _refuse(send, status: int, message: str, retry_after: int) -> None:
+
+def endpoint(path: str) -> str | None:
+    """The stream a /privacy path names ("" for the unkeyed status), or None."""
+    if path == STATUS:
+        return ""
+    parts = path[len(PREFIX) + 1:].split("/", 2) if path.startswith(PREFIX + "/") else []
+    if len(parts) == 3 and _SEGMENT.fullmatch(parts[0]) and _SEGMENT.fullmatch(parts[1]) and parts[2] in ENDPOINTS:
+        return parts[2]
+    return None
+
+
+def query_problem(name: str, query: bytes) -> str | None:
+    """Why a query string is not the canonical spelling for stream `name`, or None."""
+    if not query:
+        return None
+    allowed = ENDPOINTS.get(name, frozenset())
+    seen = set()
+    for pair in query.split(b"&"):
+        m = _PAIR.fullmatch(pair)
+        if m is None:
+            return "each parameter must be name=<decimal integer, no leading zero, nothing encoded>"
+        key = m.group(1).decode()
+        if key not in allowed:
+            return f"unknown parameter {key}; this stream takes {sorted(allowed) or 'none'}"
+        if key in seen:
+            return f"parameter {key} given twice"
+        seen.add(key)
+    return None
+
+
+async def _refuse(send, status: int, message: str, retry_after: int | None = None) -> None:
     body = json.dumps({"status": "error", "message": message}).encode()
-    await send({"type": "http.response.start", "status": status,
-                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
-                            (b"cache-control", b"no-store"), (b"retry-after", str(retry_after).encode())]})
+    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+               (b"cache-control", b"no-store")]
+    if retry_after is not None:
+        headers.append((b"retry-after", str(retry_after).encode()))
+    await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
 
 
@@ -54,6 +120,12 @@ class PrivacyGate:
         key = ratelimit.client_key(ratelimit.client_ip(_Request(scope)))
         if not ratelimit.allow_privacy(key):
             return await _refuse(send, 429, "too many requests; slow down", int(config.PRIVACY_IP_WINDOW_SECONDS))
+        name = endpoint(scope["path"])
+        if name is None:
+            return await _refuse(send, 404, "no such stream; read base from /privacy/status")
+        problem = query_problem(name, scope.get("query_string") or b"")
+        if problem is not None:
+            return await _refuse(send, 400, f"not a canonical URL: {problem}")
         if self.in_flight >= config.PRIVACY_MAX_CONCURRENT:
             return await _refuse(send, 503, "busy; try again shortly", 1)
         self.in_flight += 1

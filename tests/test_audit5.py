@@ -147,3 +147,59 @@ def test_the_network_budget_fits_what_the_lease_can_verify():
     # ~10 s an earthd run on 0.1 CPU, one at a time: ~6 a minute at most.
     assert 0 < config.REGISTER_REFUSALS_PER_MINUTE <= 6
     assert config.REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE <= config.REGISTER_REFUSALS_PER_MINUTE
+
+
+# --- M2: one URL per page ------------------------------------------------------
+
+from tests.test_audit4 import BASE, notes_index  # noqa: E402,F401
+
+
+@pytest.mark.parametrize("query", [
+    "from_pos=1000&limit=1000&cb=1",       # an unknown parameter
+    "from_pos=1000&limit=1000&cb=2",
+    "from_pos=0001000&limit=1000",         # leading zeros
+    "from_pos=%2B1000&limit=01000",        # encoded +, leading zero
+    "from_pos=+1000",
+    "from_pos=%31000",                     # an encoded digit
+    "from_pos=1000&from_pos=1000",         # repeated
+    "from_pos=1000&limit=1000&",           # an empty pair
+    "from_pos=",
+    "from_pos=-0",
+    "epoch=1",                             # another stream's parameter
+])
+def test_only_the_canonical_spelling_of_a_page_reaches_a_handler(notes_index, query):
+    r = notes_index.get(f"{BASE}/notes?{query}")
+    assert r.status_code == 400, query
+    assert r.headers["cache-control"] == "no-store"
+    assert "canonical" in r.json()["message"]
+
+
+def test_the_canonical_page_is_served(notes_index):
+    rows = set()
+    for query in ("from_pos=1000&limit=1000", "limit=1000&from_pos=1000", "from_pos=1000", "from_pos=0"):
+        r = notes_index.get(f"{BASE}/notes?{query}")
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+        rows.add(r.json()["notes"][0][0])
+    assert rows == {1000, 0}
+    assert notes_index.get(f"{BASE}/status").status_code == 200
+    r = notes_index.get("/privacy/status?cb=1")
+    assert r.status_code == 400 and r.headers["cache-control"] == "no-store"
+    r = notes_index.get(f"{BASE}/notes/")
+    assert r.status_code == 404 and r.headers["cache-control"] == "no-store"
+
+
+def test_the_gate_knows_every_privacy_route():
+    from fastapi import FastAPI
+
+    from routers import privacy as privacy_router
+    from services import privacygate
+
+    app = FastAPI()
+    app.include_router(privacy_router.router)
+    base = "/privacy/{chain_id}/{genesis}/"
+    for path, item in app.openapi()["paths"].items():
+        name = "" if path == "/privacy/status" else path[len(base):]
+        assert path == "/privacy/status" or path.startswith(base)
+        params = {p["name"] for p in item["get"].get("parameters", []) if p["in"] == "query"}
+        assert params == set(privacygate.ENDPOINTS.get(name, frozenset())), path
+    assert len(app.openapi()["paths"]) == len(privacygate.ENDPOINTS) + 1

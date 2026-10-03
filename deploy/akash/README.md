@@ -59,8 +59,12 @@ the tunnel. In the erth.network zone:
 
 1. **Cache rule** — *Caching → Cache Rules*: `starts_with(http.request.uri.path,
    "/privacy/")` → *Eligible for cache*, *Edge TTL: use cache-control header
-   if present*, *Cache key: include the query string* (all of it; the origin
-   refuses any other limit/cursor, so the key space is the page set). Without
+   if present*, *Cache key: include the query string* (all of it). The origin
+   answers only the canonical spelling of a page (audit-5 M2): an unknown
+   or repeated parameter, a non-page limit or cursor, or an integer with a
+   leading zero, a sign or percent-encoding is 400 no-store from the gate,
+   before any handler or in-flight slot. So the cacheable key space is the
+   page set, and junk spellings cost the origin a regex, not a page. Without
    it Cloudflare does not cache JSON and every page is a miss.
 2. **Rate-limiting rule** — *Security → WAF → Rate limiting rules*:
    - If: `starts_with(http.request.uri.path, "/privacy/")`
