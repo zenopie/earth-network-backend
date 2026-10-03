@@ -107,6 +107,17 @@ def test_stake_commitments_and_tree():
 def test_registration_binding_matches_go():
     v = VEC["registration_binding"]
     idc_, a, e = (int(v[k], 16) for k in ("idc", "pc_anml", "pc_erth"))
-    assert hx(privacy.registration_binding(idc_, a, e, 0)) == v["none"]
+    ca, ce = bytes.fromhex(v["ct_anml_hex"]), bytes.fromhex(v["ct_erth_hex"])
+    assert hx(privacy.registration_binding(idc_, a, ca, e, ce, 0)) == v["none"]
     aff = privacy.bytes_field(bytes.fromhex(v["affiliate_hex"]))
-    assert hx(privacy.registration_binding(idc_, a, e, aff)) == v["affiliate"]
+    assert hx(privacy.registration_binding(idc_, a, ca, e, ce, aff)) == v["affiliate"]
+    # The binding covers each ciphertext.
+    assert privacy.registration_binding(idc_, a, ca[:-1] + b"\x00", e, ce, 0) != int(v["none"], 16)
+    assert privacy.registration_binding(idc_, a, ca, e, ce[:-1] + b"\x00", 0) != int(v["none"], 16)
+
+
+def test_registration_binding_pinned_to_chain_test():
+    # chain zk/privacy TestRegistrationBindingPinned (fced976).
+    want = "20ce5fccf5e6e20a8a7b80f7565e41a7c73dbb16ac5e53746e7234ba8b305b0c"
+    assert VEC["registration_binding"]["pinned"] == want
+    assert hx(privacy.registration_binding(1, 2, b"anml", 3, b"erth", 0)) == want

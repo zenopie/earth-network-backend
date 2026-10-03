@@ -90,7 +90,8 @@ def bytes_field(b: bytes) -> int:
     return H(TAG_BYTES, len(b), *_chunks31(b))
 
 
-def registration_binding(idc_: int, pc_anml: int, pc_erth: int, affiliate: int) -> int:
-    """privacy.RegistrationBinding: the passport proof's address input.
+def registration_binding(idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, ct_erth: bytes, affiliate: int) -> int:
+    """privacy.RegistrationBinding: the passport proof's address input,
+    H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
     affiliate is 0 for none, else bytes_field(its address bytes)."""
-    return H(TAG_REG, idc_, pc_anml, pc_erth, affiliate)
+    return H(TAG_REG, idc_, pc_anml, bytes_field(ct_anml), pc_erth, bytes_field(ct_erth), affiliate)

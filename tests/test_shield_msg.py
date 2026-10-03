@@ -16,7 +16,7 @@ def test_encoding_matches_the_chain():
 
 def test_packs_under_the_chains_type_url():
     any_msg = any_pb2.Any()
-    any_msg.Pack(shielded_msg.build(VEC["sender"], 1, "uerth", b"\x00" * 32), type_url_prefix="/")
+    any_msg.Pack(shielded_msg.build(VEC["sender"], 1, "uerth", b"\x00" * 32, b"\x00" * 177), type_url_prefix="/")
     assert any_msg.type_url == shielded_msg.TYPE_URL
 
 

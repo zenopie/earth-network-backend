@@ -38,15 +38,22 @@ def today_yymmdd(offset_days: int = 0) -> int:
 
 
 PC_GAS = (0x1234).to_bytes(32, "big")
+# Amount-blind v2 ciphertexts: exactly 177 bytes each.
+CT_ANML, CT_ERTH, CT_GAS = bytes([1]) * 177, bytes([2]) * 177, bytes([3]) * 177
 
 
-def signals(nf: int = NF, date: int | None = None, idc=11, pc_anml=12, pc_erth=13, affiliate: str = "") -> list[str]:
+def b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+def signals(nf: int = NF, date: int | None = None, idc=11, pc_anml=12, pc_erth=13, affiliate: str = "",
+            ct_anml: bytes = CT_ANML, ct_erth: bytes = CT_ERTH) -> list[str]:
     """[current_date, binding, nullifier, dsc_key], the earth-1 lean_poa layout."""
     aff = 0
     _, data = bech32.bech32_decode(affiliate) if affiliate else (None, None)
     if data is not None:
         aff = privacy.bytes_field(bytes(bech32.convertbits(data, 5, 8, False)))
-    binding = privacy.registration_binding(idc, pc_anml, pc_erth, aff)
+    binding = privacy.registration_binding(idc, pc_anml, ct_anml, pc_erth, ct_erth, aff)
     return [str(today_yymmdd() if date is None else date), str(binding), str(nf), "7"]
 
 
@@ -54,8 +61,8 @@ def reg_body(gas_pc: bytes = PC_GAS, nf: int = NF, **over):
     body = {"proof": B64, "public_signals": signals(nf, affiliate=over.get("affiliate", "")),
             "signature_algorithm": "lean_poa", "dsc_der": B64,
             "idc": field_b64(11), "pc_anml": field_b64(12), "pc_erth": field_b64(13),
-            "ciphertext_anml": B64, "ciphertext_erth": "",
-            "pc_gas": base64.b64encode(gas_pc).decode(), "ciphertext_gas": B64}
+            "ciphertext_anml": b64(CT_ANML), "ciphertext_erth": b64(CT_ERTH),
+            "pc_gas": base64.b64encode(gas_pc).decode(), "ciphertext_gas": b64(CT_GAS)}
     body.update(over)
     return body
 
@@ -95,11 +102,12 @@ def test_register_grant_shields_to_pc_gas(client, shields, chain_says):
     resp = client.post("/gas/register", json=reg_body())
     assert resp.status_code == 200, resp.text
     assert resp.json()["tx_hash"] == "HASH1"
-    assert shields == [(PC_GAS, b"x")]
+    assert shields == [(PC_GAS, CT_GAS)]
     asked = chain_says["asked"][0]
     assert "creator" not in asked and "pc_gas" not in asked
     assert asked["idc"] == field_b64(11) and asked["pc_erth"] == field_b64(13)
     assert asked["proof"] == B64
+    assert (asked["ciphertext_anml"], asked["ciphertext_erth"]) == (b64(CT_ANML), b64(CT_ERTH))
 
 
 def test_register_stores_only_the_passport_key(client, shields, chain_says):
@@ -152,6 +160,11 @@ def test_register_unavailable_is_503_not_a_refusal(client, shields, chain_says):
     {"pc_gas": base64.b64encode(P.to_bytes(32, "big")).decode()},  # not canonical
     {"idc": B64},
     {"ciphertext_gas": base64.b64encode(b"\x00" * 1025).decode()},
+    {"ciphertext_gas": ""},  # required
+    {"ciphertext_gas": b64(CT_GAS[:-1])},  # not exactly 177
+    {"ciphertext_gas": b64(CT_GAS + b"\x00")},
+    {"ciphertext_anml": ""},
+    {"ciphertext_erth": b64(CT_ERTH[:-1])},
     {"affiliate": "cosmos1abc"},
 ])
 def test_register_rejects_malformed_fields_before_asking(client, shields, chain_says, over):
@@ -259,6 +272,9 @@ def test_affiliate_is_part_of_the_binding(client, shields, chain_says):
 @pytest.mark.parametrize("over", [
     {"pc_erth": field_b64(99)},  # proof made for other notes
     {"idc": field_b64(99)},
+    # same notes, other ciphertexts: the binding covers Bytes(ct_anml), Bytes(ct_erth)
+    {"ciphertext_anml": b64(bytes([9]) * 177)},
+    {"ciphertext_erth": b64(CT_ANML)},
 ])
 def test_a_proof_bound_to_other_notes_is_refused_before_asking(client, shields, chain_says, over):
     resp = client.post("/gas/register", json=reg_body(**over))
@@ -359,3 +375,17 @@ def test_the_window_slides():
         assert ratelimit.allow("x", now=1000.0 + i)
     assert not ratelimit.allow("x", now=1000.0 + lim)
     assert ratelimit.allow("x", now=1000.0 + config.REGISTER_IP_WINDOW_SECONDS + 0.5)
+
+
+@pytest.mark.parametrize("field", ["ciphertext_anml", "ciphertext_erth", "ciphertext_gas"])
+def test_every_ciphertext_is_required(client, shields, chain_says, field):
+    body = reg_body()
+    del body[field]
+    assert client.post("/gas/register", json=body).status_code == 422
+    assert chain_says["asked"] == []
+
+
+def test_shield_dust_refuses_a_ciphertext_the_chain_would():
+    import asyncio
+    with pytest.raises(ValueError):
+        asyncio.run(chain.shield_dust(PC_GAS, b"x" * 176))

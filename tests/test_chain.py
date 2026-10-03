@@ -10,6 +10,8 @@ from cosmpy.aerial.client import LedgerClient
 import config
 from services import chain
 
+CT = bytes(range(177))
+
 
 @pytest.fixture
 def silent_server():
@@ -57,7 +59,7 @@ def _send_with(monkeypatch, exc):
     monkeypatch.setattr(chain, "prepare_and_broadcast_basic_transaction", raising)
     monkeypatch.setattr(chain, "_client", object())
     monkeypatch.setattr(chain, "_wallet", type("W", (), {"address": lambda self: "earth1x"})())
-    return chain._shield_blocking(b"\x07" * 32, b"")
+    return chain._shield_blocking(b"\x07" * 32, CT)
 
 
 def test_a_read_timeout_on_broadcast_is_unresolved(monkeypatch):
@@ -108,12 +110,12 @@ def test_shield_builds_msg_shield_from_the_hot_wallet(monkeypatch):
     monkeypatch.setattr(chain, "prepare_and_broadcast_basic_transaction", fake_broadcast)
     monkeypatch.setattr(chain, "_client", object())
     monkeypatch.setattr(chain, "_wallet", wallet)
-    assert chain._shield_blocking(b"\x07" * 32, b"ct") == "ABC"
+    assert chain._shield_blocking(b"\x07" * 32, CT) == "ABC"
     (msg,) = seen["msgs"]
     assert isinstance(msg, shielded_msg.MsgShield)
     assert msg.sender == str(wallet.address())
     assert (msg.amount.denom, msg.amount.amount) == (config.EARTH_DENOM, str(config.DUST_UERTH))
-    assert msg.pc == b"\x07" * 32 and msg.ciphertext == b"ct"
+    assert msg.pc == b"\x07" * 32 and msg.ciphertext == CT
 
 
 def test_shield_read_timeout_is_unresolved(monkeypatch):
@@ -124,4 +126,4 @@ def test_shield_read_timeout_is_unresolved(monkeypatch):
     monkeypatch.setattr(chain, "_client", object())
     monkeypatch.setattr(chain, "_wallet", type("W", (), {"address": lambda self: "earth1x"})())
     with pytest.raises(chain.SendUnresolved):
-        chain._shield_blocking(b"\x07" * 32, b"")
+        chain._shield_blocking(b"\x07" * 32, CT)

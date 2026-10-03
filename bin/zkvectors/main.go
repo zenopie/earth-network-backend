@@ -87,11 +87,18 @@ func main() {
 	for i := range aff {
 		aff[i] = byte(i + 1)
 	}
+	ctA, ctE := make([]byte, 177), make([]byte, 177)
+	for i := range ctA {
+		ctA[i], ctE[i] = byte(i), byte(255-i)
+	}
 	out["registration_binding"] = map[string]string{
 		"idc": hx(u(11)), "pc_anml": hx(u(12)), "pc_erth": hx(u(13)),
-		"none":          hx(privacy.RegistrationBinding(u(11), u(12), u(13), fr.Element{})),
+		"ct_anml_hex": hex.EncodeToString(ctA), "ct_erth_hex": hex.EncodeToString(ctE),
+		"none":          hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, fr.Element{})),
 		"affiliate_hex": hex.EncodeToString(aff),
-		"affiliate":     hx(privacy.RegistrationBinding(u(11), u(12), u(13), privacy.Bytes(aff))),
+		"affiliate":     hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, privacy.Bytes(aff))),
+		// TestRegistrationBindingPinned's own inputs and value.
+		"pinned": hx(privacy.RegistrationBinding(u(1), u(2), []byte("anml"), u(3), []byte("erth"), fr.Element{})),
 	}
 
 	// MsgShield as the chain encodes it, for the backend's hand-built proto.
@@ -99,7 +106,10 @@ func main() {
 		Sender:     "earth1qqqsyqcyq5rqwzqfpg9scrgwpugpzysncc2uls",
 		Amount:     sdk.NewCoin("uerth", math.NewInt(100000)),
 		Pc:         privacy.FieldBytes(pc),
-		Ciphertext: []byte("ciphertext"),
+		Ciphertext: ctA, // exactly 177 bytes, as ValidateBasic requires
+	}
+	if err := shield.ValidateBasic(); err != nil {
+		panic(err)
 	}
 	bz, err := shield.Marshal()
 	if err != nil {

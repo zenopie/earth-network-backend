@@ -6,8 +6,13 @@ is an unsigned private tx that pays its fee from a shielded note, so what a
 new human needs is a note:
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
-                           idc, pc_anml, pc_erth, ciphertext_anml?, ciphertext_erth?,
-                           affiliate?, pc_gas, ciphertext_gas?}
+                           idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
+                           affiliate?, pc_gas, ciphertext_gas}
+
+Every ciphertext is a note's amount-blind v2 ciphertext (zk/privacy
+EncryptBlindNote), exactly 177 bytes, as the chain requires of every note it
+mints: ciphertext_anml / ciphertext_erth exactly as in MsgRegister (the proof's
+binding covers them), ciphertext_gas the gas note's own.
 
 takes the registration the app is about to broadcast, asks the chain's own
 checks whether it would be accepted (`earthd gas-check registration`,
@@ -62,13 +67,14 @@ class RegisterGrant(BaseModel):
     idc: str
     pc_anml: str
     pc_erth: str
-    ciphertext_anml: str = ""
-    ciphertext_erth: str = ""
+    ciphertext_anml: str
+    ciphertext_erth: str
     affiliate: str = ""
     # Where the gas goes: the pc of a note the app will spend MsgRegister's
-    # fee from, and optionally that note encrypted to itself.
+    # fee from, and that note's amount-blind v2 ciphertext (MsgShield's,
+    # required).
     pc_gas: str
-    ciphertext_gas: str = ""
+    ciphertext_gas: str
 
 
 def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse:
@@ -153,8 +159,9 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
         raise _Refuse(400, f"proof must be 1..{MAX_PROOF_BYTES} bytes")
     if not 0 < len(dsc_der) <= MAX_DSC_DER_BYTES:
         raise _Refuse(400, f"dsc_der must be 1..{MAX_DSC_DER_BYTES} bytes")
-    if any(len(c) > shielded_msg.MAX_CIPHERTEXT_BYTES for c in ciphertexts + [ciphertext_gas]):
-        raise _Refuse(400, f"a ciphertext exceeds {shielded_msg.MAX_CIPHERTEXT_BYTES} bytes")
+    if any(len(c) != shielded_msg.BLIND_CIPHERTEXT_BYTES for c in ciphertexts + [ciphertext_gas]):
+        raise _Refuse(400, f"each ciphertext must be an amount-blind v2 ciphertext of exactly "
+                           f"{shielded_msg.BLIND_CIPHERTEXT_BYTES} bytes")
     if not 0 < len(body.signature_algorithm.encode()) <= MAX_SIGNATURE_ALGORITHM_BYTES:
         raise _Refuse(400, "signature_algorithm is missing or too long")
     affiliate = body.affiliate.strip()
@@ -175,10 +182,10 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
     if max(config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX) >= n:
         raise _Refuse(400, "too few public signals for a passport proof")
 
-    # The binding: the proof's address input must be this msg's idc and pcs
-    # (and affiliate). Someone replaying another registration's proof with
+    # The binding: the proof's address input must be this msg's idc, pcs,
+    # note ciphertexts (and affiliate). Someone replaying another registration's proof with
     # notes of their own fails here, as on chain.
-    if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(idc, pc_anml, pc_erth, affiliate_field):
+    if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(idc, pc_anml, ciphertexts[0], pc_erth, ciphertexts[1], affiliate_field):
         raise _Refuse(400, "proof is bound to a different identity and notes than this registration names")
 
     try:

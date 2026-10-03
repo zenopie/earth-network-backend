@@ -21,15 +21,19 @@ is the only grant. The device-attestation grants (`/gas/challenge`,
 ## Endpoints
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
-                           idc, pc_anml, pc_erth, ciphertext_anml?, ciphertext_erth?,
-                           affiliate?, pc_gas, ciphertext_gas?}
+                           idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
+                           affiliate?, pc_gas, ciphertext_gas}
     GET  /health          hot wallet balance and how many grants are left in it
 
 `/gas/register` takes the MsgRegister the app is about to broadcast
 (bytes as standard base64, its fee bundle left out; `earthd gas-check`
 ignores the bundle, so it may be absent or empty) and, if the chain would
 accept it, shields `DUST_UERTH` from the hot wallet into a note to `pc_gas` (a
-`MsgShield`; `ciphertext_gas` is emitted for the app's own trial decryption).
+`MsgShield` carrying `ciphertext_gas`, which the chain emits for the app's own
+trial decryption). Every ciphertext is required and is a note's amount-blind
+v2 ciphertext (`zk/privacy.EncryptBlindNote`), exactly 177 bytes:
+`ciphertext_anml`/`ciphertext_erth` are MsgRegister's own (the proof's binding
+covers them), `ciphertext_gas` is the gas note's.
 The app then broadcasts MsgRegister paying its fee from that note. Once per
 passport per month, keyed `passport:<nullifier>:<YYYY-MM>`; the replay table
 stores that key and nothing else — no address, no pc. The check is the
@@ -52,13 +56,14 @@ everything that can refuse a request without one runs first, in this order:
    default, right only where Cloudflare is the sole ingress — the Akash lease
    is tunnel-only), otherwise the TCP peer.
 2. **Shape**, as `MsgRegister.ValidateBasic`: base64, idc/pcs canonical
-   32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, ciphertexts
-   ≤ 1024 bytes, 1..16 public signals that are canonical decimals, affiliate
+   32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, all three
+   ciphertexts exactly 177 bytes (a missing one is 422), 1..16 public signals that are canonical decimals, affiliate
    an earth address → 400.
 3. **Binding**: `public_signals[address_index]` must equal
-   `RegistrationBinding(idc, pc_anml, pc_erth, affiliate)` (Python Poseidon2,
-   pinned to the chain's Go vectors) → 400. Someone else's proof with notes of
-   one's own stops here.
+   `RegistrationBinding = H(TAG_REG, idc, pc_anml, Bytes(ciphertext_anml),
+   pc_erth, Bytes(ciphertext_erth), affiliate)` (Python Poseidon2, pinned to
+   the chain's Go vectors) → 400. Someone else's proof with notes or
+   ciphertexts of one's own stops here.
 4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
    `current_date_max_skew_seconds` of now (+10 min) → 400.
 5. **Replay**: `passport:<public_signals[nullifier_index] as 32-byte hex>:<YYYY-MM>`

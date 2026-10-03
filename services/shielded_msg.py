@@ -13,7 +13,7 @@ Mirrors proto/earth/shielded/v1/tx.proto:
       string sender = 1;
       cosmos.base.v1beta1.Coin amount = 2;
       bytes pc = 3;          // H(TAG_PC, owner_pk, rho, rcm), 32 bytes
-      bytes ciphertext = 4;  // optional, the note encrypted to its owner
+      bytes ciphertext = 4;  // required, the note's amount-blind v2 ciphertext, 177 bytes
     }
 
 tests/test_shield_msg.py checks the encoding byte for byte against the chain's
@@ -25,6 +25,9 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 TYPE_URL = "/earth.shielded.v1.MsgShield"
 # The chain's types.MaxCiphertextBytes.
 MAX_CIPHERTEXT_BYTES = 1024
+# The chain's types.BlindCiphertextBytes (zk/privacy BlindNoteCiphertextBytes):
+# MsgShield.ciphertext must be exactly this long.
+BLIND_CIPHERTEXT_BYTES = 177
 
 _FULL_NAME = "earth.shielded.v1.MsgShield"
 _FILE = "earth/shielded/v1/backend_msg_shield.proto"
@@ -56,7 +59,7 @@ def _message_class():
 MsgShield = _message_class()
 
 
-def build(sender: str, amount: int, denom: str, pc: bytes, ciphertext: bytes = b""):
+def build(sender: str, amount: int, denom: str, pc: bytes, ciphertext: bytes):
     return MsgShield(
         sender=sender,
         amount=coin_pb2.Coin(denom=denom, amount=str(amount)),

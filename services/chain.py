@@ -114,6 +114,8 @@ async def shield_dust(pc: bytes, ciphertext: bytes) -> str:
     Raises SendUnresolved when the transaction may
     have landed, an ordinary exception when it demonstrably moved nothing.
     """
+    if len(ciphertext) != shielded_msg.BLIND_CIPHERTEXT_BYTES:
+        raise ValueError(f"MsgShield needs a {shielded_msg.BLIND_CIPHERTEXT_BYTES}-byte ciphertext, got {len(ciphertext)}")
     if _client is None or _wallet is None:
         raise RuntimeError("chain service not initialised")
     async with _send_lock:
