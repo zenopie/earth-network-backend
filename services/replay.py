@@ -54,6 +54,22 @@ def peek(transaction_id: str) -> bool:
     return row is not None
 
 
+def _paid_today(prefix: str) -> int:
+    since = int(time.time()) - _DAY
+    (paid,) = _db().execute(
+        "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ? AND substr(transaction_id, 1, ?) = ?",
+        (since, len(prefix), prefix),
+    ).fetchone()
+    return paid
+
+
+def limit_reached(prefix: str, max_per_day: int) -> bool:
+    """Whether claim() would raise LimitReached now. Read-only, for refusing
+    before the expensive check; claim() is still what decides."""
+    with _lock:
+        return _paid_today(prefix) >= max_per_day
+
+
 def claim(transaction_id: str, *, prefix: str, max_per_day: int) -> bool:
     """Records a grant id, returning False if it was already used.
 
@@ -67,12 +83,7 @@ def claim(transaction_id: str, *, prefix: str, max_per_day: int) -> bool:
     because it moved nothing.
     """
     with _lock:
-        since = int(time.time()) - _DAY
-        (paid,) = _db().execute(
-            "SELECT COUNT(*) FROM used_transactions WHERE granted_at > ? AND substr(transaction_id, 1, ?) = ?",
-            (since, len(prefix), prefix),
-        ).fetchone()
-        if paid >= max_per_day:
+        if _paid_today(prefix) >= max_per_day:
             raise LimitReached("daily")
         try:
             _db().execute(

@@ -29,18 +29,20 @@ succeed as sent, 5xx try again later.
 """
 import base64
 import binascii
+import calendar
 import logging
+import time
 
 import bech32
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import config
-import time
 
-from services import chain, gascheck, replay, shielded_msg
+from services import chain, gascheck, ratelimit, replay, shielded_msg
 from services.zk import privacy
+from services.zk.poseidon2 import P
 
 logger = logging.getLogger(__name__)
 
@@ -89,22 +91,124 @@ def _field(value: str) -> bytes:
     return raw
 
 
-@router.post("/register", summary="Fund a fee note for a registration the chain would accept")
-async def register(body: RegisterGrant):
+# Bounds MsgRegister.ValidateBasic enforces (x/personhood/types/msgs.go,
+# x/shielded/types/keys.go); checked here so junk never reaches gas-check.
+MAX_PUBLIC_SIGNALS = 16
+MAX_PROOF_BYTES = 32 * 1024
+MAX_DSC_DER_BYTES = 8 * 1024
+MAX_ADDRESS_BYTES = 128
+MAX_SIGNATURE_ALGORITHM_BYTES = 64
+# Wall clock against block time: allow a little more skew than the chain so a
+# date right at the edge is the chain's call, not ours.
+_DATE_SLACK_SECONDS = 600
+
+
+def _signal(s: str) -> int:
+    """personhood ParseSignal: a decimal canonical field element."""
+    if not (0 < len(s) <= 78 and s.isascii() and s.isdigit()):
+        raise ValueError("not a decimal")
+    v = int(s)
+    if v >= P:
+        raise ValueError("not canonical")
+    return v
+
+
+def _yymmdd_unix(v: int) -> int:
+    """The chain's yymmddToUnix: a YYMMDD current_date at 00:00 UTC, years 2000-2099."""
+    if v > 999999:
+        raise ValueError("current_date is not a YYMMDD value")
+    yy, mm, dd = v // 10000, (v // 100) % 100, v % 100
+    if not (1 <= mm <= 12 and 1 <= dd <= 31):
+        raise ValueError("current_date has an invalid month or day")
+    # Go's time.Date normalises an out-of-range day (Feb 31 -> Mar 3); so does this.
+    return calendar.timegm((2000 + yy, mm, 1, 0, 0, 0)) + (dd - 1) * 86400
+
+
+class _Refuse(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
+    """Everything about a registration that needs no gas-check, cheapest first.
+
+    Returns (passport nullifier hex, grant id, pc_gas, ciphertext_gas,
+    affiliate) or raises _Refuse.
+    Every value checked here is a public input the chain then verifies the
+    proof against, so refusing on it early never refuses what the chain would
+    take — it only stops a replay, a stale or mis-bound proof, or junk from
+    costing a proof verification.
+    """
     try:
-        for name in ("proof", "dsc_der", "ciphertext_anml", "ciphertext_erth"):
-            _b64(getattr(body, name))
-        for name in ("idc", "pc_anml", "pc_erth"):
-            _field(getattr(body, name))
+        proof = _b64(body.proof)
+        dsc_der = _b64(body.dsc_der)
+        ciphertexts = [_b64(body.ciphertext_anml), _b64(body.ciphertext_erth)]
+        idc, pc_anml, pc_erth = (privacy.field_from_bytes(_b64(getattr(body, n))) for n in ("idc", "pc_anml", "pc_erth"))
         pc_gas = _field(body.pc_gas)
         ciphertext_gas = _b64(body.ciphertext_gas)
     except (binascii.Error, ValueError):
-        return _reply(400, "error", "proof, dsc_der and ciphertexts must be base64; idc and pcs 32-byte field elements")
-    if len(ciphertext_gas) > shielded_msg.MAX_CIPHERTEXT_BYTES:
-        return _reply(400, "error", f"ciphertext_gas exceeds {shielded_msg.MAX_CIPHERTEXT_BYTES} bytes")
+        raise _Refuse(400, "proof, dsc_der and ciphertexts must be base64; idc and pcs 32-byte field elements")
+    if not 0 < len(proof) <= MAX_PROOF_BYTES:
+        raise _Refuse(400, f"proof must be 1..{MAX_PROOF_BYTES} bytes")
+    if not 0 < len(dsc_der) <= MAX_DSC_DER_BYTES:
+        raise _Refuse(400, f"dsc_der must be 1..{MAX_DSC_DER_BYTES} bytes")
+    if any(len(c) > shielded_msg.MAX_CIPHERTEXT_BYTES for c in ciphertexts + [ciphertext_gas]):
+        raise _Refuse(400, f"a ciphertext exceeds {shielded_msg.MAX_CIPHERTEXT_BYTES} bytes")
+    if not 0 < len(body.signature_algorithm.encode()) <= MAX_SIGNATURE_ALGORITHM_BYTES:
+        raise _Refuse(400, "signature_algorithm is missing or too long")
     affiliate = body.affiliate.strip()
-    if affiliate and not _valid_address(affiliate):
-        return _reply(400, "error", "affiliate is not an earth address")
+    affiliate_field = 0
+    if affiliate:
+        if len(affiliate) > MAX_ADDRESS_BYTES or not _valid_address(affiliate):
+            raise _Refuse(400, "affiliate is not an earth address")
+        _, data = bech32.bech32_decode(affiliate)
+        affiliate_field = privacy.bytes_field(bytes(bech32.convertbits(data, 5, 8, False)))
+
+    n = len(body.public_signals)
+    if not 0 < n <= MAX_PUBLIC_SIGNALS:
+        raise _Refuse(400, f"need 1..{MAX_PUBLIC_SIGNALS} public signals")
+    try:
+        signals = [_signal(x) for x in body.public_signals]
+    except ValueError:
+        raise _Refuse(400, "public signals must be canonical decimal field elements")
+    if max(config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX) >= n:
+        raise _Refuse(400, "too few public signals for a passport proof")
+
+    # The binding: the proof's address input must be this msg's idc and pcs
+    # (and affiliate). Someone replaying another registration's proof with
+    # notes of their own fails here, as on chain.
+    if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(idc, pc_anml, pc_erth, affiliate_field):
+        raise _Refuse(400, "proof is bound to a different identity and notes than this registration names")
+
+    try:
+        proof_unix = _yymmdd_unix(signals[config.PASSPORT_CURRENT_DATE_INDEX])
+    except ValueError as exc:
+        raise _Refuse(400, str(exc))
+    if abs(time.time() - proof_unix) > config.PASSPORT_DATE_MAX_SKEW_SECONDS + _DATE_SLACK_SECONDS:
+        raise _Refuse(400, "current_date is too far from today; prove again")
+
+    nullifier = privacy.field_bytes(signals[config.PASSPORT_NULLIFIER_INDEX]).hex()
+    month = time.strftime("%Y-%m", time.gmtime())
+    return nullifier, f"{PASSPORT_PREFIX}{nullifier}:{month}", pc_gas, ciphertext_gas, affiliate
+
+
+@router.post("/register", summary="Fund a fee note for a registration the chain would accept")
+async def register(body: RegisterGrant, request: Request):
+    ip = ratelimit.client_ip(request)
+    if not ratelimit.allow(ip):
+        return _reply(429, "error", "too many requests; try again later")
+    try:
+        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate = _precheck(body)
+    except _Refuse as exc:
+        return _reply(exc.status_code, "error", str(exc))
+    # Replay and cap before the check: both are a table read, the check is a
+    # proof verification. claim() decides again after it, atomically.
+    if replay.peek(grant_id):
+        return _reply(409, "error", "already granted")
+    if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY):
+        return _reply(429, "error", "free gas limit reached; try again tomorrow")
+
     # MsgRegister in proto JSON, without its fee bundle (gas-check does not
     # look at it): bytes fields are standard base64, exactly as the app holds
     # them.
@@ -121,7 +225,10 @@ async def register(body: RegisterGrant):
         "affiliate": affiliate,
     }
     try:
-        verdict = await gascheck.registration(msg)
+        with ratelimit.one_at_a_time(ip):
+            verdict = await gascheck.registration(msg)
+    except ratelimit.Busy:
+        return _reply(429, "error", "a check for this client is already running; wait for it")
     except gascheck.Unavailable as exc:
         logger.error("registration check unavailable: %s", exc)
         return _reply(503, "error", "verification is unavailable; try again shortly")
@@ -130,8 +237,13 @@ async def register(body: RegisterGrant):
         # is what the user needs, and it says nothing they did not send.
         logger.info("registration check refused: %s", verdict.get("error"))
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
-    month = time.strftime("%Y-%m", time.gmtime())
-    return await _grant_note(f"{PASSPORT_PREFIX}{verdict['nullifier']}:{month}", pc_gas, ciphertext_gas)
+    if verdict.get("nullifier") != nullifier:
+        # gas-check read the nullifier from the chain's nullifier_index; ours
+        # disagrees, so PASSPORT_NULLIFIER_INDEX does not match the chain.
+        logger.error("gas-check nullifier differs from public_signals[%d]; check PASSPORT_NULLIFIER_INDEX",
+                     config.PASSPORT_NULLIFIER_INDEX)
+        return _reply(503, "error", "verification is unavailable; try again shortly")
+    return await _grant_note(grant_id, pc_gas, ciphertext_gas)
 
 
 async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONResponse:

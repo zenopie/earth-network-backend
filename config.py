@@ -41,6 +41,27 @@ GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
 # Checks run one at a time (memory); beyond this many waiting, refuse with 503.
 GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
 
+# Where MsgRegister's passport proof keeps its public inputs: personhood params
+# nullifier_index, address_index and current_date_index (earth-1 genesis: 2, 1,
+# 0), and current_date_max_skew_seconds (172800). /gas/register reads them to
+# refuse a replay, a proof bound to other notes, or a stale date before it
+# spends a gas-check on the request. They must match the chain's params: a
+# wrong index only makes this backend refuse or mis-key, never the chain
+# accept, and a nullifier that differs from gas-check's answers 503.
+PASSPORT_NULLIFIER_INDEX = int(os.getenv("PASSPORT_NULLIFIER_INDEX", "2"))
+PASSPORT_ADDRESS_INDEX = int(os.getenv("PASSPORT_ADDRESS_INDEX", "1"))
+PASSPORT_CURRENT_DATE_INDEX = int(os.getenv("PASSPORT_CURRENT_DATE_INDEX", "0"))
+PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS", "172800"))
+
+# Per-client limits on /gas/register (services/ratelimit): requests per sliding
+# window, and one gas-check in flight per client. The client is
+# CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on — right only when
+# Cloudflare is the sole ingress, as on the Akash lease (tunnel-only).
+TRUST_CF_CONNECTING_IP = os.getenv("TRUST_CF_CONNECTING_IP", "true").lower() == "true"
+REGISTER_IP_MAX_PER_WINDOW = int(os.getenv("REGISTER_IP_MAX_PER_WINDOW", "10"))
+REGISTER_IP_WINDOW_SECONDS = float(os.getenv("REGISTER_IP_WINDOW_SECONDS", "3600"))
+REGISTER_IP_MAX_TRACKED = int(os.getenv("REGISTER_IP_MAX_TRACKED", "100000"))
+
 # Rolling 24-hour payout limit for /gas/register. A grant needs a passport the
 # chain would register and is once per passport per month, so this bounds
 # what a run of fresh (or stolen) passports can drain from the hot wallet.
