@@ -216,8 +216,8 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str]:
 
 @router.post("/register", summary="Fund a fee note for a registration the chain would accept")
 async def register(body: RegisterGrant, request: Request):
-    ip = ratelimit.client_ip(request)
-    if not ratelimit.allow(ip):
+    client = ratelimit.client_key(ratelimit.client_ip(request))
+    if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
     try:
         nullifier, grant_id, pc_gas, ciphertext_gas, affiliate = _precheck(body)
@@ -246,7 +246,7 @@ async def register(body: RegisterGrant, request: Request):
         "affiliate": affiliate,
     }
     try:
-        with ratelimit.one_at_a_time(ip):
+        with ratelimit.one_at_a_time(client):
             verdict = await gascheck.registration(msg)
     except ratelimit.Busy:
         return _reply(429, "error", "a check for this client is already running; wait for it")

@@ -354,7 +354,7 @@ def test_cf_connecting_ip_ignored_when_not_trusted(client, shields, chain_says, 
 
 def test_one_gas_check_per_client_at_a_time(client, shields, chain_says, monkeypatch):
     monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", True)
-    ratelimit._busy.add("203.0.113.9")  # a check of this client's is in flight
+    ratelimit._busy.add(ratelimit.client_key("203.0.113.9"))  # a check of this client's is in flight
     resp = client.post("/gas/register", json=reg_body(), headers={"CF-Connecting-IP": "203.0.113.9"})
     assert resp.status_code == 429
     assert chain_says["asked"] == []

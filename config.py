@@ -57,13 +57,23 @@ PASSPORT_CURRENT_DATE_INDEX = int(os.getenv("PASSPORT_CURRENT_DATE_INDEX", "0"))
 PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS", "172800"))
 
 # Per-client limits on /gas/register (services/ratelimit): requests per sliding
-# window, and one gas-check in flight per client. The client is
-# CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on — right only when
-# Cloudflare is the sole ingress, as on the Akash lease (tunnel-only).
+# window, and one gas-check in flight per client. A client is an IPv4 address
+# or an IPv6 prefix of REGISTER_IPV6_PREFIX bits (64; 56 is stricter). Its
+# address is CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on — right only
+# when Cloudflare is the sole ingress, as on the Akash lease (tunnel-only,
+# where deploy.yaml turns it on). Off by default: anywhere else the header is
+# the client's to choose.
 TRUST_CF_CONNECTING_IP = os.getenv("TRUST_CF_CONNECTING_IP", "true").lower() == "true"
 REGISTER_IP_MAX_PER_WINDOW = int(os.getenv("REGISTER_IP_MAX_PER_WINDOW", "10"))
 REGISTER_IP_WINDOW_SECONDS = float(os.getenv("REGISTER_IP_WINDOW_SECONDS", "3600"))
-REGISTER_IP_MAX_TRACKED = int(os.getenv("REGISTER_IP_MAX_TRACKED", "100000"))
+REGISTER_IPV6_PREFIX = int(os.getenv("REGISTER_IPV6_PREFIX", "64"))
+# Clients remembered at once, least recently seen evicted first. One small
+# fixed-size entry each (~200 bytes with the table's own overhead).
+REGISTER_IP_MAX_TRACKED = int(os.getenv("REGISTER_IP_MAX_TRACKED", "20000"))
+# The global refusal budget: gas-check refusals per minute (junk that passed
+# every cheap check) past which a request outside the reserved lane is refused
+# with 429 before it is queued. 0 turns it off.
+REGISTER_REFUSALS_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_MINUTE", "10"))
 
 # Rolling 24-hour payout limit for /gas/register. A grant needs a passport the
 # chain would register and is once per passport per month, so this bounds
