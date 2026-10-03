@@ -9,14 +9,16 @@ One shape of payment:
   that some note was funded, never the account or key that will spend it.
 """
 import asyncio
+import hashlib
 import logging
 
 import requests
 
 from cosmpy.aerial.client import LedgerClient, NetworkConfig
-from cosmpy.aerial.client.utils import prepare_and_broadcast_basic_transaction
+from cosmpy.aerial.client.utils import prepare_basic_transaction
 from cosmpy.aerial.exceptions import BroadcastError, QueryTimeoutError
 from cosmpy.aerial.tx import Transaction
+from cosmpy.aerial.tx_helpers import SubmittedTx
 from cosmpy.aerial.wallet import LocalWallet
 
 import config
@@ -101,7 +103,7 @@ class SendUnresolved(Exception):
     """
 
     def __init__(self, tx_hash: str, cause: Exception) -> None:
-        super().__init__(f"tx {tx_hash} was broadcast but not confirmed: {cause}")
+        super().__init__(f"broadcast but not confirmed: {cause.__class__.__name__}")
         self.tx_hash = tx_hash
 
 
@@ -123,54 +125,61 @@ async def shield_dust(pc: bytes, ciphertext: bytes) -> str:
 
 
 def _shield_blocking(pc: bytes, ciphertext: bytes) -> str:
-    def submit():
-        tx = Transaction()
-        tx.add_message(shielded_msg.build(str(_wallet.address()), config.DUST_UERTH, config.EARTH_DENOM, pc, ciphertext))
-        return prepare_and_broadcast_basic_transaction(_client, tx, _wallet)
+    tx = Transaction()
+    tx.add_message(shielded_msg.build(str(_wallet.address()), config.DUST_UERTH, config.EARTH_DENOM, pc, ciphertext))
+    # Account lookup, simulation and signing. Nothing has been broadcast yet,
+    # so any failure here — a read timeout included — moved nothing.
+    prepare_basic_transaction(_client, tx, _wallet)
+    return _broadcast(lambda: _client.broadcast_tx(tx), tx_hash_of(tx))
 
-    return _broadcast(submit)
+
+def tx_hash_of(tx: Transaction) -> str:
+    """The hash the chain will know the signed tx by: SHA-256 of its bytes."""
+    return hashlib.sha256(tx.tx.SerializeToString()).hexdigest().upper()
 
 
-def _broadcast(submit) -> str:
-    # Broadcast. submit looks up the account, simulates, and posts the
-    # transaction, and a network fault in the post can come after the node has
-    # accepted it. Only a connection that was never made proves nothing went
-    # out; any other transport failure — a read timeout above all, which the
-    # timeout on the session now makes a real possibility — is treated as
-    # unresolved, so the caller keeps the id and Google's retry is not paid a
-    # second time. Errors that are not transport errors (a rejected
-    # transaction, a signing failure) moved nothing and propagate as they are.
+def _broadcast(submit, tx_hash: str) -> str:
+    """Posts a signed tx whose hash is already known, and waits for it.
+
+    A network fault in the post can come after the node has accepted it. Only
+    a connection that was never made proves nothing went out; any other
+    transport failure — a read timeout above all, which the timeout on the
+    session makes a real possibility — may have landed. For those the chain is
+    asked for the tx by its hash before giving up: found and successful is a
+    success, found and failed moved nothing, not found is SendUnresolved
+    carrying the hash. Errors that are not transport errors (CheckTx
+    rejecting it) moved nothing and propagate as they are.
+    """
     try:
-        tx = submit()
+        submitted = submit()
     except requests.exceptions.ConnectTimeout:
         raise
     except requests.exceptions.ConnectionError as exc:
         if _never_connected(exc):
             raise
-        raise SendUnresolved("", exc) from exc
+        return _resolve(SubmittedTx(_client, tx_hash), exc)
     except requests.exceptions.RequestException as exc:
-        raise SendUnresolved("", exc) from exc
-    tx_hash = str(tx.tx_hash)
+        return _resolve(SubmittedTx(_client, tx_hash), exc)
+    return _resolve(submitted, None)
 
+
+def _resolve(submitted, cause: Exception | None) -> str:
+    tx_hash = str(submitted.tx_hash)
     try:
-        tx.wait_to_complete()
+        submitted.wait_to_complete()
     except BroadcastError:
-        # The transaction was included and failed — out of gas, insufficient
-        # fees, or a dry hot wallet, which is the common one. It consumed a
-        # sequence number and moved no coins, so the grant id is genuinely
-        # unspent and the caller may hand it back.
+        # Included and failed — out of gas, insufficient fees, or a dry hot
+        # wallet, the common one. It consumed a sequence number and moved no
+        # coins, so the grant id is genuinely unspent and may be handed back.
         raise
     except QueryTimeoutError as exc:
-        # Polling gave up. The transaction may still be sitting in a mempool and
-        # may still land. Only the caller can decide what to do, and what it
-        # must not do is release the id.
-        raise SendUnresolved(tx_hash, exc) from exc
+        # Not seen within the wait. It may still be in a mempool and may still
+        # land; the caller must not release the id.
+        raise SendUnresolved(tx_hash, cause or exc) from exc
     except Exception as exc:
-        # An unrecognised failure while querying is the same situation: the
-        # transaction is out of our hands and its fate is unknown. Fail into the
-        # cautious branch rather than the convenient one.
-        raise SendUnresolved(tx_hash, exc) from exc
-
+        # An unrecognised failure while querying: the fate is unknown. Fail
+        # into the cautious branch rather than the convenient one.
+        raise SendUnresolved(tx_hash, cause or exc) from exc
     return tx_hash
 
 

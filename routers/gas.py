@@ -293,8 +293,16 @@ async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONRespon
     try:
         tx_hash = await chain.shield_dust(pc, ciphertext)
     except chain.SendUnresolved as exc:
-        # Broadcast, outcome unknown. The id stays claimed: a tx still in a
-        # mempool will land, and releasing would let it be paid twice.
+        if not exc.tx_hash:
+            # Nothing names a tx that could land, so nothing can be paid
+            # twice: give the passport back rather than strand it for a month.
+            replay.release(grant_id)
+            logger.error("gas note shield failed before a tx existed: %s", exc)
+            return _reply(502, "error", "the grant could not be sent; try again")
+        # Broadcast, and the chain did not show it within the wait. The id
+        # stays claimed: a tx still in a mempool will land, and releasing
+        # would let it be paid twice. The app holds the hash and can watch for
+        # it; this side keeps no record that ties it to the passport.
         logger.error("gas note shield is unresolved: %s", exc)
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
     except Exception:

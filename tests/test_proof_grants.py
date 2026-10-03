@@ -201,6 +201,15 @@ def test_unresolved_shield_keeps_the_passport(client, chain_says, monkeypatch):
     assert client.post("/gas/register", json=reg_body()).status_code == 409
 
 
+def test_unresolved_without_a_tx_hash_gives_the_passport_back(client, chain_says, monkeypatch):
+    async def unresolved(pc, ct):
+        raise chain.SendUnresolved("", TimeoutError())
+
+    monkeypatch.setattr(chain, "shield_dust", unresolved)
+    assert client.post("/gas/register", json=reg_body()).status_code == 502
+    assert not replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m', time.gmtime())}")
+
+
 @pytest.mark.parametrize("path", ["/gas/human", "/gas/transparent", "/gas/challenge", "/gas/ios", "/gas/android"])
 def test_only_register_is_left(client, path):
     assert client.post(path, json={"address": "earth1x"}).status_code == 404
