@@ -51,19 +51,16 @@ def b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
 
 
-# A referral: a live handle and the referral note to its address (MsgRegister
-# affiliate_handle 15, affiliate_pc 11, affiliate_ciphertext 12).
-PC_REF, CT_REF = 0x5678, bytes([4]) * 177
-REFERRAL = {"affiliate_handle": "amy-2", "affiliate_pc": base64.b64encode(PC_REF.to_bytes(32, "big")).decode(),
-            "affiliate_ciphertext": base64.b64encode(CT_REF).decode()}
+# A referral: a live handle (MsgRegister affiliate_handle 15). The chain mints
+# the referral note itself (audit round 5); affiliate_pc / affiliate_ciphertext
+# (11, 12) are gone.
+REFERRAL = {"affiliate_handle": "amy-2"}
+OLD_PC, OLD_CT = base64.b64encode((0x5678).to_bytes(32, "big")).decode(), base64.b64encode(bytes([4]) * 177).decode()
 
 
 def affiliate_of(over: dict) -> int:
-    """The binding's affiliate field for a body's referral fields (0 for none)."""
-    if not (over.get("affiliate_handle") and over.get("affiliate_pc") and over.get("affiliate_ciphertext")):
-        return 0
-    return privacy.affiliate_field(over["affiliate_handle"], int.from_bytes(base64.b64decode(over["affiliate_pc"]), "big"),
-                                   base64.b64decode(over["affiliate_ciphertext"]))
+    """The binding's affiliate field for a body's referral (0 for none)."""
+    return privacy.affiliate_field(over["affiliate_handle"]) if over.get("affiliate_handle") else 0
 
 
 def signals(nf: int = NF, date: int | None = None, idc=11, pc_anml=12, pc_erth=13, aff: int = 0,
@@ -187,11 +184,6 @@ def test_register_unavailable_is_503_not_a_refusal(client, shields, chain_says):
     {"ciphertext_gas": b64(CT_GAS + b"\x00")},
     {"ciphertext_anml": ""},
     {"ciphertext_erth": b64(CT_ERTH[:-1])},
-    # A referral is all three of handle, pc and ciphertext, or none.
-    {"affiliate_handle": "amy-2"},
-    {**REFERRAL, "affiliate_pc": ""},
-    {**REFERRAL, "affiliate_ciphertext": ""},
-    {**REFERRAL, "affiliate_handle": ""},
     # Not a handle: case, length, characters, edge dashes.
     {**REFERRAL, "affiliate_handle": "Amy"},
     {**REFERRAL, "affiliate_handle": "am"},
@@ -200,10 +192,6 @@ def test_register_unavailable_is_503_not_a_refusal(client, shields, chain_says):
     {**REFERRAL, "affiliate_handle": "amy-"},
     {**REFERRAL, "affiliate_handle": "amy_2"},
     {**REFERRAL, "affiliate_handle": "earth1s7rgscltvw8v3kzhj46pptdqg843ngs7th9ywp"},  # an address, not a handle
-    {**REFERRAL, "affiliate_pc": base64.b64encode(P.to_bytes(32, "big")).decode()},  # not canonical
-    {**REFERRAL, "affiliate_pc": base64.b64encode(b"\x01" * 31).decode()},
-    {**REFERRAL, "affiliate_ciphertext": base64.b64encode(CT_REF[:-1]).decode()},  # not exactly 177
-    {**REFERRAL, "affiliate_ciphertext": base64.b64encode(bytes(217)).decode()},
 ])
 def test_register_rejects_malformed_fields_before_asking(client, shields, chain_says, over):
     assert client.post("/gas/register", json=reg_body(**over)).status_code == 400
@@ -332,10 +320,10 @@ def test_a_nullifier_gas_check_disagrees_with_is_503_and_unclaimed(client, shiel
 def test_a_referral_reaches_gas_check_as_msg_register_fields(client, shields, chain_says):
     assert client.post("/gas/register", json=reg_body(**REFERRAL)).status_code == 200
     asked = chain_says["asked"][0]
-    # MsgRegister affiliate_handle (15), affiliate_pc (11), affiliate_ciphertext
-    # (12) in proto JSON, exactly as sent; no referrer address.
-    assert {k: asked[k] for k in REFERRAL} == REFERRAL
-    assert "affiliate" not in asked
+    # MsgRegister affiliate_handle (15) in proto JSON, exactly as sent; no
+    # referrer address, no referral note fields.
+    assert asked["affiliate_handle"] == "amy-2"
+    assert [k for k in asked if k.startswith("affiliate")] == ["affiliate_handle"]
     assert shields == [(PC_GAS, CT_GAS)]
 
 
@@ -344,22 +332,56 @@ def test_no_referral_sends_no_affiliate_fields(client, shields, chain_says):
     assert not any(k.startswith("affiliate") for k in chain_says["asked"][0])
 
 
+@pytest.mark.parametrize("old,named", [
+    ({"affiliate_pc": OLD_PC, "affiliate_ciphertext": OLD_CT}, "affiliate_pc and affiliate_ciphertext are"),
+    ({"affiliate_pc": OLD_PC}, "affiliate_pc is"),
+    ({"affiliate_ciphertext": OLD_CT}, "affiliate_ciphertext is"),
+    ({"affiliate_pc": ""}, "affiliate_pc is"),  # present, even empty
+])
+@pytest.mark.parametrize("referral", [True, False])
+def test_the_removed_referral_note_fields_are_a_clear_400(client, shields, chain_says, old, named, referral):
+    # A wallet still on the pre-round-5 format (it made the referral note
+    # itself) is told so, never has the fields silently dropped.
+    body = reg_body(**(REFERRAL if referral else {}))
+    body.update(old)
+    resp = client.post("/gas/register", json=body)
+    assert resp.status_code == 400
+    msg = resp.json()["message"]
+    assert named in msg and "no longer part of MsgRegister" in msg and "affiliate_handle only" in msg
+    assert chain_says["asked"] == [] and shields == []
+
+
+def test_the_removed_fields_are_not_in_the_published_schema(client):
+    props = client.get("/openapi.json").json()["paths"]["/gas/register"]["post"]["requestBody"]["content"][
+        "application/json"]["schema"]["properties"]
+    assert "affiliate_handle" in props
+    assert "affiliate_pc" not in props and "affiliate_ciphertext" not in props
+
+
 @pytest.mark.parametrize("swap", [
     {},  # the referral dropped
-    {"affiliate_handle": "amy-3"},
-    {"affiliate_pc": base64.b64encode((PC_REF + 1).to_bytes(32, "big")).decode()},
-    {"affiliate_ciphertext": base64.b64encode(bytes([5]) * 177).decode()},
+    {"affiliate_handle": "amy-3"},  # another handle
 ])
 def test_the_referral_is_part_of_the_binding(client, shields, chain_says, swap):
-    # A proof bound to REFERRAL, sent with the referral dropped or any of its
-    # three fields swapped (a relayer redirecting the referral note), is
-    # bound to nothing here.
+    # A proof bound to REFERRAL, sent with the referral dropped or its handle
+    # swapped (a relayer redirecting the referral), is bound to nothing here.
     body = reg_body(nf=2, **(REFERRAL if swap else {}))
     body.update(swap)
     body["public_signals"] = signals(2, aff=affiliate_of(REFERRAL))
     resp = client.post("/gas/register", json=body)
     assert resp.status_code == 400 and "bound" in resp.json()["message"]
     assert chain_says["asked"] == []
+
+
+def test_a_proof_bound_to_the_old_affiliate_field_is_refused(client, shields, chain_says):
+    # The pre-round-5 field H(tag, Bytes(handle), pc, Bytes(ct)) is not the
+    # binding any more.
+    from services.zk.privacy import H, TAG_AFFILIATE, bytes_field
+    old = H(TAG_AFFILIATE, bytes_field(b"amy-2"), 0x5678, bytes_field(bytes([4]) * 177))
+    body = reg_body(nf=2, **REFERRAL)
+    body["public_signals"] = signals(2, aff=old)
+    resp = client.post("/gas/register", json=body)
+    assert resp.status_code == 400 and "bound" in resp.json()["message"]
 
 
 def test_a_handle_the_chain_says_is_not_live_is_a_refusal(client, shields, chain_says):

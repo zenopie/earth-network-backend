@@ -114,19 +114,18 @@ func main() {
 
 	// The registration binding: the passport proof's address input, as
 	// personhood's MsgRegister.Binding computes it (affiliate 0 for none, else
-	// AffiliateField(affiliate_handle, affiliate_pc, affiliate_ciphertext)).
+	// AffiliateField(affiliate_handle) = H("earth.affiliate", Bytes(handle))).
 	// The gas backend checks it before gas-check.
-	ctA, ctE, ctR := make([]byte, 177), make([]byte, 177), make([]byte, 177)
+	ctA, ctE := make([]byte, 177), make([]byte, 177)
 	for i := range ctA {
-		ctA[i], ctE[i], ctR[i] = byte(i), byte(255-i), byte(i*7)
+		ctA[i], ctE[i] = byte(i), byte(255-i)
 	}
-	affPC := privacy.PC(privacy.OwnerPK(u(77)), u(78), u(79))
-	reg := personhoodtypes.MsgRegister{AffiliateHandle: "amy-2", AffiliatePc: privacy.FieldBytes(affPC), AffiliateCiphertext: ctR}
+	reg := personhoodtypes.MsgRegister{AffiliateHandle: "amy-2"}
 	affMsg, err := reg.AffiliateField()
 	if err != nil {
 		panic(err)
 	}
-	aff := privacy.AffiliateField("amy-2", affPC, ctR)
+	aff := privacy.AffiliateField("amy-2")
 	if aff != affMsg {
 		panic("AffiliateField differs from MsgRegister.AffiliateField")
 	}
@@ -135,12 +134,20 @@ func main() {
 		"ct_anml_hex": hex.EncodeToString(ctA), "ct_erth_hex": hex.EncodeToString(ctE),
 		"none":             hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, fr.Element{})),
 		"affiliate_handle": "amy-2",
-		"affiliate_pc":     hx(affPC),
-		"affiliate_ct_hex": hex.EncodeToString(ctR),
 		"affiliate_field":  hx(aff),
 		"affiliate":        hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, aff)),
 		// TestRegistrationBindingPinned's own inputs and value.
 		"pinned": hx(privacy.RegistrationBinding(u(1), u(2), []byte("anml"), u(3), []byte("erth"), fr.Element{})),
+	}
+
+	// The referral note's opening (the chain mints it; its shielded_mint
+	// event carries owner_pk, rho, rcm): a wallet recomputes pc and cm.
+	refOwner := privacy.OwnerPK(u(77))
+	refRho, refRcm := privacy.ReferralOpening(u(88), 5)
+	refPC := privacy.PC(refOwner, refRho, refRcm)
+	out["referral_opening"] = map[string]any{
+		"nullifier": hx(u(88)), "leaf_index": 5, "owner_pk": hx(refOwner),
+		"rho": hx(refRho), "rcm": hx(refRcm), "pc": hx(refPC),
 	}
 
 	// MsgShield as the chain encodes it, for the backend's hand-built proto.

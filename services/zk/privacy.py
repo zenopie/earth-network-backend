@@ -22,6 +22,7 @@ TAG_REG = tag("earth.reg")
 TAG_BYTES = tag("earth.bytes")
 TAG_SNFL = tag("earth.snfl")
 TAG_AFFILIATE = tag("earth.affiliate")
+TAG_REFERRAL = tag("earth.referral")
 
 
 def H(*xs: int) -> int:
@@ -98,14 +99,21 @@ def bytes_field(b: bytes) -> int:
 def registration_binding(idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, ct_erth: bytes, affiliate: int) -> int:
     """privacy.RegistrationBinding: the passport proof's address input,
     H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
-    affiliate is 0 for none, else affiliate_field(handle, pc, ciphertext)."""
+    affiliate is 0 for none, else affiliate_field(handle)."""
     return H(TAG_REG, idc_, pc_anml, bytes_field(ct_anml), pc_erth, bytes_field(ct_erth), affiliate)
 
 
-def affiliate_field(handle: str, pc_: int, ct: bytes) -> int:
+def affiliate_field(handle: str) -> int:
     """privacy.AffiliateField: a registration's referrer in its binding,
-    H(TAG_AFFILIATE, Bytes(handle), affiliate_pc, Bytes(affiliate_ciphertext))."""
-    return H(TAG_AFFILIATE, bytes_field(handle.encode()), pc_, bytes_field(ct))
+    H(TAG_AFFILIATE, Bytes(handle))."""
+    return H(TAG_AFFILIATE, bytes_field(handle.encode()))
+
+
+def referral_opening(nullifier: int, leaf_index: int) -> tuple[int, int]:
+    """privacy.ReferralOpening: (rho, rcm) of the referral note the chain
+    mints to a registration's referrer, H(TAG_REFERRAL, nullifier,
+    leaf_index, 0 | 1). Its shielded_mint event publishes both."""
+    return H(TAG_REFERRAL, nullifier, leaf_index, 0), H(TAG_REFERRAL, nullifier, leaf_index, 1)
 
 
 def nf_leaf(value: int, next_value: int, next_index: int) -> int:

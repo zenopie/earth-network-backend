@@ -7,7 +7,7 @@ new human needs is a note:
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate_handle?, affiliate_pc?, affiliate_ciphertext?,
+                           affiliate_handle?,
                            pc_gas, ciphertext_gas, pow?}
     GET  /gas/pow         the proof of work it needs now (services/pow)
 
@@ -16,13 +16,13 @@ EncryptBlindNote), exactly 177 bytes, as the chain requires of every note it
 mints: ciphertext_anml / ciphertext_erth exactly as in MsgRegister (the proof's
 binding covers them), ciphertext_gas the gas note's own.
 
-A referral names a live handle (affiliate_handle) and carries the referral
-note the registrant's wallet made to that handle's shielded address
-(affiliate_pc, affiliate_ciphertext, 177 bytes): MsgRegister fields 15, 11
-and 12, all three or none, bound into the proof as
-H("earth.affiliate", Bytes(handle), affiliate_pc, Bytes(affiliate_ciphertext)).
-The chain mints the referrer's half there (as a note: there is no
-transparent referral payout and no referrer address any more).
+A referral names a live handle (affiliate_handle, MsgRegister field 15),
+bound into the proof as H("earth.affiliate", Bytes(handle)) (0 for none).
+The chain itself mints the referrer's half as a note to the handle's address,
+with an opening derived from the passport nullifier and leaf index (chain
+ORCHARD_DESIGN.md section 16); the registrant's wallet makes no referral note.
+affiliate_pc and affiliate_ciphertext (MsgRegister 11 and 12, removed in
+audit round 5) are refused with a 400 naming them.
 
 takes the registration the app is about to broadcast, asks the chain's own
 checks whether it would be accepted (`earthd gas-check registration`,
@@ -49,12 +49,13 @@ import calendar
 import logging
 import re
 import time
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 import config
 
@@ -106,11 +107,13 @@ class RegisterGrant(BaseModel):
     pc_erth: _SHORT
     ciphertext_anml: _SHORT
     ciphertext_erth: _SHORT
-    # A referral (all three or none): a live handle and the referral note
-    # the wallet made to its shielded address (MsgRegister 15, 11, 12).
+    # A referral: a live handle (MsgRegister 15); "" for none.
     affiliate_handle: Annotated[str, StringConstraints(max_length=64)] = ""
-    affiliate_pc: _SHORT = ""
-    affiliate_ciphertext: _SHORT = ""
+    # Removed from MsgRegister (11, 12; chain audit round 5): accepted by the
+    # schema only so _affiliate can refuse them with a 400 that names them,
+    # not drop them silently. Not in the published schema.
+    affiliate_pc: SkipJsonSchema[Any] = None
+    affiliate_ciphertext: SkipJsonSchema[Any] = None
     # Where the gas goes: the pc of a note the app will spend MsgRegister's
     # fee from, and that note's amount-blind v2 ciphertext (MsgShield's,
     # required).
@@ -191,25 +194,19 @@ class _Refuse(Exception):
 
 
 def _affiliate(body: RegisterGrant) -> int:
-    """MsgRegister.AffiliateField: 0 for no referral, else the affiliate field
-    of (affiliate_handle, affiliate_pc, affiliate_ciphertext). Raises _Refuse
-    unless all three are set (and well formed) or none is."""
-    handle, pc_b64, ct_b64 = body.affiliate_handle, body.affiliate_pc, body.affiliate_ciphertext
-    if not handle and not pc_b64 and not ct_b64:
+    """MsgRegister.AffiliateField: 0 for no referral, else
+    H("earth.affiliate", Bytes(affiliate_handle)). Raises _Refuse for a
+    malformed handle or for the removed affiliate_pc / affiliate_ciphertext."""
+    removed = [n for n in ("affiliate_pc", "affiliate_ciphertext") if getattr(body, n) is not None]
+    if removed:
+        raise _Refuse(400, f"{' and '.join(removed)} {'is' if len(removed) == 1 else 'are'} no longer part of "
+                           "MsgRegister: send affiliate_handle only; the chain mints the referral note itself")
+    handle = body.affiliate_handle
+    if not handle:
         return 0
-    if not (handle and pc_b64 and ct_b64):
-        raise _Refuse(400, "affiliate_handle, affiliate_pc and affiliate_ciphertext go together: all three or none")
     if not handles.valid_handle(handle):
         raise _Refuse(400, "affiliate_handle is not a handle (a-z, 0-9 and -, 3..32 characters, no leading or trailing dash)")
-    try:
-        pc = privacy.field_from_bytes(_b64(pc_b64))
-        ct = _b64(ct_b64)
-    except (binascii.Error, ValueError):
-        raise _Refuse(400, "affiliate_pc must be a base64 32-byte field element and affiliate_ciphertext base64")
-    if len(ct) != shielded_msg.BLIND_CIPHERTEXT_BYTES:
-        raise _Refuse(400, f"affiliate_ciphertext must be an amount-blind v2 ciphertext of exactly "
-                           f"{shielded_msg.BLIND_CIPHERTEXT_BYTES} bytes")
-    return privacy.affiliate_field(handle, pc, ct)
+    return privacy.affiliate_field(handle)
 
 
 def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None, bytes]:
@@ -462,8 +459,7 @@ async def register(request: Request):
         "ciphertext_erth": body.ciphertext_erth,
     }
     if body.affiliate_handle:
-        msg.update(affiliate_handle=body.affiliate_handle, affiliate_pc=body.affiliate_pc,
-                   affiliate_ciphertext=body.affiliate_ciphertext)
+        msg["affiliate_handle"] = body.affiliate_handle
     try:
         with ratelimit.one_at_a_time(client):
             verdict = await gascheck.registration(msg, priority=priority)

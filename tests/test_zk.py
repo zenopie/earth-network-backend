@@ -112,18 +112,23 @@ def test_registration_binding_matches_go():
     idc_, a, e = (int(v[k], 16) for k in ("idc", "pc_anml", "pc_erth"))
     ca, ce = bytes.fromhex(v["ct_anml_hex"]), bytes.fromhex(v["ct_erth_hex"])
     assert hx(privacy.registration_binding(idc_, a, ca, e, ce, 0)) == v["none"]
-    aff = privacy.affiliate_field(v["affiliate_handle"], int(v["affiliate_pc"], 16), bytes.fromhex(v["affiliate_ct_hex"]))
+    aff = privacy.affiliate_field(v["affiliate_handle"])
     assert hx(aff) == v["affiliate_field"]
     assert hx(privacy.registration_binding(idc_, a, ca, e, ce, aff)) == v["affiliate"]
-    # The affiliate field covers the handle, the pc and the ciphertext.
-    ct = bytes.fromhex(v["affiliate_ct_hex"])
-    pc_ = int(v["affiliate_pc"], 16)
-    assert privacy.affiliate_field("amy-3", pc_, ct) != aff
-    assert privacy.affiliate_field(v["affiliate_handle"], pc_ + 1, ct) != aff
-    assert privacy.affiliate_field(v["affiliate_handle"], pc_, ct[:-1] + b"\x01") != aff
+    # The affiliate field covers the handle (only: the chain makes the note).
+    assert privacy.affiliate_field("amy-3") != aff
     # The binding covers each ciphertext.
     assert privacy.registration_binding(idc_, a, ca[:-1] + b"\x00", e, ce, 0) != int(v["none"], 16)
     assert privacy.registration_binding(idc_, a, ca, e, ce[:-1] + b"\x00", 0) != int(v["none"], 16)
+
+
+def test_referral_opening_matches_go():
+    v = VEC["referral_opening"]
+    rho, rcm = privacy.referral_opening(int(v["nullifier"], 16), v["leaf_index"])
+    assert (hx(rho), hx(rcm)) == (v["rho"], v["rcm"])
+    assert hx(privacy.pc(int(v["owner_pk"], 16), rho, rcm)) == v["pc"]
+    # Unique per leaf index.
+    assert privacy.referral_opening(int(v["nullifier"], 16), v["leaf_index"] + 1)[0] != rho
 
 
 def test_registration_binding_pinned_to_chain_test():
