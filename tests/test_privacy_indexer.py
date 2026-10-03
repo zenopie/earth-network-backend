@@ -356,3 +356,118 @@ def test_failed_tx_with_only_failure_code_still_counts_every_event(db):
     got = Store(db)
     sync(Indexer(got, FakeRPC(dict(sc, blocks=blocks))))
     assert got.counts() == want.counts()
+
+
+# --- audit 3: relaunch under the same chain id ---------------------------------
+
+class _CometLike(FakeRPC):
+    """CometBFT v0.38 /blockchain: minHeight above the tip is an RPC error."""
+
+    async def block_metas(self, lo, hi):
+        if lo > self.tip:
+            raise RPCError(f"blockchain: min height {lo} can't be greater than max height {self.tip}")
+        return await super().block_metas(lo, hi)
+
+
+def _chain_b(sc):
+    return {"chain_id": sc["chain_id"], "blocks": [dict(x, hash="B" + x["hash"][1:]) for x in sc["blocks"]]}
+
+
+def _index_all(store, rpc):
+    idx = Indexer(store, rpc)
+
+    async def go():
+        await idx.prepare()
+        while await idx.step():
+            pass
+    asyncio.run(go())
+    return idx
+
+
+def test_a_relaunched_chain_with_a_lower_tip_halts(db):
+    """audit-3 poc_relaunch_no_halt.py: chain B (same id, tip below A's last
+    height) was retried forever with halted=null."""
+    sc = load("TestPrivatePersonhood")
+    store = Store(db)
+    _index_all(store, _CometLike(sc))
+    last = store.last_height()
+    rpc_b = _CometLike(_chain_b(sc), tip=max(2, last // 3))
+    idx2 = Indexer(store, rpc_b, check_sizes=False)
+
+    async def restart():
+        stop = asyncio.Event()
+        task = asyncio.create_task(idx2.run(stop, poll_seconds=0.01))
+        await asyncio.wait_for(task, timeout=5)  # returns on its own: halted
+    asyncio.run(restart())
+    halted = store.meta("halted")
+    assert halted and "genesis" in halted
+    assert store.last_height() == last
+
+
+def test_genesis_is_rechecked_on_every_prepare(db):
+    sc = load("TestPrivatePersonhood")
+    store = Store(db)
+    _index_all(store, FakeRPC(sc, tip=5))
+    # Same chain id, same tip-or-higher, different first block: a relaunch
+    # whose height already passed the index. Only the genesis tells.
+    b = _chain_b(sc)
+    for blk in b["blocks"]:
+        if blk["height"] == store.last_height():
+            blk["hash"] = store.block_hash(blk["height"])  # even the last indexed block agrees
+    idx = Indexer(store, FakeRPC(b), check_sizes=False)
+    with pytest.raises(Halted):
+        asyncio.run(idx.prepare())
+    assert "genesis" in store.meta("halted")
+
+
+def test_a_tip_below_the_index_halts_unless_catching_up(db):
+    sc = load("TestPrivatePersonhood")
+    store = Store(db)
+    _index_all(store, FakeRPC(sc))
+    last = store.last_height()
+
+    class Syncing(FakeRPC):
+        async def status(self):
+            return dict(await super().status(), catching_up=True)
+
+    idx = Indexer(store, Syncing(sc, tip=last - 3), check_sizes=False)
+    with pytest.raises(RPCError):
+        asyncio.run(idx.prepare())
+    assert store.meta("halted") is None, "a syncing node of the same chain is waited for"
+    idx = Indexer(store, FakeRPC(sc, tip=last - 3), check_sizes=False)
+    with pytest.raises(Halted):
+        asyncio.run(idx.prepare())
+    assert "below the indexed height" in store.meta("halted")
+
+
+def test_status_shows_the_halt_reason(db, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import config
+    from routers import privacy
+
+    sc = load("TestPrivatePersonhood")
+    store = Store(db)
+    _index_all(store, FakeRPC(sc))
+    with pytest.raises(Halted):
+        asyncio.run(Indexer(store, FakeRPC(_chain_b(sc)), check_sizes=False).prepare())
+    monkeypatch.setattr(config, "INDEX_DB", db)
+    app = FastAPI()
+    app.include_router(privacy.router)
+    assert "genesis" in TestClient(app).get("/privacy/status").json()["halted"]
+
+
+def test_a_skipped_tree_size_check_warns(db, caplog):
+    sc = load("TestPrivatePersonhood")
+
+    class Pruned(FakeRPC):
+        async def abci_query(self, path, data=b"", height=None):
+            raise RPCError("pruned")
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="services.privacy.indexer"):
+        _index_all(Store(db), Pruned(sc))
+    warns = [r for r in caplog.records if "tree size check" in r.getMessage()]
+    assert warns and all(r.levelno == logging.WARNING for r in warns)
+    assert len(warns) < 5, "throttled"

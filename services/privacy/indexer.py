@@ -9,9 +9,13 @@ indexer only ever moves forward and never rolls back. What it does guard
 against is the RPC pointing at a different chain than the one indexed (a
 relaunch under the same chain id, a misconfigured URL, an RPC swapped behind
 a load balancer): the chain id and the hash of the last indexed block are
-checked on every start, and every block applied after that must name the
-indexed block before it as its parent (header.last_block_id). A mismatch
-halts the indexer — wipe INDEX_DB to start over.
+checked on every prepare (every start, and again after any RPC error), as is
+the hash of the block at genesis_height (a relaunch keeps the chain id, not
+its first block), and every block applied after that must name the indexed
+block before it as its parent (header.last_block_id). A node whose tip is
+below the indexed height, and which is not catching up, is not serving the
+indexed chain. Any of these halts the indexer: the reason is in
+/privacy/status "halted" — wipe INDEX_DB to start over.
 
 Blocks are fetched in batches (block_results concurrently, block times and
 hashes from /blockchain) and applied strictly in order, one SQLite
@@ -62,6 +66,7 @@ class Indexer:
         # The hash of the block at next_height - 1, which the next block must
         # name as its parent. None only before the first block of a new index.
         self.prev_hash: str | None = None
+        self._size_skips = 0
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -88,10 +93,24 @@ class Indexer:
                 raise RPCError(f"no block meta for the node's earliest block {e}")
             self.store.set_meta("genesis_hash", metas[e][0].lower())
             self.store.set_meta("genesis_height", str(e))
+        else:
+            await self._check_genesis(st)
         last = self.store.last_height()
         if last:
+            if self.tip < last:
+                if st.get("catching_up"):
+                    # A node still block-syncing is behind, not elsewhere:
+                    # its genesis matched above. Wait for it.
+                    raise RPCError(f"the node is catching up at {self.tip}, below the indexed height {last}")
+                # A relaunch under the same chain id restarts low; a node
+                # that is not syncing and is below what was indexed from it
+                # is not serving the chain the index holds.
+                self._halt(f"the RPC's tip {self.tip} is below the indexed height {last} and the node is not "
+                           f"catching up: a relaunched chain or a node that lost blocks")
             metas = await self.rpc.block_metas(last, last)
-            if last in metas and metas[last][0] != self.store.block_hash(last):
+            if last not in metas:
+                raise RPCError(f"no block meta for the indexed tip {last}")
+            if metas[last][0].upper() != (self.store.block_hash(last) or "").upper():
                 self._halt(f"block {last} hash is {metas[last][0]} on the RPC, {self.store.block_hash(last)} in the index: a different chain")
             self.next_height = last + 1
             self.prev_hash = self.store.block_hash(last)
@@ -100,6 +119,30 @@ class Indexer:
             if start < st["earliest_height"]:
                 self._halt(f"start height {start} is below the node's earliest block {st['earliest_height']}; use a full-history node (rpc.erth.network)")
             self.next_height = start
+
+    async def _check_genesis(self, st: dict) -> None:
+        """Halts unless the block at genesis_height still has genesis_hash.
+
+        Every prepare (every start, and again after any RPC error): a
+        relaunch keeps the chain id, so only the first block tells the chains
+        apart. A node pruned past it cannot answer; the last indexed block's
+        hash (prepare, next) is then the only check.
+        """
+        gh = int(self.store.meta("genesis_height") or 0)
+        want = (self.store.meta("genesis_hash") or "").lower()
+        if not gh or gh < st["earliest_height"]:
+            logger.warning("privacy indexer: the node's earliest block %d is past genesis height %s; "
+                           "the genesis hash is not re-checked", st["earliest_height"], gh or "(unknown)")
+            return
+        if gh > st["latest_height"]:
+            self._halt(f"the RPC's tip {st['latest_height']} is below the genesis height {gh} the index was built from: "
+                       f"a relaunched chain")
+        metas = await self.rpc.block_metas(gh, gh)
+        if gh not in metas:
+            raise RPCError(f"no block meta for genesis height {gh}")
+        if metas[gh][0].lower() != want:
+            self._halt(f"block {gh} hash is {metas[gh][0].lower()} on the RPC, genesis {want} in the index: "
+                       f"a relaunched or different chain under chain id {st['chain_id']}")
 
     def _halt(self, reason: str) -> None:
         self.halted = reason
@@ -119,6 +162,10 @@ class Indexer:
             raise Halted(self.halted)
         st = await self.rpc.status()
         self.tip = st["latest_height"]
+        if self.next_height - 1 > self.tip:
+            # Below what was indexed: run() prepares again, which re-checks
+            # the genesis and halts unless the node is merely catching up.
+            raise RPCError(f"the RPC's tip {self.tip} is below the indexed height {self.next_height - 1}")
         if self.next_height > self.tip:
             return 0
         hi = min(self.tip, self.next_height + self.batch - 1)
@@ -154,8 +201,17 @@ class Indexer:
         except (RPCError, ValueError, IndexError) as exc:
             # State at an old height may be pruned while catching up; the
             # check resumes once the indexer reaches heights the node keeps.
-            logger.debug("tree size check at %d skipped: %s", height, exc)
+            # A WARNING all the same: while it is skipped, missing history
+            # (genesis-imported notes, a late start) goes unnoticed. The
+            # first skip of a run and every 100th after it.
+            if self._size_skips % 100 == 0:
+                logger.warning("tree size check at %d skipped (%d in a row): %s; the index is not being "
+                               "compared with the chain's tree sizes", height, self._size_skips + 1, exc)
+            self._size_skips += 1
             return
+        if self._size_skips:
+            logger.info("tree size check resumed at %d after %d skipped", height, self._size_skips)
+            self._size_skips = 0
         have_notes, have_ids, _ = await asyncio.to_thread(self.store.counts)
         have_stakes, _ = await asyncio.to_thread(self.store.stake_counts)
         if (notes, ids, stakes) != (have_notes, have_ids, have_stakes):
@@ -181,9 +237,13 @@ class Indexer:
             except Halted:
                 return
             except (RPCError, KeyError, ValueError) as exc:
+                # Prepare again before going on: the RPC that failed may now
+                # be another node (or another chain) behind the same URL.
+                prepared = False
                 logger.warning("privacy indexer: %s; retrying in %.0fs", exc, backoff)
                 backoff = min(backoff * 2, 60)
             except Exception:
+                prepared = False
                 logger.exception("privacy indexer: unexpected failure; retrying in %.0fs", backoff)
                 backoff = min(backoff * 2, 60)
             try:
