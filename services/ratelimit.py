@@ -6,9 +6,10 @@ registrant would wait behind its junk or be refused. All of it in memory (one
 replica; a restart forgets it, which only loosens the limits for a while).
 
 The client is a network, not an address: an IPv4 /32, or the IPv6 prefix of
-REGISTER_IPV6_PREFIX bits (default /64, the smallest block an ISP hands a
-subscriber; /56 is stricter, for a flood from one customer's delegation). One
-/64 is 2^64 addresses, so a per-address key is no limit at all against IPv6.
+REGISTER_IPV6_PREFIX bits (default /48: a VPS host routinely hands one
+customer a /48, and keyed by /64 that customer held 65536 budgets; /56 or
+/64 are looser, for an ingress where unrelated users share a /48). One /64 is
+2^64 addresses, so a per-address key is no limit at all against IPv6.
 
 Per client:
 

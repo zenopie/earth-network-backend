@@ -38,7 +38,7 @@ nothing outside the devnet. Do not reuse this key for anything that is.
 
 Per-client limits on /gas/register key on `CF-Connecting-IP`
 (`TRUST_CF_CONNECTING_IP=true`, set in the SDL; the service defaults it to
-false), grouped by IPv4 address or IPv6 /64. That is only safe because the
+false), grouped by IPv4 address or IPv6 /48. That is only safe because the
 app is reachable solely through the tunnel: never publish port 8000 globally
 while it is on, or any client picks its own key. Bodies over 64 KiB are
 refused before parsing, gas-check refusals spend a per-minute budget, and

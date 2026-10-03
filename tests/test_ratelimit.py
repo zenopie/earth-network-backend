@@ -15,10 +15,25 @@ def v6(i: int) -> str:
     return str(ipaddress.IPv6Address(BASE6 + i))
 
 
-def test_every_address_in_one_64_is_one_client():
+def test_every_address_in_one_64_is_one_client(monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_IPV6_PREFIX", 64)
     keys = {ratelimit.client_key(v6(i)) for i in (0, 1, 2**63, 2**64 - 1)}
     assert len(keys) == 1
     assert ratelimit.client_key(v6(2**64)) not in keys  # the next /64
+
+
+def test_one_48_is_one_client_by_default():
+    """audit-3 poc_ipv6.py: 2000 /64s of one VPS customer's /48 were 2000
+    clients (20000 requests a window); keyed by /48 they are one."""
+    assert config.REGISTER_IPV6_PREFIX == 48
+    base = "2001:db8:abcd:{:x}::1"
+    allowed = 0
+    for sub in range(2000):
+        k = ratelimit.client_key(base.format(sub))
+        allowed += sum(ratelimit.allow(k, now=1000.0) for _ in range(config.REGISTER_IP_MAX_PER_WINDOW))
+    assert allowed == config.REGISTER_IP_MAX_PER_WINDOW
+    assert len(ratelimit._windows) == 1
+    assert ratelimit.client_key("2001:db8:abce::1") != ratelimit.client_key(base.format(0))  # the next /48
 
 
 def test_ipv6_prefix_is_configurable(monkeypatch):
@@ -52,7 +67,7 @@ def test_memory_is_bounded_at_the_cap(monkeypatch):
     try:
         base = tracemalloc.get_traced_memory()[0]
         for i in range(cap * 2):
-            assert ratelimit.allow(ratelimit.client_key(v6(i << 64)), now=1000.0)
+            assert ratelimit.allow(ratelimit.client_key(v6(i << 80)), now=1000.0)  # distinct /48s
         held = tracemalloc.get_traced_memory()[0] - base
     finally:
         tracemalloc.stop()

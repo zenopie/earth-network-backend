@@ -45,7 +45,7 @@ services:
       # day, whatever a run of fresh or stolen passports tries.
       - REGISTER_GRANT_MAX_PER_DAY=500
       # Per-client limits on /gas/register, ahead of the one-at-a-time
-      # gas-check: 10 requests an hour per IPv4 address or IPv6 /64, one
+      # gas-check: 10 requests an hour per IPv4 address or IPv6 /48, one
       # check in flight. The client is CF-Connecting-IP — correct only
       # because the app is reachable solely through the tunnel (see expose
       # below). The service defaults it to false; publish 8000 globally and
@@ -53,7 +53,7 @@ services:
       - TRUST_CF_CONNECTING_IP=true
       - REGISTER_IP_MAX_PER_WINDOW=10
       - REGISTER_IP_WINDOW_SECONDS=3600
-      - REGISTER_IPV6_PREFIX=64
+      - REGISTER_IPV6_PREFIX=48
       # Past 10 gas-check refusals a minute, only the reserved lane (a new
       # passport from a DSC the chain already knows) is queued; 5 of the 20
       # queue places are kept for it.

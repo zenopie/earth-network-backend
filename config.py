@@ -65,7 +65,8 @@ PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS",
 
 # Per-client limits on /gas/register (services/ratelimit): requests per sliding
 # window, and one gas-check in flight per client. A client is an IPv4 address
-# or an IPv6 prefix of REGISTER_IPV6_PREFIX bits (64; 56 is stricter). Its
+# or an IPv6 prefix of REGISTER_IPV6_PREFIX bits (48: a VPS host hands one
+# customer a /48, 65536 /64s; 56 or 64 are looser). Its
 # address is CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on — right only
 # when Cloudflare is the sole ingress, as on the Akash lease (tunnel-only,
 # where deploy.yaml turns it on). Off by default: anywhere else the header is
@@ -73,7 +74,7 @@ PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS",
 TRUST_CF_CONNECTING_IP = os.getenv("TRUST_CF_CONNECTING_IP", "false").lower() == "true"
 REGISTER_IP_MAX_PER_WINDOW = int(os.getenv("REGISTER_IP_MAX_PER_WINDOW", "10"))
 REGISTER_IP_WINDOW_SECONDS = float(os.getenv("REGISTER_IP_WINDOW_SECONDS", "3600"))
-REGISTER_IPV6_PREFIX = int(os.getenv("REGISTER_IPV6_PREFIX", "64"))
+REGISTER_IPV6_PREFIX = int(os.getenv("REGISTER_IPV6_PREFIX", "48"))
 # Clients remembered at once, least recently seen evicted first. One small
 # fixed-size entry each (~200 bytes with the table's own overhead).
 REGISTER_IP_MAX_TRACKED = int(os.getenv("REGISTER_IP_MAX_TRACKED", "20000"))

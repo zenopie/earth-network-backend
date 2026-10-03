@@ -82,8 +82,10 @@ everything that can refuse a request without one runs first, in this order:
    length cap → 422.
 1. **Per-client window**: `REGISTER_IP_MAX_PER_WINDOW` requests per
    `REGISTER_IP_WINDOW_SECONDS` (default 10 an hour), junk included → 429.
-   A client is an IPv4 address or an IPv6 /`REGISTER_IPV6_PREFIX` (64; 56
-   is stricter) — one /64 is one client, not 2^64. Its address is
+   A client is an IPv4 address or an IPv6 /`REGISTER_IPV6_PREFIX` (48 by
+   default: VPS hosts hand one customer a /48, and keyed by /64 that was
+   65536 clients' budgets; 56 or 64 are looser, for an ingress where many
+   real users share a /48). Its address is
    `CF-Connecting-IP` when `TRUST_CF_CONNECTING_IP=true` (right only where
    Cloudflare is the sole ingress — the Akash lease is tunnel-only and sets
    it), otherwise the TCP peer (the default). Each client is one fixed-size
