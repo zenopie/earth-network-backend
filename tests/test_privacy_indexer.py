@@ -495,3 +495,44 @@ def test_rates_of_a_sweep_past_200_validators_keep_their_epoch(db):
     store.apply(events.parse_block(2, 1, "H2", cont))
     rows = store.conn.execute("SELECT epoch, COUNT(*) FROM rates GROUP BY epoch").fetchall()
     assert rows == [(7, 250)]
+
+
+def test_a_referred_registrations_referral_note_is_indexed_like_every_mint(db):
+    # Chain 4a663d5: a registration naming a live handle mints the
+    # referrer's half of the reward as a note to affiliate_pc, with the
+    # registrant's 177-byte affiliate_ciphertext (no transparent payout).
+    # In TestPrivatePersonhood C2 and D1 name "amy": their register txs mint
+    # three personhood notes (1 ANML, the registrant's ERTH, the referral
+    # ERTH); the unreferred ones two, a switch none.
+    sc = load("TestPrivatePersonhood")
+    store = Store(db)
+    sync(Indexer(store, FakeRPC(sc)))
+    referred = 0
+    for b in sc["blocks"]:
+        for tx in b["block_results"].get("txs_results") or []:
+            evs = tx.get("events") or []
+            reg = [e for e in evs if e["type"] == "register"]
+            if not reg:
+                continue
+            attrs = {a["key"]: a["value"] for a in reg[0]["attributes"]}
+            mints = [{a["key"]: a["value"] for a in e["attributes"]} for e in evs if e["type"] == "shielded_mint"]
+            mints = [m for m in mints if m["module"] == "personhood"]
+            if attrs["switched"] == "true":
+                assert mints == []
+                continue
+            erth = [m for m in mints if m["amount"].endswith("uerth")]
+            if len(erth) == 1:
+                continue
+            assert len(erth) == 2, b["height"]
+            referred += 1
+            reward = int(attrs["reward"])
+            mine, theirs = (int(m["amount"][:-len("uerth")]) for m in erth)
+            # registrant = payout - payout/2 (the reward event), referrer = payout/2.
+            assert mine == reward and theirs in (reward, reward - 1)
+            note = store.conn.execute("SELECT height, ciphertext, amount FROM notes WHERE position = ?",
+                                      (int(erth[1]["position"]),)).fetchone()
+            assert note is not None and note[0] == b["height"]
+            assert note[2] == erth[1]["amount"]
+            assert len(note[1]) == 177 and base64.b64encode(note[1]).decode() == erth[1]["ciphertext"]
+    assert referred == 2  # C2 and D1
+    store.close()
