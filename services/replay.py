@@ -1,7 +1,10 @@
 """Replay protection and payout limits for gas grants.
 
-A grant id — the passport key `passport:<nullifier>:<YYYY-MM>` of a
-registration grant — may be honoured exactly once. It is stored under its id
+A grant id — the passport key `passport:<nullifier>:<YYYY-MM-DD>` of a
+registration grant — may be honoured exactly once, and a passport (every id
+under `passport:<nullifier>:`) at most once in any `once_per` window (30
+days): keyed by calendar month, a grant on the 31st and another on the 1st
+were two grants a day apart. It is stored under its id
 alone, with an empty address: the backend keeps nothing that names where the
 note went. SQLite rather than a JSON file: the id set is
 append-only and read on every request, and a file that gets rewritten wholesale
@@ -44,10 +47,25 @@ class LimitReached(Exception):
 _DAY = 86400
 
 
-def peek(transaction_id: str) -> bool:
-    """Whether a grant id is already claimed. Read-only, for refusing a replay
+def _granted_within(key_prefix: str, seconds: int) -> bool:
+    """Whether any id starting with key_prefix was claimed in the last `seconds`.
+
+    A range over the primary key (ids under one key share the prefix and
+    nothing else sorts between it and prefix + U+10FFFF)."""
+    row = _db().execute(
+        "SELECT 1 FROM used_transactions WHERE transaction_id >= ? AND transaction_id < ? AND granted_at > ? LIMIT 1",
+        (key_prefix, key_prefix + "\U0010ffff", int(time.time()) - seconds),
+    ).fetchone()
+    return row is not None
+
+
+def peek(transaction_id: str, *, key_prefix: str | None = None, once_per: int | None = None) -> bool:
+    """Whether a grant id is already claimed (or, with key_prefix, any id
+    under it within once_per seconds). Read-only, for refusing a replay
     before the expensive check; claim() is still what decides."""
     with _lock:
+        if key_prefix is not None and once_per is not None and _granted_within(key_prefix, once_per):
+            return True
         row = _db().execute(
             "SELECT 1 FROM used_transactions WHERE transaction_id = ?", (transaction_id,)
         ).fetchone()
@@ -70,7 +88,8 @@ def limit_reached(prefix: str, max_per_day: int) -> bool:
         return _paid_today(prefix) >= max_per_day
 
 
-def claim(transaction_id: str, *, prefix: str, max_per_day: int) -> bool:
+def claim(transaction_id: str, *, prefix: str, max_per_day: int,
+          key_prefix: str | None = None, once_per: int | None = None) -> bool:
     """Records a grant id, returning False if it was already used.
 
     The insert is the claim: a UNIQUE violation is how a replay is detected, so
@@ -81,10 +100,16 @@ def claim(transaction_id: str, *, prefix: str, max_per_day: int) -> bool:
     this table, under the same lock as the insert, so concurrent requests
     cannot both squeeze under the limit; a released id no longer counts,
     because it moved nothing.
+
+    With key_prefix and once_per, also False when any id under key_prefix
+    was claimed in the last once_per seconds — checked under the same lock
+    as the insert.
     """
     with _lock:
         if _paid_today(prefix) >= max_per_day:
             raise LimitReached("daily")
+        if key_prefix is not None and once_per is not None and _granted_within(key_prefix, once_per):
+            return False
         try:
             _db().execute(
                 "INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, '', ?)",

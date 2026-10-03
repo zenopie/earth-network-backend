@@ -17,7 +17,7 @@ binding covers them), ciphertext_gas the gas note's own.
 takes the registration the app is about to broadcast, asks the chain's own
 checks whether it would be accepted (`earthd gas-check registration`,
 services/gascheck), and if so shields DUST_UERTH from the hot wallet into a
-note to pc_gas — once per passport per month, keyed on the passport nullifier,
+note to pc_gas — once per passport in any 30 days, keyed on the passport nullifier,
 which the registration makes public anyway. The app then broadcasts
 MsgRegister and pays its fee from that note; the registration reward pays
 every later fee. The backend stores only the passport key, never pc_gas or
@@ -55,8 +55,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/gas")
 
-# Registration grant ids: passport:<nullifier hex>:<YYYY-MM>.
+# Registration grant ids: passport:<nullifier hex>:<YYYY-MM-DD>, at most one
+# per passport in any GRANT_ONCE_PER_SECONDS (ids from before this change end
+# in :<YYYY-MM>; they share the passport's prefix and count the same).
 PASSPORT_PREFIX = "passport:"
+GRANT_ONCE_PER_SECONDS = 30 * 86400
 
 
 def _b64_len(n: int) -> int:
@@ -153,6 +156,11 @@ def _yymmdd_unix(v: int) -> int:
     return calendar.timegm((2000 + yy, mm, 1, 0, 0, 0)) + (dd - 1) * 86400
 
 
+def _passport_key(nullifier_hex: str) -> str:
+    """The prefix every grant id of one passport starts with."""
+    return f"{PASSPORT_PREFIX}{nullifier_hex}:"
+
+
 class _Refuse(Exception):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
@@ -219,10 +227,10 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes |
         raise _Refuse(400, "current_date is too far from today; prove again")
 
     nullifier = privacy.field_bytes(signals[config.PASSPORT_NULLIFIER_INDEX]).hex()
-    month = time.strftime("%Y-%m", time.gmtime())
+    day = time.strftime("%Y-%m-%d", time.gmtime())
     # Not refused when absent: whether a DSC is required is the chain's call.
     dsc = privacy.field_bytes(signals[config.PASSPORT_DSC_KEY_INDEX]) if config.PASSPORT_DSC_KEY_INDEX < n else None
-    return nullifier, f"{PASSPORT_PREFIX}{nullifier}:{month}", pc_gas, ciphertext_gas, affiliate, dsc
+    return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, affiliate, dsc
 
 
 @router.post("/register", summary="Fund a fee note for a registration the chain would accept")
@@ -236,7 +244,7 @@ async def register(body: RegisterGrant, request: Request):
         return _reply(exc.status_code, "error", str(exc))
     # Replay and cap before the check: both are a table read, the check is a
     # proof verification. claim() decides again after it, atomically.
-    if replay.peek(grant_id):
+    if replay.peek(grant_id, key_prefix=_passport_key(nullifier), once_per=GRANT_ONCE_PER_SECONDS):
         return _reply(409, "error", "already granted")
     if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY):
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
@@ -283,17 +291,18 @@ async def register(body: RegisterGrant, request: Request):
         logger.error("gas-check nullifier differs from public_signals[%d]; check PASSPORT_NULLIFIER_INDEX",
                      config.PASSPORT_NULLIFIER_INDEX)
         return _reply(503, "error", "verification is unavailable; try again shortly")
-    return await _grant_note(grant_id, pc_gas, ciphertext_gas)
+    return await _grant_note(grant_id, _passport_key(nullifier), pc_gas, ciphertext_gas)
 
 
-async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONResponse:
+async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: bytes) -> JSONResponse:
     """Claims grant_id, then shields the dust to pc. Claimed under its id alone, no address.
 
     Claim before sending: the insert is atomic, so two concurrent requests with
     the same id cannot both reach the chain.
     """
     try:
-        claimed = replay.claim(grant_id, prefix=PASSPORT_PREFIX, max_per_day=config.REGISTER_GRANT_MAX_PER_DAY)
+        claimed = replay.claim(grant_id, prefix=PASSPORT_PREFIX, max_per_day=config.REGISTER_GRANT_MAX_PER_DAY,
+                               key_prefix=key_prefix, once_per=GRANT_ONCE_PER_SECONDS)
     except replay.LimitReached as exc:
         logger.warning("%s payout limit reached; refusing a registration grant", exc)
         return _reply(429, "error", "free gas limit reached; try again tomorrow")

@@ -116,7 +116,7 @@ def test_register_stores_only_the_passport_key(client, shields, chain_says):
     rows = sqlite3.connect(config.STATE_DB).execute("SELECT transaction_id, address FROM used_transactions").fetchall()
     assert len(rows) == 1
     grant_id, address = rows[0]
-    assert grant_id == f"passport:{NF_HEX}:{time.strftime('%Y-%m', time.gmtime())}"
+    assert grant_id == f"passport:{NF_HEX}:{time.strftime('%Y-%m-%d', time.gmtime())}"
     assert address == ""
     assert PC_GAS.hex() not in grant_id
 
@@ -180,7 +180,7 @@ def test_failed_shield_gives_the_passport_back(client, chain_says, monkeypatch):
 
     monkeypatch.setattr(chain, "shield_dust", boom)
     assert client.post("/gas/register", json=reg_body()).status_code == 502
-    assert replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m', time.gmtime())}") is False
+    assert replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m-%d', time.gmtime())}") is False
     sent = []
 
     async def ok(pc, ct):
@@ -230,7 +230,7 @@ def test_unresolved_without_a_tx_hash_gives_the_passport_back(client, chain_says
 
     monkeypatch.setattr(chain, "shield_dust", unresolved)
     assert client.post("/gas/register", json=reg_body()).status_code == 502
-    assert not replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m', time.gmtime())}")
+    assert not replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m-%d', time.gmtime())}")
 
 
 @pytest.mark.parametrize("path", ["/gas/human", "/gas/transparent", "/gas/challenge", "/gas/ios", "/gas/android"])
@@ -283,14 +283,14 @@ def test_the_grant_is_keyed_on_public_signal_2(client, shields, chain_says):
     # current_date_index 0. config mirrors them.
     assert (config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX) == (2, 1, 0)
     assert client.post("/gas/register", json=reg_body(nf=12345)).status_code == 200
-    assert replay.peek(f"passport:{(12345).to_bytes(32, 'big').hex()}:{time.strftime('%Y-%m', time.gmtime())}")
+    assert replay.peek(f"passport:{(12345).to_bytes(32, 'big').hex()}:{time.strftime('%Y-%m-%d', time.gmtime())}")
 
 
 def test_a_nullifier_gas_check_disagrees_with_is_503_and_unclaimed(client, shields, chain_says):
     chain_says["registration"] = {"ok": True, "nullifier": "bb" * 32, "switched": False}
     assert client.post("/gas/register", json=reg_body()).status_code == 503
     assert shields == []
-    assert not replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m', time.gmtime())}")
+    assert not replay.peek(f"passport:{NF_HEX}:{time.strftime('%Y-%m-%d', time.gmtime())}")
 
 
 def test_affiliate_is_part_of_the_binding(client, shields, chain_says):
@@ -423,3 +423,32 @@ def test_shield_dust_refuses_a_ciphertext_the_chain_would():
     import asyncio
     with pytest.raises(ValueError):
         asyncio.run(chain.shield_dust(PC_GAS, b"x" * 176))
+
+
+# --- audit 3: once per passport in any 30 days -----------------------------------
+
+def _granted(grant_id: str, days_ago: float):
+    replay._db().execute("INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, '', ?)",
+                         (grant_id, int(time.time() - days_ago * 86400)))
+    replay._db().commit()
+
+
+def test_a_month_rollover_is_not_a_second_grant(client, shields, chain_says):
+    """Keyed by calendar month, a grant on the 31st and one on the 1st were two
+    grants a day apart. An id in the old :YYYY-MM form counts too."""
+    _granted(f"passport:{NF_HEX}:2026-09", days_ago=1)
+    assert client.post("/gas/register", json=reg_body()).status_code == 409
+    assert shields == [] and chain_says["asked"] == []
+    # Another passport is unaffected.
+    assert client.post("/gas/register", json=reg_body(nf=5)).status_code == 200
+
+
+def test_a_passport_is_granted_again_after_30_days(client, shields, chain_says):
+    _granted(f"passport:{NF_HEX}:2026-08-01", days_ago=31)
+    assert client.post("/gas/register", json=reg_body()).status_code == 200
+
+
+def test_the_30_day_window_is_decided_atomically_in_claim():
+    _granted(f"passport:{NF_HEX}:2026-09-30", days_ago=2)
+    assert not replay.claim(f"passport:{NF_HEX}:2026-10-02", prefix="passport:", max_per_day=10,
+                            key_prefix=f"passport:{NF_HEX}:", once_per=30 * 86400)

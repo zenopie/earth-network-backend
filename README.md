@@ -14,7 +14,7 @@ Registration mints a shielded ERTH reward that pays every later fee, so this
 subsidises exactly one transaction per new human.
 
 The Sybil defence is the passport: a grant needs a registration the chain
-itself would accept, and is paid once per passport per month. `/gas/register`
+itself would accept, and is paid once per passport in any 30 days. `/gas/register`
 is the only grant. The device-attestation grants (`/gas/challenge`,
 `/gas/ios`, `/gas/android`), `/gas/transparent` and `/gas/human` are gone.
 
@@ -35,8 +35,10 @@ v2 ciphertext (`zk/privacy.EncryptBlindNote`), exactly 177 bytes:
 `ciphertext_anml`/`ciphertext_erth` are MsgRegister's own (the proof's binding
 covers them), `ciphertext_gas` is the gas note's.
 The app then broadcasts MsgRegister paying its fee from that note. Once per
-passport per month, keyed `passport:<nullifier>:<YYYY-MM>`; the replay table
-stores that key and nothing else — no address, no pc. The check is the
+passport in any 30 days (a sliding window over every id of that passport),
+keyed `passport:<nullifier>:<YYYY-MM-DD>`; the replay table stores that key
+and nothing else — no address, no pc. Ids from before the window (`:<YYYY-MM>`)
+share the passport's prefix and count the same. The check is the
 chain's own, through `earthd gas-check registration` (installed in the image
 from the chain release; see the Dockerfile). Proofs are verified here, never by
 the node.
@@ -45,12 +47,13 @@ Answers are `{status, message, tx_hash?}` with 200 (sent), 202 (broadcast,
 unresolved), 4xx (cannot succeed as sent; 409 already granted, 413 body over
 64 KiB, 429 rate or daily limit) or 5xx (retry).
 
-### Once per passport per month — a switch included (by design)
+### Once per passport in 30 days — a switch included (by design)
 
-The grant id carries the month, and gas-check accepts a *switch* (a passport
-already registered moving to a new identity) as readily as a first
-registration. So a holder can draw one grant a month, every month, by
-switching. That is accepted: it costs `DUST_UERTH` per passport per month at
+Grants are once per passport in a sliding 30-day window (keyed by calendar
+month, a grant on the 31st and another on the 1st were two, a day apart),
+and gas-check accepts a *switch* (a passport already registered moving to a
+new identity) as readily as a first registration. So a holder can draw one
+grant every 30 days by switching. That is accepted: it costs `DUST_UERTH` per passport per 30 days at
 most, the rolling `REGISTER_GRANT_MAX_PER_DAY` bounds the total whatever the
 mix, and a switch is a real registration tx the chain charges a fee for (paid
 from that very note). Keying the grant on the nullifier alone would strand a
@@ -102,8 +105,8 @@ everything that can refuse a request without one runs first, in this order:
    ciphertexts of one's own stops here.
 4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
    `current_date_max_skew_seconds` of now (+10 min) → 400.
-5. **Replay**: `passport:<public_signals[nullifier_index] as 32-byte hex>:<YYYY-MM>`
-   already claimed → 409.
+5. **Replay**: any `passport:<public_signals[nullifier_index] as 32-byte hex>:…`
+   claimed in the last 30 days → 409.
 6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` passport grants in the last
    24 h → 429.
 7. **Refusal budget**: junk with a forged binding passes every check above,
