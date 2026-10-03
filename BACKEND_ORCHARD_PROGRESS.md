@@ -65,6 +65,7 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   (minted: blind stake ct + denom/amount/spc). Stream columns unchanged;
   minted stake rows' ciphertext no longer null. README "Stream row changes
   for wallets".
+- affiliate must be canonical lowercase bech32 (chain canonicalBytes).
 - Fixtures re-recorded from fced976. No Groundworks/allocation events are
   indexed (none to change).
 
