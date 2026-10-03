@@ -52,6 +52,7 @@ roots, rates and status get short max-ages.
 import base64
 import sqlite3
 import threading
+from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
@@ -59,6 +60,9 @@ import config
 from services.privacy import store as store_mod
 
 GENESIS_PREFIX_HEX = 16
+# SQLite integers are signed 64-bit: a larger query parameter is a 422, not
+# an OverflowError (500) at the bind.
+MAX_INT = 2**63 - 1
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 TIP = "public, max-age=2"
@@ -75,6 +79,25 @@ def _db() -> sqlite3.Connection:
         conn = store_mod.connect(config.INDEX_DB, readonly=True)
         _local.conn, _local.path = conn, config.INDEX_DB
     return conn
+
+
+@contextmanager
+def _read():
+    """This thread's reader connection inside one read transaction.
+
+    Every query of a response — its rows and the synced height beside them —
+    sees one snapshot. In autocommit each statement had its own, so a block
+    the indexer committed between a page's row query and its synced-height
+    query was named as covered (next_height past it) without its rows: a
+    client following next_height never saw them (audit-3
+    poc_height_page_race.py).
+    """
+    c = _db()
+    c.execute("BEGIN")
+    try:
+        yield c
+    finally:
+        c.execute("ROLLBACK")
 
 
 def _meta(c: sqlite3.Connection, key: str) -> str | None:
@@ -99,10 +122,10 @@ def _base(c: sqlite3.Connection) -> str | None:
 
 def _this_chain(chain_id: str, genesis: str) -> None:
     """404 unless the path names the chain the index holds (see the module doc)."""
-    c = _db()
-    if chain_id != _meta(c, "chain_id") or genesis != _genesis(c) or genesis is None:
-        raise HTTPException(status_code=404, detail="not the chain this index holds; read base from /privacy/status",
-                            headers={"Cache-Control": "no-store"})
+    with _read() as c:
+        if chain_id != _meta(c, "chain_id") or genesis != _genesis(c) or genesis is None:
+            raise HTTPException(status_code=404, detail="not the chain this index holds; read base from /privacy/status",
+                                headers={"Cache-Control": "no-store"})
 
 
 router = APIRouter(tags=["privacy"])
@@ -145,102 +168,102 @@ def _group(rows, fmt) -> list:
 @router.get("/privacy/status")
 @chain.get("/status")
 def status(response: Response):
-    c = _db()
-    notes, ids, nfs = store_mod.counts(c)
-    stake_notes, stake_nfs = store_mod.stake_counts(c)
-    response.headers["Cache-Control"] = TIP
-    last_time = _meta(c, "last_time")
-    start = _meta(c, "start_height")
-    return {
-        "chain_id": _meta(c, "chain_id"),
-        "genesis": _genesis(c),
-        "genesis_hash": _meta(c, "genesis_hash"),
-        "base": _base(c),
-        "synced_height": _synced(c),
-        "synced_time": int(last_time) if last_time else None,
-        "start_height": int(start) if start else None,
-        "notes": notes,
-        "identity_leaves": ids,
-        "nullifiers": nfs,
-        "stake_notes": stake_notes,
-        "stake_nullifiers": stake_nfs,
-        "halted": _meta(c, "halted"),
-    }
+    with _read() as c:
+        notes, ids, nfs = store_mod.counts(c)
+        stake_notes, stake_nfs = store_mod.stake_counts(c)
+        response.headers["Cache-Control"] = TIP
+        last_time = _meta(c, "last_time")
+        start = _meta(c, "start_height")
+        return {
+            "chain_id": _meta(c, "chain_id"),
+            "genesis": _genesis(c),
+            "genesis_hash": _meta(c, "genesis_hash"),
+            "base": _base(c),
+            "synced_height": _synced(c),
+            "synced_time": int(last_time) if last_time else None,
+            "start_height": int(start) if start else None,
+            "notes": notes,
+            "identity_leaves": ids,
+            "nullifiers": nfs,
+            "stake_notes": stake_notes,
+            "stake_nullifiers": stake_nfs,
+            "halted": _meta(c, "halted"),
+        }
 
 
 @chain.get("/notes")
-def notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    n = _limit(limit)
-    rows = c.execute(
-        "SELECT position, height, cm, ciphertext, amount FROM notes WHERE position >= ? ORDER BY position LIMIT ?",
-        (from_pos, n),
-    ).fetchall()
-    complete = len(rows) == n
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["position", "height", "cm", "ciphertext", "amount"],
-        "synced_height": _synced(c),
-        "from_pos": from_pos,
-        "next_pos": rows[-1][0] + 1 if rows else from_pos,
-        "complete": complete,
-        "notes": [[p, h, cm.hex(), base64.b64encode(ct).decode(), amt] for p, h, cm, ct, amt in rows],
-    }
+def notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        n = _limit(limit)
+        rows = c.execute(
+            "SELECT position, height, cm, ciphertext, amount FROM notes WHERE position >= ? ORDER BY position LIMIT ?",
+            (from_pos, n),
+        ).fetchall()
+        complete = len(rows) == n
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["position", "height", "cm", "ciphertext", "amount"],
+            "synced_height": _synced(c),
+            "from_pos": from_pos,
+            "next_pos": rows[-1][0] + 1 if rows else from_pos,
+            "complete": complete,
+            "notes": [[p, h, cm.hex(), base64.b64encode(ct).decode(), amt] for p, h, cm, ct, amt in rows],
+        }
 
 
 @chain.get("/nullifiers")
-def nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    rows, nxt, complete = _height_page(
-        c, "SELECT height, nf FROM nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["height", "nullifiers"],
-        "synced_height": _synced(c),
-        "from_height": from_height,
-        "next_height": nxt,
-        "complete": complete,
-        "blocks": _group(rows, bytes.hex),
-    }
+def nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        rows, nxt, complete = _height_page(
+            c, "SELECT height, nf FROM nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["height", "nullifiers"],
+            "synced_height": _synced(c),
+            "from_height": from_height,
+            "next_height": nxt,
+            "complete": complete,
+            "blocks": _group(rows, bytes.hex),
+        }
 
 
 @chain.get("/identity")
-def identity(response: Response, from_index: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    n = _limit(limit)
-    rows = c.execute(
-        "SELECT idx, height, leaf, zeroed_height FROM identity_leaves WHERE idx >= ? ORDER BY idx LIMIT ?",
-        (from_index, n),
-    ).fetchall()
-    (size,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM identity_leaves").fetchone()
-    # Not immutable: a leaf on this page may be zeroed later. Clients that
-    # already hold a range follow /identity/zeroed instead of re-reading it.
-    response.headers["Cache-Control"] = SHORT if len(rows) == n else TIP
-    return {
-        "fields": ["index", "height", "leaf", "zeroed_height"],
-        "synced_height": _synced(c),
-        "size": size,
-        "from_index": from_index,
-        "next_index": rows[-1][0] + 1 if rows else from_index,
-        "leaves": [[i, h, leaf.hex(), z] for i, h, leaf, z in rows],
-    }
+def identity(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        n = _limit(limit)
+        rows = c.execute(
+            "SELECT idx, height, leaf, zeroed_height FROM identity_leaves WHERE idx >= ? ORDER BY idx LIMIT ?",
+            (from_index, n),
+        ).fetchall()
+        (size,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM identity_leaves").fetchone()
+        # Not immutable: a leaf on this page may be zeroed later. Clients that
+        # already hold a range follow /identity/zeroed instead of re-reading it.
+        response.headers["Cache-Control"] = SHORT if len(rows) == n else TIP
+        return {
+            "fields": ["index", "height", "leaf", "zeroed_height"],
+            "synced_height": _synced(c),
+            "size": size,
+            "from_index": from_index,
+            "next_index": rows[-1][0] + 1 if rows else from_index,
+            "leaves": [[i, h, leaf.hex(), z] for i, h, leaf, z in rows],
+        }
 
 
 @chain.get("/identity/zeroed")
-def identity_zeroed(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    rows, nxt, complete = _height_page(
-        c, "SELECT height, idx FROM identity_writes WHERE zeroed = 1 AND height >= ? ORDER BY height, seq",
-        from_height, _limit(limit))
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["height", "indexes"],
-        "synced_height": _synced(c),
-        "from_height": from_height,
-        "next_height": nxt,
-        "complete": complete,
-        "blocks": _group(rows, int),
-    }
+def identity_zeroed(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        rows, nxt, complete = _height_page(
+            c, "SELECT height, idx FROM identity_writes WHERE zeroed = 1 AND height >= ? ORDER BY height, seq",
+            from_height, _limit(limit))
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["height", "indexes"],
+            "synced_height": _synced(c),
+            "from_height": from_height,
+            "next_height": nxt,
+            "complete": complete,
+            "blocks": _group(rows, int),
+        }
 
 
 def _root(c: sqlite3.Connection, table: str):
@@ -252,45 +275,45 @@ def _root(c: sqlite3.Connection, table: str):
 
 @chain.get("/roots/latest")
 def roots_latest(response: Response):
-    c = _db()
-    response.headers["Cache-Control"] = TIP
-    return {
-        "synced_height": _synced(c),
-        "note": _root(c, "note_roots"),
-        "identity": _root(c, "identity_roots"),
-        "stake": _root(c, "stake_roots"),
-    }
+    with _read() as c:
+        response.headers["Cache-Control"] = TIP
+        return {
+            "synced_height": _synced(c),
+            "note": _root(c, "note_roots"),
+            "identity": _root(c, "identity_roots"),
+            "stake": _root(c, "stake_roots"),
+        }
 
 
 @chain.get("/rates")
-def rates(response: Response, epoch: int | None = Query(None, ge=0)):
+def rates(response: Response, epoch: int | None = Query(None, ge=0, le=MAX_INT)):
     """Each validator's derth rate: at the end of `epoch`, or the latest."""
-    c = _db()
-    fields = ["validator", "rate", "supply", "epoch", "height"]
-    (latest_epoch,) = c.execute("SELECT MAX(epoch) FROM rates").fetchone()
-    if epoch is None:
-        rows = c.execute(
-            "SELECT r.validator, r.rate, r.supply, r.epoch, r.height FROM rates r"
-            " JOIN (SELECT validator, MAX(height) AS h FROM rates GROUP BY validator) l"
-            " ON r.validator = l.validator AND r.height = l.h ORDER BY r.validator"
-        ).fetchall()
-        response.headers["Cache-Control"] = "public, max-age=30"
-    else:
-        rows = c.execute(
-            "SELECT validator, rate, supply, epoch, height FROM rates WHERE epoch = ? ORDER BY validator, height",
-            (epoch,),
-        ).fetchall()
-        # An epoch older than the latest is closed; the latest may still be
-        # joined by a validator whose epoch end was retried.
-        closed = latest_epoch is not None and epoch < latest_epoch
-        response.headers["Cache-Control"] = "public, max-age=86400" if closed else "public, max-age=30"
-    return {
-        "fields": fields,
-        "synced_height": _synced(c),
-        "epoch": epoch,
-        "latest_epoch": latest_epoch,
-        "rates": [list(r) for r in rows],
-    }
+    with _read() as c:
+        fields = ["validator", "rate", "supply", "epoch", "height"]
+        (latest_epoch,) = c.execute("SELECT MAX(epoch) FROM rates").fetchone()
+        if epoch is None:
+            rows = c.execute(
+                "SELECT r.validator, r.rate, r.supply, r.epoch, r.height FROM rates r"
+                " JOIN (SELECT validator, MAX(height) AS h FROM rates GROUP BY validator) l"
+                " ON r.validator = l.validator AND r.height = l.h ORDER BY r.validator"
+            ).fetchall()
+            response.headers["Cache-Control"] = "public, max-age=30"
+        else:
+            rows = c.execute(
+                "SELECT validator, rate, supply, epoch, height FROM rates WHERE epoch = ? ORDER BY validator, height",
+                (epoch,),
+            ).fetchall()
+            # An epoch older than the latest is closed; the latest may still be
+            # joined by a validator whose epoch end was retried.
+            closed = latest_epoch is not None and epoch < latest_epoch
+            response.headers["Cache-Control"] = "public, max-age=86400" if closed else "public, max-age=30"
+        return {
+            "fields": fields,
+            "synced_height": _synced(c),
+            "epoch": epoch,
+            "latest_epoch": latest_epoch,
+            "rates": [list(r) for r in rows],
+        }
 
 
 def _b64_or_none(v: bytes | None) -> str | None:
@@ -302,67 +325,67 @@ def _hex_or_none(v: bytes | None) -> str | None:
 
 
 @chain.get("/stake/notes")
-def stake_notes(response: Response, from_pos: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    n = _limit(limit)
-    rows = c.execute(
-        "SELECT position, height, cm, ciphertext, denom, amount, spc FROM stake_notes"
-        " WHERE position >= ? ORDER BY position LIMIT ?",
-        (from_pos, n),
-    ).fetchall()
-    complete = len(rows) == n
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
-        "synced_height": _synced(c),
-        "from_pos": from_pos,
-        "next_pos": rows[-1][0] + 1 if rows else from_pos,
-        "complete": complete,
-        "notes": [[p, h, cm.hex(), _b64_or_none(ct), denom, amt, _hex_or_none(spc)]
-                  for p, h, cm, ct, denom, amt, spc in rows],
-    }
+def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        n = _limit(limit)
+        rows = c.execute(
+            "SELECT position, height, cm, ciphertext, denom, amount, spc FROM stake_notes"
+            " WHERE position >= ? ORDER BY position LIMIT ?",
+            (from_pos, n),
+        ).fetchall()
+        complete = len(rows) == n
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
+            "synced_height": _synced(c),
+            "from_pos": from_pos,
+            "next_pos": rows[-1][0] + 1 if rows else from_pos,
+            "complete": complete,
+            "notes": [[p, h, cm.hex(), _b64_or_none(ct), denom, amt, _hex_or_none(spc)]
+                      for p, h, cm, ct, denom, amt, spc in rows],
+        }
 
 
 @chain.get("/stake/nullifiers")
-def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
-    c = _db()
-    rows, nxt, complete = _height_page(
-        c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["height", "nullifiers"],
-        "synced_height": _synced(c),
-        "from_height": from_height,
-        "next_height": nxt,
-        "complete": complete,
-        "blocks": _group(rows, bytes.hex),
-    }
+def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    with _read() as c:
+        rows, nxt, complete = _height_page(
+            c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["height", "nullifiers"],
+            "synced_height": _synced(c),
+            "from_height": from_height,
+            "next_height": nxt,
+            "complete": complete,
+            "blocks": _group(rows, bytes.hex),
+        }
 
 
 @chain.get("/stake/roots")
-def stake_roots(response: Response, from_height: int = Query(0, ge=0), limit: int | None = Query(None, ge=1)):
+def stake_roots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
     """Every stake root the chain recorded (one per block that moved the tree), oldest first.
 
     A wallet proves a stake note against any root still in the chain's window
     (stake_root_window_seconds) or, for a stake vote, against the proposal's
     snapshot root; this stream is every candidate, keyed by height alone.
     """
-    c = _db()
-    n = _limit(limit)
-    rows = c.execute(
-        "SELECT height, root, tree_size, time FROM stake_roots WHERE height >= ? ORDER BY height LIMIT ?",
-        (from_height, n),
-    ).fetchall()
-    complete = len(rows) == n
-    response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
-    return {
-        "fields": ["height", "root", "tree_size", "time"],
-        "synced_height": _synced(c),
-        "from_height": from_height,
-        "next_height": rows[-1][0] + 1 if complete else max(from_height, _synced(c) + 1),
-        "complete": complete,
-        "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
-    }
+    with _read() as c:
+        n = _limit(limit)
+        rows = c.execute(
+            "SELECT height, root, tree_size, time FROM stake_roots WHERE height >= ? ORDER BY height LIMIT ?",
+            (from_height, n),
+        ).fetchall()
+        complete = len(rows) == n
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["height", "root", "tree_size", "time"],
+            "synced_height": _synced(c),
+            "from_height": from_height,
+            "next_height": rows[-1][0] + 1 if complete else max(from_height, _synced(c) + 1),
+            "complete": complete,
+            "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
+        }
 
 
 router.include_router(chain)

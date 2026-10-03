@@ -196,3 +196,68 @@ def test_an_index_that_never_met_its_chain_serves_no_streams(tmp_path, monkeypat
     s = c.get("/privacy/status").json()
     assert s["base"] is None and s["genesis"] is None
     assert c.get("/privacy/None/None/notes").status_code == 404
+
+
+# --- audit 3 -----------------------------------------------------------------
+
+@pytest.mark.parametrize("path,param", [
+    ("/privacy/notes", "from_pos"), ("/privacy/nullifiers", "from_height"),
+    ("/privacy/identity", "from_index"), ("/privacy/identity/zeroed", "from_height"),
+    ("/privacy/rates", "epoch"), ("/privacy/stake/notes", "from_pos"),
+    ("/privacy/stake/nullifiers", "from_height"), ("/privacy/stake/roots", "from_height"),
+    ("/privacy/notes", "limit"),
+])
+def test_integers_past_int64_are_422_not_500(api, path, param):
+    """audit-3 poc_overflow_500.py: 2^64 reached SQLite's bind as an OverflowError."""
+    assert api.get(path, params={param: str(2**64)}).status_code == 422
+    assert api.get(path, params={param: str(2**63)}).status_code == 422
+    assert api.get(path, params={param: str(2**63 - 1)}).status_code == 200
+
+
+def _racing(monkeypatch, path, table_sql_marker):
+    """A reader connection on which the indexer commits block 4 right after
+    the page's row query (audit-3 poc_height_page_race.py)."""
+    from services.privacy import store as store_mod
+    from services.privacy.events import BlockDelta
+
+    w = store_mod.Store(path)
+    w.set_meta("chain_id", "earth-test")
+    w.set_meta("genesis_hash", "ab" * 32)
+    w.apply(BlockDelta(1, 1000, "H1"))
+    w.apply(BlockDelta(2, 1001, "H2", nullifiers=[b"\x01" * 32], stake_nullifiers=[b"\x11" * 32]))
+    w.apply(BlockDelta(3, 1002, "H3"))
+    inner = store_mod.connect(path, readonly=True)
+
+    class RacingConn:
+        fired = False
+
+        def execute(self, sql, *a):
+            cur = inner.execute(sql, *a)
+            if not RacingConn.fired and table_sql_marker in sql:
+                RacingConn.fired = True
+                w.apply(BlockDelta(4, 1003, "H4", nullifiers=[b"\x04" * 32], stake_nullifiers=[b"\x14" * 32]))
+            return cur
+
+    monkeypatch.setattr(privacy, "_db", lambda: RacingConn())
+    return RacingConn
+
+
+@pytest.mark.parametrize("route,marker,key", [
+    ("nullifiers", "FROM nullifiers", "blocks"),
+    ("stake/nullifiers", "FROM stake_nullifiers", "blocks"),
+])
+def test_a_page_and_its_synced_height_are_one_snapshot(tmp_path, monkeypatch, route, marker, key):
+    path = str(tmp_path / "race.db")
+    monkeypatch.setattr(config, "INDEX_DB", path)
+    racing = _racing(monkeypatch, path, marker)
+    app = FastAPI()
+    app.include_router(privacy.router)
+    c = TestClient(app)
+    body = c.get(f"/privacy/earth-test/{'ab' * 8}/{route}", params={"from_height": 0}).json()
+    assert racing.fired
+    heights = [h for h, _ in body[key]]
+    assert heights == [2]
+    # The page saw heights up to 3; block 4 committed after its first read.
+    assert body["synced_height"] == 3 and body["next_height"] == 4
+    nxt = c.get(f"/privacy/earth-test/{'ab' * 8}/{route}", params={"from_height": body["next_height"]}).json()
+    assert [h for h, _ in nxt[key]] == [4], "following next_height reaches block 4's rows"
