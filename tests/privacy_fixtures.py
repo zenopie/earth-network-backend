@@ -70,6 +70,8 @@ class FakeRPC:
         self.earliest = earliest
         self.calls: list[str] = []
         self.fail_next: Exception | None = None
+        # Overrides for a block's last_block_id hash (default: the previous block's hash).
+        self.parents: dict[int, str] = {}
 
     def _check(self, what):
         self.calls.append(what)
@@ -91,7 +93,8 @@ class FakeRPC:
         from services.privacy.rpc import parse_time
 
         self._check(f"blockchain {lo}-{hi}")
-        return {h: (self.blocks[h]["hash"], parse_time(self.blocks[h]["time"]))
+        return {h: (self.blocks[h]["hash"], parse_time(self.blocks[h]["time"]),
+                    self.parents.get(h, self.blocks[h - 1]["hash"] if h - 1 in self.blocks else ""))
                 for h in range(lo, hi + 1) if h in self.blocks and h <= self.tip}
 
     async def abci_query(self, path, data=b"", height=None):

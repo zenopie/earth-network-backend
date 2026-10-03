@@ -129,6 +129,42 @@ def test_a_different_chain_behind_the_rpc_halts(db):
         run(Indexer(store, FakeRPC(sc)).prepare())
 
 
+def test_a_block_that_does_not_follow_the_indexed_one_halts(db):
+    """Re-audit K14: continuity is checked on every block, not only at start.
+    An RPC swapped mid-run (a load balancer, a relaunch) serves blocks whose
+    parent is not the block the index holds."""
+    sc = load("TestPrivatePersonhood")
+    rpc = FakeRPC(sc, tip=10)
+    store = Store(db)
+    idx = Indexer(store, rpc, batch=4)
+    sync(idx)
+    assert store.last_height() == 10
+    rpc.tip = len(sc["blocks"])
+    rpc.parents[13] = "AB" * 32
+    with pytest.raises(Halted, match="block 13 names parent"):
+        while run(idx.step()):
+            pass
+    assert store.last_height() == 12, "nothing from the other chain is applied"
+    assert "parent" in store.meta("halted")
+
+
+def test_parent_check_survives_a_restart_and_ignores_case(db):
+    sc = load("TestShieldedPoolEndToEnd")
+    rpc = FakeRPC(sc, tip=4)
+    store = Store(db)
+    sync(Indexer(store, rpc))
+    # After a restart the first block fetched must follow the last indexed one.
+    rpc.tip = 6
+    rpc.parents[5] = sc["blocks"][3]["hash"].lower()  # the same hash, other case
+    sync(Indexer(store, rpc))
+    assert store.last_height() == 6
+    rpc.tip = len(sc["blocks"])
+    rpc.parents[7] = "00" * 32
+    with pytest.raises(Halted, match="block 7 names parent"):
+        sync(Indexer(store, rpc))
+    assert store.last_height() == 6
+
+
 def test_a_different_chain_id_halts(db):
     sc = load("TestShieldedPoolEndToEnd")
     store = Store(db)

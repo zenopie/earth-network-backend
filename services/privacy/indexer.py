@@ -7,8 +7,10 @@ or, inside the API process, started by main.py when INDEXER_ENABLED.
 CometBFT finality is instant: a committed block is never reverted, so the
 indexer only ever moves forward and never rolls back. What it does guard
 against is the RPC pointing at a different chain than the one indexed (a
-relaunch under the same chain id, a misconfigured URL): the chain id and the
-hash of the last indexed block are checked on every start, and a mismatch
+relaunch under the same chain id, a misconfigured URL, an RPC swapped behind
+a load balancer): the chain id and the hash of the last indexed block are
+checked on every start, and every block applied after that must name the
+indexed block before it as its parent (header.last_block_id). A mismatch
 halts the indexer — wipe INDEX_DB to start over.
 
 Blocks are fetched in batches (block_results concurrently, block times and
@@ -57,6 +59,9 @@ class Indexer:
         self.tip = 0
         self.halted: str | None = store.meta("halted")
         self.next_height = 0
+        # The hash of the block at next_height - 1, which the next block must
+        # name as its parent. None only before the first block of a new index.
+        self.prev_hash: str | None = None
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -89,6 +94,7 @@ class Indexer:
             if last in metas and metas[last][0] != self.store.block_hash(last):
                 self._halt(f"block {last} hash is {metas[last][0]} on the RPC, {self.store.block_hash(last)} in the index: a different chain")
             self.next_height = last + 1
+            self.prev_hash = self.store.block_hash(last)
         else:
             start = self.start_height or st["earliest_height"]
             if start < st["earliest_height"]:
@@ -125,13 +131,16 @@ class Indexer:
         for h, res in zip(heights, results):
             if h not in metas:
                 raise RPCError(f"no block meta for {h}")
-            block_hash, t = metas[h]
+            block_hash, t, parent = metas[h]
+            if self.prev_hash is not None and parent.upper() != self.prev_hash.upper():
+                self._halt(f"block {h} names parent {parent or '(none)'}, the index has {self.prev_hash} at {h - 1}: a different chain")
             try:
                 delta = parse_block(h, t, block_hash, res)
                 await asyncio.to_thread(self.store.apply, delta)
             except (EventError, Inconsistent) as exc:
                 self._halt(f"block {h}: {exc}")
             self.next_height = h + 1
+            self.prev_hash = block_hash
             applied += 1
         if self.check_sizes:
             await self._check_sizes(heights[-1])

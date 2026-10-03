@@ -65,14 +65,19 @@ class CometRPC:
     async def block_results(self, height: int) -> dict:
         return await self._call("block_results", height=height)
 
-    async def block_metas(self, lo: int, hi: int) -> dict[int, tuple[str, int]]:
-        """{height: (block hash, unix time)} for lo..hi; the node returns at most 20 a call."""
-        out: dict[int, tuple[str, int]] = {}
+    async def block_metas(self, lo: int, hi: int) -> dict[int, tuple[str, int, str]]:
+        """{height: (block hash, unix time, parent hash)} for lo..hi; the node returns at most 20 a call.
+
+        The parent is the header's last_block_id: the hash the block commits
+        to as the one before it ("" at the chain's first block).
+        """
+        out: dict[int, tuple[str, int, str]] = {}
         while lo <= hi:
             r = await self._call("blockchain", minHeight=lo, maxHeight=min(hi, lo + 19))
             for m in r.get("block_metas") or []:
                 h = int(m["header"]["height"])
-                out[h] = (m["block_id"]["hash"], parse_time(m["header"]["time"]))
+                parent = ((m["header"].get("last_block_id") or {}).get("hash")) or ""
+                out[h] = (m["block_id"]["hash"], parse_time(m["header"]["time"]), parent)
             lo = min(hi, lo + 19) + 1
         return out
 
