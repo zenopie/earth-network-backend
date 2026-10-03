@@ -7,7 +7,8 @@ new human needs is a note:
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate?, pc_gas, ciphertext_gas}
+                           affiliate?, pc_gas, ciphertext_gas, pow?}
+    GET  /gas/pow         the proof of work it needs now (services/pow)
 
 Every ciphertext is a note's amount-blind v2 ciphertext (zk/privacy
 EncryptBlindNote), exactly 177 bytes, as the chain requires of every note it
@@ -29,8 +30,9 @@ nothing on chain links an address to a registration any more. /gas/transparent
 /gas/android, /gas/challenge) are gone too: /gas/register is the only grant.
 
 Grant endpoints answer with {status, message, tx_hash?} and a status code the
-app can act on: 200 sent, 202 broadcast but unresolved, 4xx the request cannot
-succeed as sent, 5xx try again later.
+app can act on: 200 sent, 202 broadcast but unresolved, 428 attach (or
+redo) a proof of work, other 4xx the request cannot succeed as sent, 5xx try
+again later.
 """
 import base64
 import binascii
@@ -47,7 +49,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 import config
 
-from services import chain, gascheck, knowndsc, ratelimit, replay, shielded_msg
+from services import chain, gascheck, knowndsc, pow, ratelimit, replay, shielded_msg
 from services.zk import privacy
 from services.zk.poseidon2 import P
 
@@ -73,6 +75,12 @@ _SHORT = Annotated[str, StringConstraints(max_length=2048)]
 _SIGNAL = Annotated[str, StringConstraints(max_length=128)]
 
 
+class PowStamp(BaseModel):
+    """A hashcash stamp over this registration (services/pow has the spec)."""
+    ts: int = Field(ge=0, le=2**63 - 1)
+    nonce: Annotated[str, StringConstraints(max_length=64)]
+
+
 class RegisterGrant(BaseModel):
     # MsgRegister's own fields, bytes as standard base64 (proto JSON), except
     # its fee bundle, which the app proves only once it holds the gas note.
@@ -91,6 +99,9 @@ class RegisterGrant(BaseModel):
     # required).
     pc_gas: _SHORT
     ciphertext_gas: _SHORT
+    # Required for the reserved lane and while shedding (428 says so); see
+    # GET /gas/pow.
+    pow: PowStamp | None = None
 
 
 _HEX_RUN = re.compile(r"(0x)?[0-9a-fA-F]{16,}")
@@ -167,11 +178,11 @@ class _Refuse(Exception):
         self.status_code = status_code
 
 
-def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes | None]:
+def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes | None, bytes]:
     """Everything about a registration that needs no gas-check, cheapest first.
 
     Returns (passport nullifier hex, grant id, pc_gas, ciphertext_gas,
-    affiliate, DSC commitment or None) or raises _Refuse.
+    affiliate, DSC commitment or None, dsc_der) or raises _Refuse.
     Every value checked here is a public input the chain then verifies the
     proof against, so refusing on it early never refuses what the chain would
     take — it only stops a replay, a stale or mis-bound proof, or junk from
@@ -230,7 +241,82 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes |
     day = time.strftime("%Y-%m-%d", time.gmtime())
     # Not refused when absent: whether a DSC is required is the chain's call.
     dsc = privacy.field_bytes(signals[config.PASSPORT_DSC_KEY_INDEX]) if config.PASSPORT_DSC_KEY_INDEX < n else None
-    return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, affiliate, dsc
+    return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, affiliate, dsc, dsc_der
+
+
+def _dsc_country(dsc_der: bytes) -> str | None:
+    """The issuer's country (C=) of a DSC certificate, upper case, or None.
+
+    What the chain keys its country cap by is the trust store's country for
+    the CSCA that verified the DSC; the DSC's issuer name is that CSCA's
+    subject, so the two agree for any DSC that chains — and only a DSC that
+    chains reaches the proof verification that spends a budget. A bucket
+    for the refusal budget, never a fact anything is granted on.
+    """
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    try:
+        attrs = x509.load_der_x509_certificate(dsc_der).issuer.get_attributes_for_oid(NameOID.COUNTRY_NAME)
+    except Exception:
+        return None
+    if not attrs:
+        return None
+    value = str(attrs[0].value).strip().upper()
+    return value[:3] if value.isascii() and value.isalpha() else None
+
+
+# The chain's refusals by kind (gas-check's error is "<detail>: <base>", the
+# base an x/personhood or x/pki error description). Only the kind is logged:
+# the detail can name the affiliate, the country, a nullifier.
+_PROOF_REFUSAL = "invalid registration proof"
+_REFUSAL_KINDS = (
+    (_PROOF_REFUSAL, "invalid proof"),
+    ("daily registration limit reached for this document signer or country", "rate cap"),
+    ("proof public inputs do not match", "public inputs"),
+    ("this registration has already been used", "binding used"),
+    ("passport is already registered to this identity commitment", "replay"),
+    ("affiliate holds no live referrer binding", "affiliate"),
+    ("has been revoked", "revoked"),
+    ("no registration verifying key configured", "no verifying key"),
+    ("invalid certificate", "certificate"),
+    ("no trusted issuing CSCA found", "certificate"),
+    ("certificate signature verification failed", "certificate"),
+    ("certificate not valid at current time", "certificate"),
+    ("certificate is not a Document Signer", "certificate"),
+    ("too many candidate issuing CSCAs", "certificate"),
+)
+
+
+def _refusal_kind(error) -> str:
+    text = str(error or "").strip()
+    for base, kind in _REFUSAL_KINDS:
+        if text == base or text.endswith(": " + base) or (base == "has been revoked" and base in text):
+            return kind
+    return "other"
+
+
+def _pow_needed(bits: int, message: str) -> JSONResponse:
+    return _reply(428, "error", message, pow={"version": pow.VERSION, "bits": bits})
+
+
+@router.get("/pow", summary="The proof of work /gas/register needs right now")
+def pow_params():
+    shed = ratelimit.shedding() is not None
+    return {
+        "version": pow.VERSION,
+        "algorithm": "sha256",
+        "input": pow.VERSION + ":<ts>:<public_signals[%d]>:<public_signals[%d]>:<nonce>"
+                 % (config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_NULLIFIER_INDEX),
+        # What admits a request on every path right now: the reserved lane's,
+        # or shedding's while the network budget is spent. A signer's or
+        # country's own budget can ask more of its requests; a 428 says so.
+        "bits": pow.required_bits(shedding=shed),
+        "reserved_bits": pow.required_bits(shedding=False),
+        "shedding_bits": pow.required_bits(shedding=True),
+        "shedding": shed,
+        "max_age_seconds": config.POW_MAX_AGE_SECONDS,
+    }
 
 
 @router.post("/register", summary="Fund a fee note for a registration the chain would accept")
@@ -239,7 +325,7 @@ async def register(body: RegisterGrant, request: Request):
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
     try:
-        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate, dsc = _precheck(body)
+        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate, dsc, dsc_der = _precheck(body)
     except _Refuse as exc:
         return _reply(exc.status_code, "error", str(exc))
     # Replay and cap before the check: both are a table read, the check is a
@@ -248,12 +334,36 @@ async def register(body: RegisterGrant, request: Request):
         return _reply(409, "error", "already granted")
     if replay.limit_reached(PASSPORT_PREFIX, config.REGISTER_GRANT_MAX_PER_DAY):
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
+
+    # Shedding: the network's, this signer's or this country's budget of
+    # verification failures is spent. Such a request is queued only with a
+    # proof of work at the shedding difficulty.
+    country = _dsc_country(dsc_der)
+    shed = ratelimit.shedding(dsc, country)
     # The reserved lane: a passport not yet granted (peek, above) from a
-    # Document Signer the chain already holds registrations from. While the
-    # refusal budget is spent, nothing else is queued at all.
-    priority = dsc is not None and knowndsc.is_known(dsc)
-    if not priority and ratelimit.shedding():
-        return _reply(429, "error", "too many failed registrations right now; try again in a minute")
+    # Document Signer the chain already holds registrations from, not
+    # cooling down after verification failures naming it, with a proof of
+    # work.
+    candidate = dsc is not None and knowndsc.is_known(dsc) and not ratelimit.dsc_cooling(dsc)
+    need = pow.required_bits(shedding=shed is not None)
+    bits, digest = 0, None
+    if body.pow is not None and (shed or candidate):
+        binding = body.public_signals[config.PASSPORT_ADDRESS_INDEX]
+        nf_signal = body.public_signals[config.PASSPORT_NULLIFIER_INDEX]
+        try:
+            bits, digest = pow.check(body.pow.ts, body.pow.nonce, binding, nf_signal)
+        except pow.Rejected as exc:
+            if shed:
+                return _pow_needed(need, str(exc))
+            bits = 0  # not needed: the ordinary lane
+    if shed and bits < need:
+        return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
+                                 f"attach a proof of work of {need} bits (GET /gas/pow)")
+    priority = candidate and bits >= need
+    if (shed or priority) and digest is not None:
+        pow.consume(digest)
+    else:
+        digest = None  # not relied on: still the wallet's to use
 
     # MsgRegister in proto JSON, without its fee bundle (gas-check does not
     # look at it): bytes fields are standard base64, exactly as the app holds
@@ -274,16 +384,24 @@ async def register(body: RegisterGrant, request: Request):
         with ratelimit.one_at_a_time(client):
             verdict = await gascheck.registration(msg, priority=priority)
     except ratelimit.Busy:
+        pow.forget(digest)
         return _reply(429, "error", "a check for this client is already running; wait for it")
     except gascheck.Unavailable as exc:
+        pow.forget(digest)
         logger.error("registration check unavailable: %s", _coarse(exc))
         return _reply(503, "error", "verification is unavailable; try again shortly")
     if not verdict.get("ok"):
-        ratelimit.note_refusal()
+        kind = _refusal_kind(verdict.get("error"))
+        if kind == "invalid proof":
+            # Only a refusal that cost a proof verification spends a budget:
+            # every other one (a country or signer at its daily cap, a DSC
+            # that does not chain) was decided before the verifier ran, and
+            # a real registrant meeting a cap must not shed anyone.
+            ratelimit.note_refusal(dsc, country)
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send. The
-        # log keeps a coarse version: no hex that could be a nullifier.
-        logger.info("registration check refused: %s", _coarse(verdict.get("error")))
+        # log keeps only its kind: no nullifier, affiliate or country.
+        logger.info("registration check refused: %s", kind)
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     if verdict.get("nullifier") != nullifier:
         # gas-check read the nullifier from the chain's nullifier_index; ours

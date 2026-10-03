@@ -54,10 +54,21 @@ services:
       - REGISTER_IP_MAX_PER_WINDOW=10
       - REGISTER_IP_WINDOW_SECONDS=3600
       - REGISTER_IPV6_PREFIX=48
-      # Past 10 gas-check refusals a minute, only the reserved lane (a new
-      # passport from a DSC the chain already knows) is queued; 5 of the 20
-      # queue places are kept for it.
-      - REGISTER_REFUSALS_PER_MINUTE=10
+      # Refusal budgets: proof-verification failures a minute per DSC, per
+      # issuing country, network-wide. Past one, requests under it need a
+      # proof of work (POW_SHED_BITS) to be queued. A DSC named by 5
+      # failures an hour leaves the reserved lane (5 of the 20 queue places,
+      # for a new passport from a DSC the chain already knows, with a
+      # POW_RESERVED_BITS stamp).
+      - REGISTER_REFUSALS_PER_DSC_PER_MINUTE=3
+      - REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE=10
+      - REGISTER_REFUSALS_PER_MINUTE=30
+      - REGISTER_DSC_FAILURES_BEFORE_COOLDOWN=5
+      - REGISTER_DSC_COOLDOWN_SECONDS=3600
+      - POW_RESERVED_BITS=16
+      - POW_SHED_BITS=20
+      - POW_LOAD_EXTRA_BITS=2
+      - POW_MAX_BITS=22
       - GAS_CHECK_MAX_WAITING=20
       - GAS_CHECK_RESERVED_WAITING=5
       # personhood params the cheap pre-checks read (earth-1 genesis:

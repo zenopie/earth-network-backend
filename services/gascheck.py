@@ -68,6 +68,11 @@ _slot = _PrioritySlot()
 _waiting = 0
 
 
+def load() -> float:
+    """How full the queue is, 0..1: checks waiting (or running) over GAS_CHECK_MAX_WAITING."""
+    return min(1.0, _waiting / max(1, config.GAS_CHECK_MAX_WAITING))
+
+
 class Unavailable(Exception):
     """The check could not be made (node unreachable, timed out, busy) — not a refusal."""
 

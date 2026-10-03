@@ -23,11 +23,25 @@ Per client:
 - concurrency: at most one gas-check per client at a time. A second request
   while the first is queued or running fails fast with 429.
 
-Globally, the refusal budget: gas-check refusals (the chain would not accept
-the registration — junk that passed every cheap check) are counted over a
-minute. Past REGISTER_REFUSALS_PER_MINUTE the service sheds: a request that
-does not qualify for the reserved lane (routers/gas) is refused with 429
-before it can take a place in the queue.
+Refusal budgets: gas-check refusals that cost a proof verification (the
+chain's "invalid registration proof": everything else it refuses on — the
+DSC not chaining, a country or signer at its daily cap, a used binding — is
+decided before the verifier runs, and a legitimate cap refusal must not shed
+anyone) are counted over a minute, three ways: per DSC commitment
+(REGISTER_REFUSALS_PER_DSC_PER_MINUTE), per issuing country
+(REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE) and, as a backstop, network-wide
+(REGISTER_REFUSALS_PER_MINUTE). A request whose signer, country or the
+network has spent its budget is shed: it is queued only with a proof of work
+at the shedding difficulty (services/pow), and refused 428 without one.
+Junk that names one signer or country sheds that signer's or country's
+registrants (who can still pay the work), not everyone's.
+
+DSC cooldown: REGISTER_DSC_FAILURES_BEFORE_COOLDOWN verification failures
+naming one DSC within REGISTER_DSC_COOLDOWN_SECONDS take it out of the
+reserved lane (routers/gas) until they age out of that sliding window. A
+commitment is public, so junk can copy a known one into the lane; doing so
+now costs a proof of work a request and gets the signer demoted, not the
+lane flooded.
 
 The client address is CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on
 (right only where Cloudflare is the sole ingress — the Akash lease is
@@ -48,8 +62,14 @@ import config
 # One small int per client, ordered least recently seen first.
 _windows: "OrderedDict[int | str, int]" = OrderedDict()
 _busy: set = set()
-# The refusal budget's own sliding-window counter: [minute index, previous, count].
-_refusals = [0, 0, 0]
+# Refusal budgets, keyed "*" (the network), ("dsc", commitment) and ("cc",
+# country): one packed sliding-minute counter each, least recently touched
+# first, at most REGISTER_REFUSAL_KEYS_TRACKED.
+_refusals: "OrderedDict[object, int]" = OrderedDict()
+# Verification failures per DSC commitment, a sliding window of
+# REGISTER_DSC_COOLDOWN_SECONDS each, same bound.
+_dsc_failures: "OrderedDict[bytes, int]" = OrderedDict()
+NETWORK = "*"
 
 _V6_TAG = 1 << 128  # keeps an IPv6 prefix's key apart from every IPv4 address's
 
@@ -111,20 +131,56 @@ def allow(key, now: float | None = None) -> bool:
     return ok
 
 
-def note_refusal(now: float | None = None) -> None:
-    """Counts one gas-check refusal against the global budget."""
+def _bump(table: OrderedDict, key, now: float, window: float) -> None:
+    idx, prev, cur = _count(table.pop(key, 0), now, window)
+    table[key] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
+    while len(table) > config.REGISTER_REFUSAL_KEYS_TRACKED:
+        table.popitem(last=False)
+
+
+def _rate(table: OrderedDict, key, now: float, window: float) -> float:
+    if key not in table:
+        return 0.0
+    _, prev, cur = _count(table[key], now, window)
+    return _estimate(prev, cur, now, window)
+
+
+def _budgets(dsc: bytes | None, country: str | None):
+    """(budget key, limit a minute) a request falls under; a limit <= 0 is off."""
+    yield NETWORK, config.REGISTER_REFUSALS_PER_MINUTE
+    if dsc is not None:
+        yield ("dsc", dsc), config.REGISTER_REFUSALS_PER_DSC_PER_MINUTE
+    if country is not None:
+        yield ("cc", country), config.REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE
+
+
+def note_refusal(dsc: bytes | None = None, country: str | None = None, now: float | None = None) -> None:
+    """Counts one verification failure against the network's, the signer's and the country's budgets."""
     now = time.monotonic() if now is None else now
-    idx, prev, cur = _count(_refusals[0] << 32 | _refusals[1] << 16 | _refusals[2], now, 60.0)
-    _refusals[:] = [idx, prev, min(cur + 1, 0xFFFF)]
+    for key, _ in _budgets(dsc, country):
+        _bump(_refusals, key, now, 60.0)
+    if dsc is not None:
+        _bump(_dsc_failures, dsc, now, config.REGISTER_DSC_COOLDOWN_SECONDS)
 
 
-def shedding(now: float | None = None) -> bool:
-    """Whether the refusal budget is spent: new, unqualified requests get 429."""
-    if config.REGISTER_REFUSALS_PER_MINUTE <= 0:
+def shedding(dsc: bytes | None = None, country: str | None = None, now: float | None = None) -> str | None:
+    """Which budget this request falls under is spent ("network", "signer",
+    "country"), or None. A shed request needs a proof of work to be queued."""
+    now = time.monotonic() if now is None else now
+    names = {NETWORK: "network"}
+    for key, limit in _budgets(dsc, country):
+        if limit > 0 and _rate(_refusals, key, now, 60.0) >= limit:
+            return names.get(key) or ("signer" if key[0] == "dsc" else "country")
+    return None
+
+
+def dsc_cooling(dsc: bytes, now: float | None = None) -> bool:
+    """Whether a DSC is out of the reserved lane: too many verification failures name it."""
+    if config.REGISTER_DSC_FAILURES_BEFORE_COOLDOWN <= 0:
         return False
     now = time.monotonic() if now is None else now
-    _, prev, cur = _count(_refusals[0] << 32 | _refusals[1] << 16 | _refusals[2], now, 60.0)
-    return _estimate(prev, cur, now, 60.0) >= config.REGISTER_REFUSALS_PER_MINUTE
+    window = config.REGISTER_DSC_COOLDOWN_SECONDS
+    return _rate(_dsc_failures, dsc, now, window) >= config.REGISTER_DSC_FAILURES_BEFORE_COOLDOWN
 
 
 class Busy(Exception):
@@ -146,4 +202,5 @@ def one_at_a_time(key):
 def reset() -> None:
     _windows.clear()
     _busy.clear()
-    _refusals[:] = [0, 0, 0]
+    _refusals.clear()
+    _dsc_failures.clear()

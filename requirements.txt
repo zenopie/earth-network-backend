@@ -13,6 +13,7 @@ python-dotenv==1.2.3
 httpx==0.28.1
 ecdsa==0.19.2
 cosmpy==0.12.2
-# Not imported here: a transitive dependency (google-auth, under cosmpy),
-# pinned so the crypto under the hot key does not move on a rebuild.
+# A transitive dependency (google-auth, under cosmpy), pinned so the crypto
+# under the hot key does not move on a rebuild. Also read directly: the
+# issuer country of a /gas/register DSC (routers/gas, refusal budgets).
 cryptography==50.0.1

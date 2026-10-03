@@ -22,7 +22,8 @@ is the only grant. The device-attestation grants (`/gas/challenge`,
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate?, pc_gas, ciphertext_gas}
+                           affiliate?, pc_gas, ciphertext_gas, pow?}
+    GET  /gas/pow         the proof of work /gas/register needs now
     GET  /health          hot wallet balance and how many grants are left in it
 
 `/gas/register` takes the MsgRegister the app is about to broadcast
@@ -45,7 +46,7 @@ the node.
 
 Answers are `{status, message, tx_hash?}` with 200 (sent), 202 (broadcast,
 unresolved), 4xx (cannot succeed as sent; 409 already granted, 413 body over
-64 KiB, 429 rate or daily limit) or 5xx (retry).
+64 KiB, 428 proof of work needed, 429 rate or daily limit) or 5xx (retry).
 
 ### Once per passport in 30 days — a switch included (by design)
 
@@ -109,25 +110,96 @@ everything that can refuse a request without one runs first, in this order:
    claimed in the last 30 days → 409.
 6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` passport grants in the last
    24 h → 429.
-7. **Refusal budget**: junk with a forged binding passes every check above,
-   and only gas-check refuses it. Gas-check refusals are counted per minute;
-   past `REGISTER_REFUSALS_PER_MINUTE` (10) a request outside the reserved
-   lane is refused with 429 before it is queued.
+7. **Refusal budgets and proof of work**: junk with a forged binding passes
+   every check above, and only gas-check refuses it. Only a refusal that
+   cost a proof verification (the chain's `invalid registration proof`)
+   spends a budget: everything else gas-check refuses on — the DSC does not
+   chain, a signer or country at its daily cap, a used binding — is decided
+   before the verifier runs, and a real registrant meeting a cap must not
+   shed anyone. Those refusals are counted per minute against three
+   budgets: the DSC commitment's (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`, 3),
+   the issuing country's (`REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE`, 10;
+   the DSC certificate's issuer `C=`, which for a DSC that chains is the
+   CSCA's country the chain caps by) and the network's
+   (`REGISTER_REFUSALS_PER_MINUTE`, 30, a backstop). A request whose signer,
+   country or the network has spent its budget is *shed*: it is queued only
+   with a proof of work at the shedding difficulty, and answered **428**
+   (with `pow.bits`) before the queue without one. Junk naming one signer
+   sheds that signer's registrants — who can still pay the work — and no
+   one else.
 8. **One check per client**: a client with a gas-check already queued or
    running gets 429 at once rather than a second place in the queue; the queue
    as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
 
 **The reserved lane.** `GAS_CHECK_RESERVED_WAITING` (5) of the queue's places
-are kept for a passport not yet granted this month whose DSC commitment
+are kept for a passport not yet granted in 30 days whose DSC commitment
 (`public_signals[PASSPORT_DSC_KEY_INDEX]`, 3) is one the chain already holds
-registrations from, and such a check takes the slot ahead of ordinary ones.
-The known-DSC set is x/personhood's `regs_by_dsc` keys, read whole with one
-store subspace query (`/store/personhood/subspace` over `EARTH_RPC_URL`) at
-startup and every `KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps
-the last set. A commitment is public, so junk can copy one — the lane raises
-the cost of a flood (a real signer's commitment, the per-client limits
-still apply) rather than proving anything; and a signer's first passport is
-not in the set and takes the ordinary lane, which only fills under a flood.
+registrations from, **with a proof of work** at `POW_RESERVED_BITS`, and
+such a check takes the slot ahead of ordinary ones. Without the work the
+same request takes the ordinary lane. The known-DSC set is x/personhood's
+`regs_by_dsc` keys, read whole with one store subspace query
+(`/store/personhood/subspace` over `EARTH_RPC_URL`) at startup and every
+`KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps the last set. A
+commitment is public, so junk can copy one (and the DSC certificate, which
+every registration publishes); that now costs a proof of work a request,
+and `REGISTER_DSC_FAILURES_BEFORE_COOLDOWN` (5) verification failures
+naming one DSC within `REGISTER_DSC_COOLDOWN_SECONDS` (3600, sliding) take
+it out of the lane until they age out — its registrants fall back to the
+ordinary lane, nobody else is touched. A signer's first passport is not in
+the set and takes the ordinary lane, which only fills under a flood.
+
+### Proof of work (wallets implement this)
+
+Hashcash over the registration, checked here with one SHA-256
+(`services/pow`):
+
+    input  = "earth-gas-pow/v1:" + ts + ":" + binding + ":" + nullifier + ":" + nonce   (ASCII)
+    valid  = SHA-256(input) has at least `bits` leading zero bits
+
+- `ts`: unix seconds when the stamp was made; accepted within
+  `POW_MAX_AGE_SECONDS` (600) of the server's clock, either way.
+- `binding`, `nullifier`: `public_signals[1]` and `public_signals[2]`
+  (`PASSPORT_ADDRESS_INDEX`, `PASSPORT_NULLIFIER_INDEX`) exactly as the
+  request sends them, decimal strings. The binding covers idc, both pcs and
+  both note ciphertexts, so a stamp is good for that one registration.
+- `nonce`: 1–64 characters of `[0-9A-Za-z]` (a hex counter is fine).
+- Sent in the body: `"pow": {"ts": 1759363200, "nonce": "1f3a"}`.
+
+`GET /gas/pow` answers `{version, algorithm, input, bits, reserved_bits,
+shedding_bits, shedding, max_age_seconds}`; `bits` admits a request on every
+path right now. Difficulty is adaptive: `POW_RESERVED_BITS` (16) for the
+reserved lane, `POW_SHED_BITS` (20) while shedding, plus up to
+`POW_LOAD_EXTRA_BITS` (2) as the gas-check queue fills, capped at
+`POW_MAX_BITS` (22). 2^20 hashes is about a second natively on a phone, a
+few seconds in a browser. The wallet flow:
+
+1. `GET /gas/pow`, make a stamp at `bits`, `POST /gas/register` with it.
+2. On **428**, read `pow.bits` from the answer, make a new stamp (fresh
+   `ts`) at that difficulty and post again. A 428 also answers a stamp that
+   was already used, or whose `ts` is too far from now.
+3. A stamp that is relied on (reserved lane or shedding) is accepted
+   once; a request answered 503, or 429 for a check already in flight,
+   gives its stamp back. Retry a 403 (a refusal) with a new one.
+
+A stamp that is not needed (ordinary lane, nothing shed) is ignored and not
+consumed. Under the shared ingress (`TRUST_CF_CONNECTING_IP`) the per-client
+limits still apply to every request, worked or not.
+
+### The gas note can be claimed from the mempool (accepted)
+
+A MsgRegister in the mempool carries everything `/gas/register` asks for
+except `pc_gas`/`ciphertext_gas`, which are the requester's own. Someone who
+copies it from the mempool before the registrant has drawn a grant gets the
+passport's grant (a `DUST_UERTH` note) paid to a pc of theirs, and the
+registrant's own request is then 409 for 30 days. That only happens when a
+registrant broadcasts before asking for gas — the app asks first, since it
+pays MsgRegister's fee from that very note — so the copier takes one dust
+note from a registration that did not need it; the registration itself is
+unaffected (the proof binds idc and the reward notes, not pc_gas), and the
+rolling daily cap bounds the total. Binding pc_gas into the request would
+need a signature by a key the registrant does not have before registering
+(the idc is a commitment, not a key), so this is documented as an accepted
+low risk rather than closed.
 
 The indexes are personhood params, mirrored in config:
 `PASSPORT_NULLIFIER_INDEX=2`, `PASSPORT_ADDRESS_INDEX=1`,
