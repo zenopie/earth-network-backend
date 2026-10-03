@@ -307,3 +307,25 @@ def test_create_redacts_console_errors():
     assert "eyJhIjoi" not in create.redact("not json: TUNNEL_TOKEN=eyJhIjoi trailing")
     out = create.redact(json.dumps({"error": f"env [GAS_WALLET_MNEMONIC={words}] refused"}))
     assert not any(w in out for w in words.split())
+
+
+# --- L12: the image installs a hashed lock of requirements.txt ----------------
+
+def test_the_lock_pins_what_requirements_txt_pins():
+    import re
+
+    def pins(path):
+        out = {}
+        for line in open(os.path.join(_ROOT, path)):
+            m = re.match(r"([A-Za-z0-9_.-]+)(\[[^\]]*\])?==([^\s\\]+)", line)
+            if m:
+                out[m.group(1).lower().replace("_", "-")] = m.group(3)
+        return out
+    top, lock = pins("requirements.txt"), pins("requirements.lock")
+    for name, version in top.items():
+        assert lock.get(name) == version, f"{name}: requirements.txt {version}, lock {lock.get(name)}"
+    text = open(os.path.join(_ROOT, "requirements.lock")).read()
+    assert text.count("==") == text.count("\n") - text.count("--hash") - 2, "every pin has hashes"
+    docker = open(os.path.join(_ROOT, "Dockerfile")).read()
+    assert "--require-hashes" in docker and "requirements.lock" in docker
+    assert re.search(r"^FROM .*python:3\.11-slim@sha256:[0-9a-f]{64}$", docker, re.M)

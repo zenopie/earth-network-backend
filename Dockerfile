@@ -3,20 +3,22 @@
 # The service is one FastAPI app now, so this is a plain uvicorn image: no
 # monero-wallet-rpc to fetch and no supervisor multiplexing processes.
 
-FROM --platform=linux/amd64 python:3.11-slim
+# Pinned by digest (audit-5 L12): the tag moves with every Debian and Python
+# patch, and this image holds the hot key. The digest is the multi-arch index
+# of python:3.11-slim as of 2026-10-03; bump it deliberately (`docker
+# buildx imagetools inspect python:3.11-slim`).
+FROM --platform=linux/amd64 python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.lock .
 
-# build-essential stays: cosmpy's crypto dependencies fall back to building from
-# source when there is no wheel for the platform. It is removed again in the same
-# layer so it does not ship in the image.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-    && pip install --no-cache-dir -r requirements.txt \
-    && apt-get purge -y --auto-remove build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Every file pip installs is one whose sha256 is in requirements.lock (the
+# whole tree, resolved for this platform by bin/lock-requirements.py from
+# requirements.txt). Wheels only: every package has one for CPython 3.11 on
+# manylinux x86_64, so no compiler is needed and nothing is built from an
+# sdist at image build time.
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r requirements.lock
 
 # earthd, from the chain release, for `earthd gas-check` (services/gascheck.py):
 # the chain's own personhood checks, run here. Fetched by version and pinned by

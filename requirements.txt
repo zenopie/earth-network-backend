@@ -2,6 +2,10 @@
 # dependency is a key that anyone who can push to any of six packages gets a
 # turn at. Bump deliberately, not by rebuilding.
 #
+# The image installs requirements.lock, this file's whole tree with every
+# file's sha256 (--require-hashes; audit-5 L12): after changing a pin here,
+# run bin/lock-requirements.py and commit both.
+#
 # Regenerate the whole set with `pip install -U <pkg>` in a clean venv, then
 # `pip freeze`, rather than editing one line — cosmpy pulls a large transitive
 # tree and pinning the leaves against a moved trunk is how the build breaks in

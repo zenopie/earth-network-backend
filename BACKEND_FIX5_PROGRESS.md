@@ -63,7 +63,9 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
       --no-proxy-headers
 - [x] L9 create.py redacts Console API errors (deploy.sh's rule, and a
       mnemonic's words past the first space)
-- [ ] L12 base image digest / --require-hashes
+- [x] L12 base image by digest; requirements.lock (51 packages, all hashes,
+      bin/lock-requirements.py) installed --require-hashes --only-binary;
+      build-essential dropped (every package has a wheel)
 - [ ] L3 /health cached
 - [ ] L6 halted index: 503 on {base}/*
 - [ ] L7 blocks table pruned
