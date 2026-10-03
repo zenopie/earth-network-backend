@@ -158,5 +158,32 @@ func main() {
 		panic(err)
 	}
 	out["msg_shield"] = map[string]string{"sender": shield.Sender, "pc": hx(pc), "ciphertext_hex": hex.EncodeToString(shield.Ciphertext), "encoded": hex.EncodeToString(bz)}
+
+	// The Handles query's wire shape (x/personhood QueryHandlesRequest /
+	// QueryHandlesResponse), for services/privacy/handles: a request with a
+	// start and a limit, and a page with an entry of each status and a next.
+	hreq := personhoodtypes.QueryHandlesRequest{Start: "amy", Limit: 1000}
+	hreqBz, err := hreq.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	var ek [32]byte
+	for i := range ek {
+		ek[i] = byte(i + 1)
+	}
+	addr := privacy.ShieldedAddress{OwnerPK: privacy.OwnerPK(u(42)), EKPub: ek}.Encode()
+	hres := personhoodtypes.QueryHandlesResponse{Handles: []personhoodtypes.HandleEntry{
+		{Handle: "a-1", Address: addr, Status: "free", ExpiresAt: 1600000000, RenewalUntil: 1602592000},
+		{Handle: "bob", Address: addr, Status: "renewal", ExpiresAt: 1700000000, RenewalUntil: 1702592000},
+		{Handle: "zed-99", Address: addr, Status: "live", ExpiresAt: 1800000000, RenewalUntil: 1802592000},
+	}, Next: "zed-99"}
+	hresBz, err := hres.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	out["handles_query"] = map[string]any{
+		"request_start": hreq.Start, "request_limit": hreq.Limit, "request": hex.EncodeToString(hreqBz),
+		"response": hex.EncodeToString(hresBz), "address": addr, "next": hres.Next, "entries": hres.Handles,
+	}
 	json.NewEncoder(os.Stdout).Encode(out)
 }

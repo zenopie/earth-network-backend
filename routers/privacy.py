@@ -24,6 +24,7 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nf, height]
     GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=   [height, proposal_id, root, tree_size, nf_root, nf_size]
+    GET {base}/handles?from_index=&limit=            [handle, address, status, expires_at, renewal_until]
 
 genesis is the first 16 hex digits (lowercase) of the hash of the chain's
 first block. earth-1 has been relaunched under the same chain id, so the chain
@@ -49,6 +50,17 @@ proving a stake vote rebuilds it from the first nf_size - 1 values of
 checks its root against the proposal snapshot's nf_root. Failed txs' nullifiers
 are in it (a claim spends in the ante). The index refuses a gap or a repeat in
 the leaf indexes, so the stream is exactly the chain's insertion order.
+
+The handle directory (x/personhood handles, services/privacy/handles) is
+served whole, like every other stream: there is no endpoint for one handle,
+so a wallet paying a handle does not tell this server which. It is a
+snapshot of the chain's Handles query at one height (`height`, block time
+`time`), in handle order, paged by place in it (from_index, aligned). A
+snapshot is replaced whole when the directory changes, so a wallet reads
+pages 0 .. size-1 and starts over if `height` differs between its pages.
+status is the chain's at `time`: "live" resolves (pay it, name it as a
+referrer), "renewal" and "free" do not; a wallet also treats a "live" entry
+whose expires_at has passed by its own clock as not resolving.
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
@@ -232,6 +244,8 @@ def status(response: Response):
             "stake_notes": stake_notes,
             "stake_nullifiers": stake_nfs,
             "stake_nf_tree_size": store_mod.stake_nf_size(c),
+            "handles": c.execute("SELECT COUNT(*) FROM handles").fetchone()[0],
+            "handles_height": int(_meta(c, "handles_height") or 0) or None,
             "halted": _meta(c, "halted"),
         }
 
@@ -487,6 +501,40 @@ def stake_roots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT
             "next_height": rows[-1][0] + 1 if complete else max(from_height, _synced(c) + 1),
             "complete": complete,
             "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
+        }
+
+
+@chain.get("/handles")
+def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
+                     limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    """The handle directory, every handle in order, from the snapshot's from_index-th.
+
+    Never cached long: a snapshot is replaced whole whenever the directory
+    changes. height / time are the block the snapshot was read at (null
+    before the first); a client paging across a change sees height move and
+    starts over.
+    """
+    n, last = _aligned(from_index, limit, "from_index")
+    with _read() as c:
+        rows = c.execute(
+            "SELECT idx, handle, address, status, expires_at, renewal_until FROM handles"
+            " WHERE idx BETWEEN ? AND ? ORDER BY idx",
+            (from_index, last),
+        ).fetchall()
+        (size,) = c.execute("SELECT COUNT(*) FROM handles").fetchone()
+        height, when = _meta(c, "handles_height"), _meta(c, "handles_time")
+        response.headers["Cache-Control"] = TIP
+        return {
+            "fields": ["handle", "address", "status", "expires_at", "renewal_until"],
+            "synced_height": _synced(c),
+            "height": int(height) if height else None,
+            "time": int(when) if when else None,
+            "size": size,
+            "from_index": from_index,
+            "next_index": rows[-1][0] + 1 if rows else from_index,
+            # This page reaches the end of the directory: nothing to ask after it.
+            "last_page": last + 1 >= size,
+            "handles": [list(r[1:]) for r in rows],
         }
 
 

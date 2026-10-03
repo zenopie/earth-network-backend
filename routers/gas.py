@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, StringConstraints
 import config
 
 from services import chain, dsccommit, gascheck, knowndsc, pow, ratelimit, replay, shielded_msg
+from services.privacy import handles
 from services.zk import privacy
 from services.zk.poseidon2 import P
 
@@ -131,15 +132,6 @@ def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse
     return JSONResponse(status_code=status_code, content={"status": status, "message": message, **extra})
 
 
-# x/personhood/types ValidateHandle: lowercase a-z, 0-9 and -, 3..32
-# characters, no leading or trailing dash.
-_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,30})[a-z0-9]")
-
-
-def valid_handle(handle: str) -> bool:
-    return _HANDLE.fullmatch(handle) is not None
-
-
 def _b64(value: str) -> bytes:
     return base64.b64decode(value, validate=True)
 
@@ -206,7 +198,7 @@ def _affiliate(body: RegisterGrant) -> int:
         return 0
     if not (handle and pc_b64 and ct_b64):
         raise _Refuse(400, "affiliate_handle, affiliate_pc and affiliate_ciphertext go together: all three or none")
-    if not valid_handle(handle):
+    if not handles.valid_handle(handle):
         raise _Refuse(400, "affiliate_handle is not a handle (a-z, 0-9 and -, 3..32 characters, no leading or trailing dash)")
     try:
         pc = privacy.field_from_bytes(_b64(pc_b64))

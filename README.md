@@ -280,6 +280,7 @@ and under `base` = `/privacy/<chain_id>/<genesis>`:
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nullifier, height]
     GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=  [height, proposal_id, root, tree_size, nf_root, nf_size]
+    GET {base}/handles?from_index=&limit=           [handle, address, status, expires_at, renewal_until]
 
 ### URL scheme for wallets
 
@@ -409,6 +410,39 @@ An index built before this chain change has no leaf indexes: the API and the
 indexer refuse to open it; wipe `INDEX_DB` (the chain change is
 consensus-breaking, so the new index goes with the new chain).
 
+### Handle directory (chain 4a663d5)
+
+A handle (`a-z`, `0-9`, `-`; 3..32; no leading or trailing dash) names a
+registered human's shielded address (`erthz1...`). Paying a handle is
+wallet-side: look it up, pay its address privately. A lookup of one handle
+on a server would say who is paying whom, so there is no per-handle
+endpoint: `{base}/handles` is the whole directory, like every other stream.
+
+    GET {base}/handles?from_index=0&limit=1000
+    -> {fields, synced_height, height, time, size, from_index, next_index, last_page,
+        handles: [[handle, address, status, expires_at, renewal_until], ...]}
+
+It is a snapshot of the chain's `Query/Handles` (`/earth/personhood/v1/handles`)
+read whole at one height (`height`, block time `time`), in handle order, and
+paged by place in it under the usual rule (limit 100 or 1000, `from_index` a
+multiple of limit). Read pages until `last_page`; if `height` changes between
+pages, start over (the snapshot was replaced). `status` is the chain's at
+`time`: `live` resolves (pay it, or name it as a registration's
+`affiliate_handle`), `renewal` (owner-only renewal period, until
+`renewal_until`) and `free` do not; also treat a `live` entry whose
+`expires_at` has passed by your clock as not resolving. Served with
+`max-age=2`.
+
+The indexer re-reads it (every page at the last applied height) once caught
+up: after a block with a `handle_bound` / `handle_moved` / `handle_released`
+event, once block time reaches the snapshot's earliest `expires_at` (live) or
+`renewal_until` (renewal), and at least every `HANDLES_MAX_AGE_SECONDS`
+(3600) of block time. Each answer is checked against the chain's rules
+(handle format, strict order across pages, `next` = the page's last handle,
+known status, `erthz1` address, `renewal_until >= expires_at >= 0`, at most
+`HANDLES_MAX_ENTRIES`); a failed or malformed read keeps the previous
+snapshot and the trees go on. `/status` adds `handles` and `handles_height`.
+
 ### How it follows the chain
 
 `services/privacy/indexer.py` reads `block_results` over CometBFT RPC from
@@ -509,7 +543,8 @@ asked.
 `tests/fixtures/privacy/Test*.json.gz` are real blocks: the chain's own app
 scenario tests (real proofs, the launch genesis path) recorded as RPC
 `block_results` with the keepers' note, identity and stake tree sizes and
-roots after each block, and the stake nullifier tree's (personhood, shielded
+roots after each block, the stake nullifier tree's, and the chain's
+`Query/Handles` answer at each block in pages of one (personhood, shielded
 pool, staking lifecycle, owner-locked stake notes, self-bond compounding,
 private dex LP, stake votes on concurrent proposals).
 `zk_vectors.json` comes from the chain's Go zk packages. Both regenerate from

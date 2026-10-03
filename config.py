@@ -143,6 +143,12 @@ INDEXER_START_HEIGHT = int(os.getenv("INDEXER_START_HEIGHT", "0"))
 INDEXER_BATCH = int(os.getenv("INDEXER_BATCH", "20"))
 INDEXER_CONCURRENCY = int(os.getenv("INDEXER_CONCURRENCY", "8"))
 INDEXER_POLL_SECONDS = float(os.getenv("INDEXER_POLL_SECONDS", "2"))
+# The handle directory ({base}/handles): read from the chain's Handles query
+# this many a page (the chain's maximum is 1000), again at least every
+# HANDLES_MAX_AGE_SECONDS of block time, and refused past HANDLES_MAX_ENTRIES.
+HANDLES_QUERY_LIMIT = int(os.getenv("HANDLES_QUERY_LIMIT", "1000"))
+HANDLES_MAX_AGE_SECONDS = int(os.getenv("HANDLES_MAX_AGE_SECONDS", "3600"))
+HANDLES_MAX_ENTRIES = int(os.getenv("HANDLES_MAX_ENTRIES", "1000000"))
 # Page sizes for the /privacy streams (routers/privacy, audit-4 B3): limit
 # must be one of PRIVACY_PAGE_SIZES (each at most PRIVACY_PAGE_MAX), and a
 # position/index cursor a multiple of it, so every wallet asks for the same

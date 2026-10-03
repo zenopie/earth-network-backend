@@ -21,6 +21,11 @@ nullifier tree, which must be exactly the next one (1, 2, 3, ...), each
 nullifier once; a proposal snapshot is recorded once and never names a tree
 size past what is indexed.
 
+The handle directory is not built from events: it is a snapshot of the
+chain's Handles query at one height (services/privacy/handles), replaced
+whole by replace_handles. A block with a handle event records its height
+(meta handles_changed_height) so the indexer knows the snapshot is behind.
+
 Readers (the API) use their own connections; WAL keeps them from blocking the
 writer.
 """
@@ -123,6 +128,16 @@ CREATE TABLE IF NOT EXISTS stake_roots (
     root      BLOB NOT NULL,
     tree_size INTEGER NOT NULL,
     time      INTEGER NOT NULL
+);
+-- The handle directory at meta handles_height (block time handles_time), in
+-- handle order; idx is the row's place in it (0, 1, 2, ...).
+CREATE TABLE IF NOT EXISTS handles (
+    idx           INTEGER PRIMARY KEY,
+    handle        TEXT NOT NULL UNIQUE,
+    address       TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    renewal_until INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS rates_by_epoch ON rates (epoch, validator);
 CREATE INDEX IF NOT EXISTS rates_by_validator ON rates (validator, height);
@@ -355,8 +370,46 @@ class Store:
             if d.epoch_ended is not None:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('sweep_epoch', ?)", (str(d.epoch_ended),))
 
+            if d.handles_changed:
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('handles_changed_height', ?)", (str(d.height),))
+
             if not last:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('start_height', ?)", (str(d.height),))
             c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_height', ?)", (str(d.height),))
             c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_time', ?)", (str(d.time),))
         return True
+
+    def handles_due(self, max_age: int) -> bool:
+        """Whether the handle snapshot is behind the indexed chain: never taken,
+        older than a handle event, past a status change by time, or older
+        than max_age seconds of block time."""
+        h, last = self.meta("handles_height"), self.last_height()
+        if not last:
+            return False
+        if h is None:
+            return True
+        if int(h) >= last:
+            return False
+        if int(self.meta("handles_changed_height") or 0) > int(h):
+            return True
+        now = int(self.meta("last_time") or 0)
+        nxt = self.meta("handles_next_change")
+        if nxt is not None and now >= int(nxt):
+            return True
+        return now - int(self.meta("handles_time") or 0) >= max_age
+
+    def replace_handles(self, height: int, time: int, entries, next_change: int | None) -> None:
+        """Replaces the handle directory with entries (in handle order), the chain's at height."""
+        with self._tx() as c:
+            c.execute("DELETE FROM handles")
+            c.executemany("INSERT INTO handles (idx, handle, address, status, expires_at, renewal_until)"
+                          " VALUES (?, ?, ?, ?, ?, ?)",
+                          [(i, e.handle, e.address, e.status, e.expires_at, e.renewal_until)
+                           for i, e in enumerate(entries)])
+            for k, v in (("handles_height", height), ("handles_time", time)):
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (k, str(v)))
+            if next_change is None:
+                c.execute("DELETE FROM meta WHERE key = 'handles_next_change'")
+            else:
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('handles_next_change', ?)",
+                          (str(next_change),))

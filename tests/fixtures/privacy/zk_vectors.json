@@ -6,6 +6,37 @@
     "asset_uanml": "09a93f6121b300558b4d5c25855dd2470350918a1ae536d72ee5851df5e8914f",
     "asset_uerth": "0ad44a14c7205c61e39db2c64b79005ffb14a2a927977e8cda2208be2e3fe54c",
     "cm_uerth_100000": "10d98f1fc9464ef1e5a78c0d5cdd6687b208fa74bd43a3f2da019aef85345ad1",
+    "handles_query": {
+        "address": "erthz1qy4s66v0wxsklwjt0svyufm5p7lmgwc9umuv4e6ezthrn7a7y9625qgzqvzq2ps8pqys5zcvp58q7yq3zgf3g9gkzuvpjxsmrsw3u8eqrkj3pa",
+        "entries": [
+            {
+                "handle": "a-1",
+                "address": "erthz1qy4s66v0wxsklwjt0svyufm5p7lmgwc9umuv4e6ezthrn7a7y9625qgzqvzq2ps8pqys5zcvp58q7yq3zgf3g9gkzuvpjxsmrsw3u8eqrkj3pa",
+                "status": "free",
+                "expires_at": 1600000000,
+                "renewal_until": 1602592000
+            },
+            {
+                "handle": "bob",
+                "address": "erthz1qy4s66v0wxsklwjt0svyufm5p7lmgwc9umuv4e6ezthrn7a7y9625qgzqvzq2ps8pqys5zcvp58q7yq3zgf3g9gkzuvpjxsmrsw3u8eqrkj3pa",
+                "status": "renewal",
+                "expires_at": 1700000000,
+                "renewal_until": 1702592000
+            },
+            {
+                "handle": "zed-99",
+                "address": "erthz1qy4s66v0wxsklwjt0svyufm5p7lmgwc9umuv4e6ezthrn7a7y9625qgzqvzq2ps8pqys5zcvp58q7yq3zgf3g9gkzuvpjxsmrsw3u8eqrkj3pa",
+                "status": "live",
+                "expires_at": 1800000000,
+                "renewal_until": 1802592000
+            }
+        ],
+        "next": "zed-99",
+        "request": "0a03616d7910e807",
+        "request_limit": 1000,
+        "request_start": "amy",
+        "response": "0a8d010a03612d311274657274687a3171793473363676307778736b6c776a743073767975666d3570376c6d67776339756d7576346536657a7468726e376137793936323571677a71767a713270733870717973357a637670353871377971337a6766336739676b7a7576706a78736d7273773375386571726b6a3370611a04667265652080a0f8fa052880ba96fc050a90010a03626f621274657274687a3171793473363676307778736b6c776a743073767975666d3570376c6d67776339756d7576346536657a7468726e376137793936323571677a71767a713270733870717973357a637670353871377971337a6766336739676b7a7576706a78736d7273773375386571726b6a3370611a0772656e6577616c2080e2cfaa062880fcedab060a90010a067a65642d39391274657274687a3171793473363676307778736b6c776a743073767975666d3570376c6d67776339756d7576346536657a7468726e376137793936323571677a71767a713270733870717973357a637670353871377971337a6766336739676b7a7576706a78736d7273773375386571726b6a3370611a046c6976652080a4a7da062880bec5db0612067a65642d3939"
+    },
     "hash_1_2": "038682aa1cb5ae4e0a3f13da432a95c77c5c111f6f030faf9cad641ce1ed7383",
     "hash_5": "2247be7014a54d17342a7ef677f58d28877780d203860396967f5d0a18d259db",
     "identity_leaf_DE": "1afc568a22af699391c4dc26993182c709445b6b1af30e7e5163014615aaa98b",

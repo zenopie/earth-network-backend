@@ -15,6 +15,10 @@ x/shieldedstaking/keeper/stake_tree.go):
     shielded_root        root (hex), tree_size, height        EndBlock
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
     identity_root        root (hex), tree_size, height        EndBlock
+    handle_bound / handle_moved / handle_released
+                         a handle directory record changed (attributes
+                         not read: the directory is re-read whole from the
+                         Handles query, services/privacy/handles)
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
@@ -79,6 +83,7 @@ import base64
 from dataclasses import dataclass, field
 
 ZERO32 = bytes(32)
+HANDLE_EVENTS = frozenset({"handle_bound", "handle_moved", "handle_released"})
 
 
 class EventError(Exception):
@@ -158,6 +163,8 @@ class BlockDelta:
     snapshots: list[Snapshot] = field(default_factory=list)
     # The epoch a shieldedstaking_epoch event in this block ended, if any.
     epoch_ended: int | None = None
+    # A handle directory record changed in this block.
+    handles_changed: bool = False
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -263,6 +270,8 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             d.identity_root = Root(_hex32(a.get("root", ""), "identity_root"), _int(a.get("tree_size"), "identity_root tree_size"))
             if "height" in a and _int(a["height"], "identity_root height") != height:
                 raise EventError("identity_root height is not the block's")
+        elif t in HANDLE_EVENTS:
+            d.handles_changed = True
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))
         elif t == "shieldedstaking_stake_nullifier":

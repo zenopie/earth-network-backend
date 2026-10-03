@@ -37,6 +37,13 @@ chain committed to, but read from the same RPC) and verify.py / bin/
 verify-trees.py, which rebuild every tree and compare roots with the chain's.
 Point INDEXER_RPC_URL at a node you run or trust.
 
+Once caught up, it also keeps the handle directory (services/privacy/
+handles): the chain's Handles query read whole at the last applied height,
+again after a block with a handle event, once block time passes the
+snapshot's earliest status change, and at least every
+HANDLES_MAX_AGE_SECONDS. A failed or malformed read keeps the previous
+snapshot (logged); the trees go on regardless.
+
 Needs a node that keeps block results from the start height on
 (storage.discard_abci_responses = false, the default, and no block pruning
 below it).
@@ -46,6 +53,7 @@ import logging
 
 import config
 
+from . import handles as handles_mod
 from .events import EventError, parse_block
 from .rpc import CometRPC, RPCError, varint_field
 from .store import Inconsistent, Store
@@ -67,13 +75,19 @@ class Halted(Exception):
 
 class Indexer:
     def __init__(self, store: Store, rpc: CometRPC, *, start_height: int = 0, batch: int = 20,
-                 concurrency: int = 8, check_sizes: bool = True):
+                 concurrency: int = 8, check_sizes: bool = True, handles: bool = True,
+                 handles_limit: int = 1000, handles_max_age: int = 3600, handles_max: int = 1_000_000):
         self.store = store
         self.rpc = rpc
         self.start_height = start_height
         self.batch = batch
         self._sem = asyncio.Semaphore(concurrency)
         self.check_sizes = check_sizes
+        self.handles = handles
+        self.handles_limit = handles_limit
+        self.handles_max_age = handles_max_age
+        self.handles_max = handles_max
+        self._handle_failures = 0
         self.tip = 0
         self.halted: str | None = store.meta("halted")
         self.next_height = 0
@@ -205,7 +219,28 @@ class Indexer:
             applied += 1
         if self.check_sizes:
             await self._check_sizes(heights[-1])
+        if self.handles and self.next_height > self.tip:
+            await self._refresh_handles()
         return applied
+
+    async def _refresh_handles(self) -> None:
+        """Re-reads the handle directory at the last applied height when the snapshot is behind."""
+        if not await asyncio.to_thread(self.store.handles_due, self.handles_max_age):
+            return
+        height = self.next_height - 1
+        try:
+            entries = await handles_mod.fetch(self.rpc, height, limit=self.handles_limit, max_entries=self.handles_max)
+        except (RPCError, handles_mod.Malformed) as exc:
+            # The snapshot stays as it was (its height says how old it is);
+            # the first failure of a run and every 100th after it.
+            if self._handle_failures % 100 == 0:
+                logger.warning("handle directory at %d not read (%d in a row): %s", height,
+                               self._handle_failures + 1, exc)
+            self._handle_failures += 1
+            return
+        self._handle_failures = 0
+        when = int(self.store.meta("last_time") or 0)
+        await asyncio.to_thread(self.store.replace_handles, height, when, entries, handles_mod.next_change(entries))
 
     async def _check_sizes(self, height: int) -> None:
         try:
@@ -276,6 +311,9 @@ def from_config() -> Indexer:
         start_height=config.INDEXER_START_HEIGHT,
         batch=config.INDEXER_BATCH,
         concurrency=config.INDEXER_CONCURRENCY,
+        handles_limit=config.HANDLES_QUERY_LIMIT,
+        handles_max_age=config.HANDLES_MAX_AGE_SECONDS,
+        handles_max=config.HANDLES_MAX_ENTRIES,
     )
 
 

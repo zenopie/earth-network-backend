@@ -5,7 +5,8 @@ chain's app scenario tests (real proofs, the launch genesis path), recorded by
 bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
 note, identity, stake and stake nullifier trees' sizes and roots after the
 block as the keepers reported them (stake fields are absent from fixtures recorded before
-the stake tree existed, and read as an empty tree).
+the stake tree existed, and read as an empty tree), and the chain's Handles
+query answer at the block (pages of one, hex QueryHandlesResponse).
 """
 import gzip
 import json
@@ -67,6 +68,24 @@ def stake_nf_tree_response(block: dict) -> bytes:
             + _field(4, bytes.fromhex(block.get("stake_nf_latest_root", ""))))
 
 
+def handles_response(block: dict, request: bytes) -> bytes:
+    """The recorded QueryHandlesResponse page answering request's start.
+
+    The recorder paged the chain's own query server with limit 1, so any
+    limit the indexer asks is answered a page of one (the chain caps limit
+    too; a client must follow next either way).
+    """
+    from services.privacy.rpc import proto_fields
+
+    start = (proto_fields(request).get(1) or [b""])[-1].decode()
+    want = ""
+    for page in block["handles"]:
+        if want == start:
+            return bytes.fromhex(page)
+        want = (proto_fields(bytes.fromhex(page)).get(2) or [b""])[-1].decode()
+    raise RPCError(f"no recorded Handles page after {start!r}")
+
+
 class FakeRPC:
     """Serves a recorded scenario. `tip` limits what the chain has produced so far."""
 
@@ -117,6 +136,8 @@ class FakeRPC:
             if "stake_nf_tree_size" not in b:
                 raise RPCError(f"unknown path {path}")  # recorded before the nullifier tree
             return stake_nf_tree_response(b)
+        if path == "/earth.personhood.v1.Query/Handles" and "handles" in b:
+            return handles_response(b, data)
         raise RPCError(f"unknown path {path}")
 
     async def close(self):

@@ -11,5 +11,5 @@ public referrer addresses; predecessor-aware activation; error codes
       (all or none), referrer address gone; refusal kinds for 1120-1126
 - [x] C fixtures re-recorded from 4a663d5 (recorder also records the
       Handles query per block)
-- [ ] D handle directory stream {base}/handles
+- [x] D handle directory stream {base}/handles
 - [ ] E referral-mint note indexed (test on the C2/D1 registrations)
