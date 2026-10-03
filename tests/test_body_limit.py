@@ -13,7 +13,7 @@ import pytest
 
 import config
 from tests.conftest import gas_app
-from tests.test_proof_grants import reg_body
+from tests.test_proof_grants import REFERRAL, reg_body
 
 
 def _junk_body(n_signals: int) -> bytes:
@@ -84,8 +84,9 @@ def test_the_largest_real_registration_fits(client, monkeypatch):
     # A 32 KiB proof and an 8 KiB certificate, the chain's own maxima.
     body = reg_body(proof=base64.b64encode(b"\x01" * 32 * 1024).decode(),
                     dsc_der=base64.b64encode(b"\x02" * 8 * 1024).decode(),
-                    affiliate="earth1s7rgscltvw8v3kzhj46pptdqg843ngs7th9ywp")
-    body["public_signals"] = reg_body(affiliate=body["affiliate"])["public_signals"] + ["7"] * 12
+                    **REFERRAL)
+    body["affiliate_handle"] = "h" * 32  # the longest handle
+    body["public_signals"] = reg_body(**{**REFERRAL, "affiliate_handle": "h" * 32})["public_signals"] + ["7"] * 12
     assert len(json.dumps(body)) < config.MAX_BODY_BYTES
     assert client.post("/gas/register", json=body).status_code == 403  # reached gas-check
 

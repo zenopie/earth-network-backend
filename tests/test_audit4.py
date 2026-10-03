@@ -118,7 +118,7 @@ def test_an_unseen_524_keeps_the_passport_claimed(client, chain_says, monkeypatc
 # commitment into public_signals[3] got the reserved lane with only a
 # POW_RESERVED_BITS stamp, and since gas-check refused it before proof
 # verification (dsc_der does not chain, is not the named DSC, the affiliate
-# has no referrer) the refusal was never counted: no cooldown, no shedding.
+# handle is not live) the refusal was never counted: no cooldown, no shedding.
 
 import os  # noqa: E402
 
@@ -132,7 +132,7 @@ from tests.test_register_dos import DE, body, chain, post  # noqa: E402,F401
 CHEAP_REFUSALS = [
     "no trusted issuing CSCA found",
     "proof is not bound to the supplied DSC: proof public inputs do not match",
-    "affiliate earth1xyz: affiliate holds no live referrer binding",
+    'affiliate_handle "amy": affiliate_handle is not a live handle',
     "invalid certificate",
 ]
 

@@ -7,13 +7,22 @@ new human needs is a note:
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate?, pc_gas, ciphertext_gas, pow?}
+                           affiliate_handle?, affiliate_pc?, affiliate_ciphertext?,
+                           pc_gas, ciphertext_gas, pow?}
     GET  /gas/pow         the proof of work it needs now (services/pow)
 
 Every ciphertext is a note's amount-blind v2 ciphertext (zk/privacy
 EncryptBlindNote), exactly 177 bytes, as the chain requires of every note it
 mints: ciphertext_anml / ciphertext_erth exactly as in MsgRegister (the proof's
 binding covers them), ciphertext_gas the gas note's own.
+
+A referral names a live handle (affiliate_handle) and carries the referral
+note the registrant's wallet made to that handle's shielded address
+(affiliate_pc, affiliate_ciphertext, 177 bytes): MsgRegister fields 15, 11
+and 12, all three or none, bound into the proof as
+H("earth.affiliate", Bytes(handle), affiliate_pc, Bytes(affiliate_ciphertext)).
+The chain mints the referrer's half there (as a note: there is no
+transparent referral payout and no referrer address any more).
 
 takes the registration the app is about to broadcast, asks the chain's own
 checks whether it would be accepted (`earthd gas-check registration`,
@@ -42,7 +51,6 @@ import re
 import time
 from typing import Annotated
 
-import bech32
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
@@ -96,7 +104,11 @@ class RegisterGrant(BaseModel):
     pc_erth: _SHORT
     ciphertext_anml: _SHORT
     ciphertext_erth: _SHORT
-    affiliate: Annotated[str, StringConstraints(max_length=256)] = ""
+    # A referral (all three or none): a live handle and the referral note
+    # the wallet made to its shielded address (MsgRegister 15, 11, 12).
+    affiliate_handle: Annotated[str, StringConstraints(max_length=64)] = ""
+    affiliate_pc: _SHORT = ""
+    affiliate_ciphertext: _SHORT = ""
     # Where the gas goes: the pc of a note the app will spend MsgRegister's
     # fee from, and that note's amount-blind v2 ciphertext (MsgShield's,
     # required).
@@ -119,11 +131,13 @@ def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse
     return JSONResponse(status_code=status_code, content={"status": status, "message": message, **extra})
 
 
-def _valid_address(address: str) -> bool:
-    """An earth address in its canonical (lowercase) encoding, as the chain's
-    personhood canonicalBytes requires of MsgRegister.affiliate."""
-    hrp, data = bech32.bech32_decode(address)
-    return hrp == config.EARTH_PREFIX and data is not None and bech32.bech32_encode(hrp, data) == address
+# x/personhood/types ValidateHandle: lowercase a-z, 0-9 and -, 3..32
+# characters, no leading or trailing dash.
+_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,30})[a-z0-9]")
+
+
+def valid_handle(handle: str) -> bool:
+    return _HANDLE.fullmatch(handle) is not None
 
 
 def _b64(value: str) -> bytes:
@@ -142,7 +156,6 @@ def _field(value: str) -> bytes:
 MAX_PUBLIC_SIGNALS = 16
 MAX_PROOF_BYTES = 32 * 1024
 MAX_DSC_DER_BYTES = 8 * 1024
-MAX_ADDRESS_BYTES = 128
 MAX_SIGNATURE_ALGORITHM_BYTES = 64
 # Wall clock against block time: allow a little more skew than the chain so a
 # date right at the edge is the chain's call, not ours.
@@ -184,11 +197,33 @@ class _Refuse(Exception):
         self.status_code = status_code
 
 
-def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes | None, bytes]:
+def _affiliate(body: RegisterGrant) -> int:
+    """MsgRegister.AffiliateField: 0 for no referral, else the affiliate field
+    of (affiliate_handle, affiliate_pc, affiliate_ciphertext). Raises _Refuse
+    unless all three are set (and well formed) or none is."""
+    handle, pc_b64, ct_b64 = body.affiliate_handle, body.affiliate_pc, body.affiliate_ciphertext
+    if not handle and not pc_b64 and not ct_b64:
+        return 0
+    if not (handle and pc_b64 and ct_b64):
+        raise _Refuse(400, "affiliate_handle, affiliate_pc and affiliate_ciphertext go together: all three or none")
+    if not valid_handle(handle):
+        raise _Refuse(400, "affiliate_handle is not a handle (a-z, 0-9 and -, 3..32 characters, no leading or trailing dash)")
+    try:
+        pc = privacy.field_from_bytes(_b64(pc_b64))
+        ct = _b64(ct_b64)
+    except (binascii.Error, ValueError):
+        raise _Refuse(400, "affiliate_pc must be a base64 32-byte field element and affiliate_ciphertext base64")
+    if len(ct) != shielded_msg.BLIND_CIPHERTEXT_BYTES:
+        raise _Refuse(400, f"affiliate_ciphertext must be an amount-blind v2 ciphertext of exactly "
+                           f"{shielded_msg.BLIND_CIPHERTEXT_BYTES} bytes")
+    return privacy.affiliate_field(handle, pc, ct)
+
+
+def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None, bytes]:
     """Everything about a registration that needs no gas-check, cheapest first.
 
     Returns (passport nullifier hex, grant id, pc_gas, ciphertext_gas,
-    affiliate, DSC commitment or None, dsc_der) or raises _Refuse.
+    DSC commitment or None, dsc_der) or raises _Refuse.
     Every value checked here is a public input the chain then verifies the
     proof against, so refusing on it early never refuses what the chain would
     take — it only stops a replay, a stale or mis-bound proof, or junk from
@@ -212,13 +247,7 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes |
                            f"{shielded_msg.BLIND_CIPHERTEXT_BYTES} bytes")
     if not 0 < len(body.signature_algorithm.encode()) <= MAX_SIGNATURE_ALGORITHM_BYTES:
         raise _Refuse(400, "signature_algorithm is missing or too long")
-    affiliate = body.affiliate.strip()
-    affiliate_field = 0
-    if affiliate:
-        if len(affiliate) > MAX_ADDRESS_BYTES or not _valid_address(affiliate):
-            raise _Refuse(400, "affiliate is not an earth address")
-        _, data = bech32.bech32_decode(affiliate)
-        affiliate_field = privacy.bytes_field(bytes(bech32.convertbits(data, 5, 8, False)))
+    affiliate_field = _affiliate(body)
 
     n = len(body.public_signals)
     if not 0 < n <= MAX_PUBLIC_SIGNALS:
@@ -231,7 +260,7 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes |
         raise _Refuse(400, "too few public signals for a passport proof")
 
     # The binding: the proof's address input must be this msg's idc, pcs,
-    # note ciphertexts (and affiliate). Someone replaying another registration's proof with
+    # note ciphertexts (and referral). Someone replaying another registration's proof with
     # notes of their own fails here, as on chain.
     if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(idc, pc_anml, ciphertexts[0], pc_erth, ciphertexts[1], affiliate_field):
         raise _Refuse(400, "proof is bound to a different identity and notes than this registration names")
@@ -247,7 +276,7 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, str, bytes |
     day = time.strftime("%Y-%m-%d", time.gmtime())
     # Not refused when absent: whether a DSC is required is the chain's call.
     dsc = privacy.field_bytes(signals[config.PASSPORT_DSC_KEY_INDEX]) if config.PASSPORT_DSC_KEY_INDEX < n else None
-    return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, affiliate, dsc, dsc_der
+    return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, dsc, dsc_der
 
 
 def _dsc_country(dsc_der: bytes) -> str | None:
@@ -274,15 +303,20 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 
 # The chain's refusals by kind (gas-check's error is "<detail>: <base>", the
 # base an x/personhood or x/pki error description). Only the kind is logged:
-# the detail can name the affiliate, the country, a nullifier.
+# the detail can name the affiliate handle, the country, a nullifier.
+# Codes beside each are the chain's (x/personhood unless named); gas-check
+# reports the error text only. Of the codes added with handles, 1122
+# (ErrHandleTaken), 1125 (ErrHandleMovedOut), 1126 (ErrCaretakerMovedOut) and
+# x/dex 1120 (ErrPoolCap) belong to msgs no registration check reaches.
 _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
     ("daily registration limit reached for this document signer or country", "rate cap"),
     ("proof public inputs do not match", "public inputs"),
-    ("this registration has already been used", "binding used"),
-    ("passport is already registered to this identity commitment", "replay"),
-    ("affiliate holds no live referrer binding", "affiliate"),
+    ("this registration has already been used", "binding used"),  # 1124 ErrBindingUsed
+    ("passport is already registered to this identity commitment", "replay"),  # 1123 ErrRegistrationReplay
+    ("affiliate_handle is not a live handle", "affiliate"),  # 1121 ErrNoReferrer
+    ("identity tree full", "tree full"),  # 1120 ErrIdentityTreeFull
     ("has been revoked", "revoked"),
     ("no registration verifying key configured", "no verifying key"),
     ("invalid certificate", "certificate"),
@@ -331,7 +365,7 @@ async def register(body: RegisterGrant, request: Request):
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
     try:
-        nullifier, grant_id, pc_gas, ciphertext_gas, affiliate, dsc, dsc_der = _precheck(body)
+        nullifier, grant_id, pc_gas, ciphertext_gas, dsc, dsc_der = _precheck(body)
     except _Refuse as exc:
         return _reply(exc.status_code, "error", str(exc))
     # Replay and cap before the check: both are a table read, the check is a
@@ -389,8 +423,10 @@ async def register(body: RegisterGrant, request: Request):
         "ciphertext_anml": body.ciphertext_anml,
         "pc_erth": body.pc_erth,
         "ciphertext_erth": body.ciphertext_erth,
-        "affiliate": affiliate,
     }
+    if body.affiliate_handle:
+        msg.update(affiliate_handle=body.affiliate_handle, affiliate_pc=body.affiliate_pc,
+                   affiliate_ciphertext=body.affiliate_ciphertext)
     try:
         with ratelimit.one_at_a_time(client):
             verdict = await gascheck.registration(msg, priority=priority)
@@ -421,7 +457,7 @@ async def register(body: RegisterGrant, request: Request):
             ratelimit.note_dsc_failure(dsc)
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send. The
-        # log keeps only its kind: no nullifier, affiliate or country.
+        # log keeps only its kind: no nullifier, handle or country.
         logger.info("registration check refused: %s", kind)
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     if verdict.get("nullifier") != nullifier:

@@ -228,9 +228,9 @@ def test_the_stamp_spec():
 
 
 def test_refusal_logs_name_neither_affiliate_nor_country(client, chain, caplog):
-    affiliate = "earth1s7rgscltvw8v3kzhj46pptdqg843ngs7th9ywp"
+    affiliate = "amy-the-referrer"
     caplog.set_level(logging.DEBUG)
-    chain["refuse"][900] = f"affiliate {affiliate}: affiliate holds no live referrer binding"
+    chain["refuse"][900] = f'affiliate_handle "{affiliate}": affiliate_handle is not a live handle'
     chain["refuse"][901] = COUNTRY_CAP
     assert post(client, body(900)).status_code == 403
     assert post(client, body(901, der=DE)).status_code == 403

@@ -22,7 +22,8 @@ is the only grant. The device-attestation grants (`/gas/challenge`,
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate?, pc_gas, ciphertext_gas, pow?}
+                           affiliate_handle?, affiliate_pc?, affiliate_ciphertext?,
+                           pc_gas, ciphertext_gas, pow?}
     GET  /gas/pow         the proof of work /gas/register needs now
     GET  /health          hot wallet balance and how many grants are left in it
 
@@ -110,11 +111,13 @@ everything that can refuse a request without one runs first, in this order:
    are kept, least recently seen evicted first.
 2. **Shape**, as `MsgRegister.ValidateBasic`: base64, idc/pcs canonical
    32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, all three
-   ciphertexts exactly 177 bytes (a missing one is 422), 1..16 public signals that are canonical decimals, affiliate
-   an earth address → 400.
+   ciphertexts exactly 177 bytes (a missing one is 422), 1..16 public signals that are canonical decimals; a
+   referral is all three of `affiliate_handle` (a handle: a-z, 0-9, -, 3..32, no leading or trailing dash),
+   `affiliate_pc` (a field element) and `affiliate_ciphertext` (exactly 177 bytes) or none of them → 400.
 3. **Binding**: `public_signals[address_index]` must equal
    `RegistrationBinding = H(TAG_REG, idc, pc_anml, Bytes(ciphertext_anml),
-   pc_erth, Bytes(ciphertext_erth), affiliate)` (Python Poseidon2, pinned to
+   pc_erth, Bytes(ciphertext_erth), affiliate)`, affiliate 0 or
+   `H(TAG_AFFILIATE, Bytes(affiliate_handle), affiliate_pc, Bytes(affiliate_ciphertext))` (Python Poseidon2, pinned to
    the chain's Go vectors) → 400. Someone else's proof with notes or
    ciphertexts of one's own stops here.
 4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
@@ -163,7 +166,7 @@ ordinary lane (audit-4 B1). Both the commitment and the certificate are
 public (every registration publishes them), so junk can still copy a real
 pair; that costs a proof of work a request, and **every** refusal of a
 request that held the lane — not only a failed proof: a used binding, a
-dead affiliate, mismatched inputs, the signer at its cap — counts against
+affiliate handle that is not live, mismatched inputs, the signer at its cap — counts against
 that signer's budget (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`) and its
 cooldown: `REGISTER_DSC_FAILURES_BEFORE_COOLDOWN` (5) such failures naming
 one DSC within `REGISTER_DSC_COOLDOWN_SECONDS` (3600, sliding) take it out

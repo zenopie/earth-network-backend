@@ -5,9 +5,9 @@ public referrer addresses; predecessor-aware activation; error codes
 1120-1126). Baseline: pytest 266 passed, 1 skipped.
 
 ## Steps
-- [ ] A zk: identity_leaf(.., predecessor_at), affiliate_field; zk_vectors
+- [x] A zk: identity_leaf(.., predecessor_at), affiliate_field; zk_vectors
       re-generated from 4a663d5
-- [ ] B /gas/register: affiliate_handle / affiliate_pc / affiliate_ciphertext
+- [x] B /gas/register: affiliate_handle / affiliate_pc / affiliate_ciphertext
       (all or none), referrer address gone; refusal kinds for 1120-1126
 - [ ] C fixtures re-recorded from 4a663d5 (recorder also records the
       Handles query per block)
