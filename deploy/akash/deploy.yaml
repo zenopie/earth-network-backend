@@ -45,19 +45,28 @@ services:
       # day, whatever a run of fresh or stolen passports tries.
       - REGISTER_GRANT_MAX_PER_DAY=500
       # Per-client limits on /gas/register, ahead of the one-at-a-time
-      # gas-check: 10 requests an hour, one check in flight. The client is
-      # CF-Connecting-IP — correct only because the app is reachable solely
-      # through the tunnel (see expose below). Publish 8000 globally and this
-      # must be false.
+      # gas-check: 10 requests an hour per IPv4 address or IPv6 /64, one
+      # check in flight. The client is CF-Connecting-IP — correct only
+      # because the app is reachable solely through the tunnel (see expose
+      # below). The service defaults it to false; publish 8000 globally and
+      # this must be removed.
       - TRUST_CF_CONNECTING_IP=true
       - REGISTER_IP_MAX_PER_WINDOW=10
       - REGISTER_IP_WINDOW_SECONDS=3600
+      - REGISTER_IPV6_PREFIX=64
+      # Past 10 gas-check refusals a minute, only the reserved lane (a new
+      # passport from a DSC the chain already knows) is queued; 5 of the 20
+      # queue places are kept for it.
+      - REGISTER_REFUSALS_PER_MINUTE=10
+      - GAS_CHECK_MAX_WAITING=20
+      - GAS_CHECK_RESERVED_WAITING=5
       # personhood params the cheap pre-checks read (earth-1 genesis:
       # nullifier_index 2, address_index 1, current_date_index 0,
-      # current_date_max_skew_seconds 172800). Change with the chain's.
+      # dsc_key_index 3, current_date_max_skew_seconds 172800). Change with the chain's.
       - PASSPORT_NULLIFIER_INDEX=2
       - PASSPORT_ADDRESS_INDEX=1
       - PASSPORT_CURRENT_DATE_INDEX=0
+      - PASSPORT_DSC_KEY_INDEX=3
       - PASSPORT_DATE_MAX_SKEW_SECONDS=172800
       # The privacy indexer (services/privacy): follows the chain over CometBFT
       # RPC into /app/state/privacy_index.db and serves /privacy/status and

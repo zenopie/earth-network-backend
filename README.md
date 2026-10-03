@@ -42,19 +42,53 @@ from the chain release; see the Dockerfile). Proofs are verified here, never by
 the node.
 
 Answers are `{status, message, tx_hash?}` with 200 (sent), 202 (broadcast,
-unresolved), 4xx (cannot succeed as sent; 409 already granted, 429 rate or
-daily limit) or 5xx (retry).
+unresolved), 4xx (cannot succeed as sent; 409 already granted, 413 body over
+64 KiB, 429 rate or daily limit) or 5xx (retry).
+
+### Once per passport per month — a switch included (by design)
+
+The grant id carries the month, and gas-check accepts a *switch* (a passport
+already registered moving to a new identity) as readily as a first
+registration. So a holder can draw one grant a month, every month, by
+switching. That is accepted: it costs `DUST_UERTH` per passport per month at
+most, the rolling `REGISTER_GRANT_MAX_PER_DAY` bounds the total whatever the
+mix, and a switch is a real registration tx the chain charges a fee for (paid
+from that very note). Keying the grant on the nullifier alone would strand a
+holder whose first gas note was lost.
+
+### When the shield's outcome is unknown
+
+The shield tx is signed before it is posted, so its hash is known up front.
+A failure while looking up the hot wallet's account or simulating moved
+nothing: the passport is released (502, try again). If the post itself fails
+in a way the node may already have accepted it (a read timeout, a dropped
+connection), the chain is asked for the tx by that hash: landed is a 200,
+included-and-failed releases (502), and not seen within the wait is 202
+`pending` with the `tx_hash` — the claim is kept, since that tx may still
+land, and the app watches the hash. An unresolved send without a hash (none
+exists before signing) releases the claim. The backend logs neither the hash
+nor the passport for a grant (only "registration gas note sent"): a log line
+naming the shield tx at the moment a passport checked out would tie the
+public registration to its gas note by timing.
 
 ### What runs before gas-check
 
 A proof verification is the expensive part (one at a time, ~120 MB), so
 everything that can refuse a request without one runs first, in this order:
 
+0. **Body size**: over `MAX_BODY_BYTES` (64 KiB; the largest real request is
+   ~56 KiB) → 413, before anything is read or parsed (`services/bodylimit`,
+   streamed bodies cut off as they arrive). Each field also has a loose
+   length cap → 422.
 1. **Per-client window**: `REGISTER_IP_MAX_PER_WINDOW` requests per
    `REGISTER_IP_WINDOW_SECONDS` (default 10 an hour), junk included → 429.
-   The client is `CF-Connecting-IP` when `TRUST_CF_CONNECTING_IP=true` (the
-   default, right only where Cloudflare is the sole ingress — the Akash lease
-   is tunnel-only), otherwise the TCP peer.
+   A client is an IPv4 address or an IPv6 /`REGISTER_IPV6_PREFIX` (64; 56
+   is stricter) — one /64 is one client, not 2^64. Its address is
+   `CF-Connecting-IP` when `TRUST_CF_CONNECTING_IP=true` (right only where
+   Cloudflare is the sole ingress — the Akash lease is tunnel-only and sets
+   it), otherwise the TCP peer (the default). Each client is one fixed-size
+   sliding-window counter; at most `REGISTER_IP_MAX_TRACKED` (20000, ~2.5 MiB)
+   are kept, least recently seen evicted first.
 2. **Shape**, as `MsgRegister.ValidateBasic`: base64, idc/pcs canonical
    32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, all three
    ciphertexts exactly 177 bytes (a missing one is 422), 1..16 public signals that are canonical decimals, affiliate
@@ -70,18 +104,36 @@ everything that can refuse a request without one runs first, in this order:
    already claimed → 409.
 6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` passport grants in the last
    24 h → 429.
-7. **One check per client**: a client with a gas-check already queued or
+7. **Refusal budget**: junk with a forged binding passes every check above,
+   and only gas-check refuses it. Gas-check refusals are counted per minute;
+   past `REGISTER_REFUSALS_PER_MINUTE` (10) a request outside the reserved
+   lane is refused with 429 before it is queued.
+8. **One check per client**: a client with a gas-check already queued or
    running gets 429 at once rather than a second place in the queue; the queue
    as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
 
+**The reserved lane.** `GAS_CHECK_RESERVED_WAITING` (5) of the queue's places
+are kept for a passport not yet granted this month whose DSC commitment
+(`public_signals[PASSPORT_DSC_KEY_INDEX]`, 3) is one the chain already holds
+registrations from, and such a check takes the slot ahead of ordinary ones.
+The known-DSC set is x/personhood's `regs_by_dsc` keys, read whole with one
+store subspace query (`/store/personhood/subspace` over `EARTH_RPC_URL`) at
+startup and every `KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps
+the last set. A commitment is public, so junk can copy one — the lane raises
+the cost of a flood (a real signer's commitment, the per-client limits
+still apply) rather than proving anything; and a signer's first passport is
+not in the set and takes the ordinary lane, which only fills under a flood.
+
 The indexes are personhood params, mirrored in config:
 `PASSPORT_NULLIFIER_INDEX=2`, `PASSPORT_ADDRESS_INDEX=1`,
-`PASSPORT_CURRENT_DATE_INDEX=0`, `PASSPORT_DATE_MAX_SKEW_SECONDS=172800`
-(earth-1 genesis `nullifier_index`, `address_index`, `current_date_index`,
+`PASSPORT_CURRENT_DATE_INDEX=0`, `PASSPORT_DSC_KEY_INDEX=3`,
+`PASSPORT_DATE_MAX_SKEW_SECONDS=172800` (earth-1 genesis `nullifier_index`,
+`address_index`, `current_date_index`, `dsc_key_index`,
 `current_date_max_skew_seconds`). If gas-check returns a nullifier other than
 ours the request is 503 and nothing is claimed: the index is misconfigured.
-Whether the DSC is a known, trusted signer is not checked here (it needs the
-chain's PKI state); gas-check does that before verifying the proof.
+Whether the DSC is a trusted signer is not checked here (it needs the
+chain's PKI state); gas-check does that before verifying the proof. The
+known-DSC set only picks the queue lane.
 
 ## Running
 
@@ -222,7 +274,10 @@ It refuses, and halts until an operator steps in, rather than serve trees that
 cannot match the chain: a note position out of sequence, a nullifier twice, a
 root event whose size differs from the index, a different chain id or block
 hash behind the RPC than the one indexed (the chain's first-block hash is
-recorded once, and is the `genesis` in the URLs), or tree sizes that differ from the
+recorded once, and is the `genesis` in the URLs; the last indexed block's
+hash is checked on every start), a block whose parent (`header.last_block_id`)
+is not the block indexed before it (checked on every block, so an RPC
+swapped mid-run halts at the first block of the other chain), or tree sizes that differ from the
 chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree` at each batch's last height —
 this is what catches notes imported at genesis, which emit no events, or a
 start height past the first private tx). The reason is in `/privacy/status`;
