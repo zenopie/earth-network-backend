@@ -70,7 +70,7 @@ PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS",
 # when Cloudflare is the sole ingress, as on the Akash lease (tunnel-only,
 # where deploy.yaml turns it on). Off by default: anywhere else the header is
 # the client's to choose.
-TRUST_CF_CONNECTING_IP = os.getenv("TRUST_CF_CONNECTING_IP", "true").lower() == "true"
+TRUST_CF_CONNECTING_IP = os.getenv("TRUST_CF_CONNECTING_IP", "false").lower() == "true"
 REGISTER_IP_MAX_PER_WINDOW = int(os.getenv("REGISTER_IP_MAX_PER_WINDOW", "10"))
 REGISTER_IP_WINDOW_SECONDS = float(os.getenv("REGISTER_IP_WINDOW_SECONDS", "3600"))
 REGISTER_IPV6_PREFIX = int(os.getenv("REGISTER_IPV6_PREFIX", "64"))

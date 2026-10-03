@@ -201,6 +201,29 @@ def test_unresolved_shield_keeps_the_passport(client, chain_says, monkeypatch):
     assert client.post("/gas/register", json=reg_body()).status_code == 409
 
 
+def test_logs_never_tie_the_passport_to_the_gas_tx(client, chain_says, monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    tx_hash = "AB" * 32
+
+    async def ok(pc, ct):
+        return tx_hash
+    monkeypatch.setattr(chain, "shield_dust", ok)
+    assert client.post("/gas/register", json=reg_body()).status_code == 200
+
+    async def failed(pc, ct):
+        raise RuntimeError(f"tx {tx_hash} failed: insufficient funds")
+    monkeypatch.setattr(chain, "shield_dust", failed)
+    assert client.post("/gas/register", json=reg_body(nf=77)).status_code == 502
+
+    chain_says["registration"] = {"ok": False, "error": f"nullifier {NF_HEX} already registered"}
+    assert client.post("/gas/register", json=reg_body(nf=78)).status_code == 403
+    for text in (tx_hash, tx_hash.lower(), NF_HEX, PC_GAS.hex()):
+        assert text not in caplog.text
+    assert "registration gas note sent" in caplog.text
+
+
 def test_unresolved_without_a_tx_hash_gives_the_passport_back(client, chain_says, monkeypatch):
     async def unresolved(pc, ct):
         raise chain.SendUnresolved("", TimeoutError())

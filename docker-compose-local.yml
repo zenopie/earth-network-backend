@@ -6,8 +6,13 @@ services:
     platform: linux/amd64
     env_file:
       - .env.local
+    environment:
+      # Never trust CF-Connecting-IP here: there is no Cloudflare in front, so
+      # any client could pick its own rate-limit key. Overrides .env.local.
+      TRUST_CF_CONNECTING_IP: "false"
     ports:
-      - "8000:8000"
+      # Loopback only: a local stack is not an ingress.
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./:/app:delegated
       - monero-wallet-data:/wallet

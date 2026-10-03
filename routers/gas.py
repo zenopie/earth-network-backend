@@ -36,6 +36,7 @@ import base64
 import binascii
 import calendar
 import logging
+import re
 import time
 from typing import Annotated
 
@@ -87,6 +88,14 @@ class RegisterGrant(BaseModel):
     # required).
     pc_gas: _SHORT
     ciphertext_gas: _SHORT
+
+
+_HEX_RUN = re.compile(r"(0x)?[0-9a-fA-F]{16,}")
+
+
+def _coarse(reason) -> str:
+    """A refusal reason for the log: hex runs (nullifiers, keys, hashes) cut out, length bounded."""
+    return _HEX_RUN.sub("<hex>", str(reason))[:120]
 
 
 def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse:
@@ -259,13 +268,14 @@ async def register(body: RegisterGrant, request: Request):
     except ratelimit.Busy:
         return _reply(429, "error", "a check for this client is already running; wait for it")
     except gascheck.Unavailable as exc:
-        logger.error("registration check unavailable: %s", exc)
+        logger.error("registration check unavailable: %s", _coarse(exc))
         return _reply(503, "error", "verification is unavailable; try again shortly")
     if not verdict.get("ok"):
         ratelimit.note_refusal()
         # The chain's own reason — "passport expired", "daily cap reached" —
-        # is what the user needs, and it says nothing they did not send.
-        logger.info("registration check refused: %s", verdict.get("error"))
+        # is what the user needs, and it says nothing they did not send. The
+        # log keeps a coarse version: no hex that could be a nullifier.
+        logger.info("registration check refused: %s", _coarse(verdict.get("error")))
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
     if verdict.get("nullifier") != nullifier:
         # gas-check read the nullifier from the chain's nullifier_index; ours
@@ -305,12 +315,14 @@ async def _grant_note(grant_id: str, pc: bytes, ciphertext: bytes) -> JSONRespon
         # it; this side keeps no record that ties it to the passport.
         logger.error("gas note shield is unresolved: %s", exc)
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
-    except Exception:
+    except Exception as exc:
         replay.release(grant_id)
-        logger.exception("gas note shield failed")
+        # Not logger.exception: a cosmpy error names the tx hash.
+        logger.error("gas note shield failed: %s: %s", exc.__class__.__name__, _coarse(exc))
         return _reply(502, "error", "the grant could not be sent; try again")
 
-    # Logged without the pc or the passport: the tx is public, the link from
-    # this passport to this note need not be kept here as well.
-    logger.info("shielded %d%s as a registration gas note (tx %s)", config.DUST_UERTH, config.EARTH_DENOM, tx_hash)
+    # Logged without the tx hash, the pc or the passport. The registration
+    # and the shield are both public; a log line naming the shield's tx at the
+    # moment a passport checked out would tie the two together by timing.
+    logger.info("registration gas note sent")
     return _reply(200, "success", "gas note sent", tx_hash=tx_hash)
