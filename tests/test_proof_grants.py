@@ -166,6 +166,7 @@ def test_register_unavailable_is_503_not_a_refusal(client, shields, chain_says):
     {"ciphertext_anml": ""},
     {"ciphertext_erth": b64(CT_ERTH[:-1])},
     {"affiliate": "cosmos1abc"},
+    {"affiliate": OTHER_ADDRESS.upper()},  # not the canonical (lowercase) encoding
 ])
 def test_register_rejects_malformed_fields_before_asking(client, shields, chain_says, over):
     assert client.post("/gas/register", json=reg_body(**over)).status_code == 400

@@ -82,8 +82,10 @@ def _reply(status_code: int, status: str, message: str, **extra) -> JSONResponse
 
 
 def _valid_address(address: str) -> bool:
+    """An earth address in its canonical (lowercase) encoding, as the chain's
+    personhood canonicalBytes requires of MsgRegister.affiliate."""
     hrp, data = bech32.bech32_decode(address)
-    return hrp == config.EARTH_PREFIX and data is not None
+    return hrp == config.EARTH_PREFIX and data is not None and bech32.bech32_encode(hrp, data) == address
 
 
 def _b64(value: str) -> bytes:
