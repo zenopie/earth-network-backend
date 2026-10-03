@@ -6,8 +6,9 @@ request whose proof names one of these: x/personhood's RegCountByDsc keys
 registrations, removed at zero), read whole with one store subspace query
 over CometBFT RPC every KNOWN_DSC_REFRESH_SECONDS. Junk with random public
 signals does not name one; a flood would have to copy a real signer's
-commitment off the chain to compete for the lane, and still pays the
-per-client limits.
+commitment off the chain, beside that signer's certificate (routers/gas
+checks dsc_der hashes to it, services/dsccommit), to compete for the lane,
+and still pays the per-client limits and a proof of work.
 
 A signer's first passport is not in the set and goes through the ordinary
 lane, which only fills under a flood. If the query fails the last set is

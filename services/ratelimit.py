@@ -36,12 +36,19 @@ at the shedding difficulty (services/pow), and refused 428 without one.
 Junk that names one signer or country sheds that signer's or country's
 registrants (who can still pay the work), not everyone's.
 
-DSC cooldown: REGISTER_DSC_FAILURES_BEFORE_COOLDOWN verification failures
-naming one DSC within REGISTER_DSC_COOLDOWN_SECONDS take it out of the
-reserved lane (routers/gas) until they age out of that sliding window. A
-commitment is public, so junk can copy a known one into the lane; doing so
-now costs a proof of work a request and gets the signer demoted, not the
-lane flooded.
+Reserved-lane refusals: a request that held the reserved lane and was
+refused for any reason at all (not only a failed proof) counts against its
+signer's budget and cooldown (note_dsc_failure) — but not the network's or
+a country's, since it may be a real registrant meeting a cap (audit-4 B1).
+
+DSC cooldown: REGISTER_DSC_FAILURES_BEFORE_COOLDOWN failures naming one DSC
+within REGISTER_DSC_COOLDOWN_SECONDS (verification failures, and any
+refusal in the reserved lane) take it out of the reserved lane
+(routers/gas) until they age out of that sliding window. A commitment is
+public, and the lane also requires the request's dsc_der to hash to it
+(services/dsccommit); a DSC certificate is public too (every passport it
+signed carries it), so junk can still hold the lane with a real signer's
+certificate — at a proof of work a request, until the signer is demoted.
 
 The client address is CF-Connecting-IP when TRUST_CF_CONNECTING_IP is on
 (right only where Cloudflare is the sole ingress — the Akash lease is
@@ -161,6 +168,14 @@ def note_refusal(dsc: bytes | None = None, country: str | None = None, now: floa
         _bump(_refusals, key, now, 60.0)
     if dsc is not None:
         _bump(_dsc_failures, dsc, now, config.REGISTER_DSC_COOLDOWN_SECONDS)
+
+
+def note_dsc_failure(dsc: bytes, now: float | None = None) -> None:
+    """Counts one refusal of a reserved-lane request against its signer only:
+    the signer's budget and its cooldown, not the network's or a country's."""
+    now = time.monotonic() if now is None else now
+    _bump(_refusals, ("dsc", dsc), now, 60.0)
+    _bump(_dsc_failures, dsc, now, config.REGISTER_DSC_COOLDOWN_SECONDS)
 
 
 def shedding(dsc: bytes | None = None, country: str | None = None, now: float | None = None) -> str | None:

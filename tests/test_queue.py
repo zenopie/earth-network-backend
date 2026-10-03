@@ -22,7 +22,7 @@ from tests.conftest import gas_app
 from tests.test_proof_grants import reg_body
 
 BASE6 = int(ipaddress.IPv6Address("2001:db8:1:2::"))
-KNOWN_DSC = 7  # reg_body's public_signals[3]
+from tests.test_proof_grants import DSC_KEY as KNOWN_DSC  # reg_body's public_signals[3]
 
 
 @pytest.fixture

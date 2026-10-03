@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 import config
 
-from services import chain, gascheck, knowndsc, pow, ratelimit, replay, shielded_msg
+from services import chain, dsccommit, gascheck, knowndsc, pow, ratelimit, replay, shielded_msg
 from services.zk import privacy
 from services.zk.poseidon2 import P
 
@@ -345,8 +345,9 @@ async def register(body: RegisterGrant, request: Request):
     shed = ratelimit.shedding(dsc, country)
     # The reserved lane: a passport not yet granted (peek, above) from a
     # Document Signer the chain already holds registrations from, not
-    # cooling down after verification failures naming it, with a proof of
-    # work.
+    # cooling down after failures naming it, with a proof of work, whose
+    # dsc_der really is the signer public_signals names (checked last: it
+    # hashes the key, and only a request that paid the work gets that far).
     candidate = dsc is not None and knowndsc.is_known(dsc) and not ratelimit.dsc_cooling(dsc)
     need = pow.required_bits(shedding=shed is not None)
     bits, digest = 0, None
@@ -362,7 +363,7 @@ async def register(body: RegisterGrant, request: Request):
     if shed and bits < need:
         return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
                                  f"attach a proof of work of {need} bits (GET /gas/pow)")
-    priority = candidate and bits >= need
+    priority = candidate and bits >= need and dsccommit.commitment(dsc_der) == dsc
     if (shed or priority) and digest is not None:
         pow.consume(digest)
     else:
@@ -396,11 +397,21 @@ async def register(body: RegisterGrant, request: Request):
     if not verdict.get("ok"):
         kind = _refusal_kind(verdict.get("error"))
         if kind == "invalid proof":
-            # Only a refusal that cost a proof verification spends a budget:
-            # every other one (a country or signer at its daily cap, a DSC
-            # that does not chain) was decided before the verifier ran, and
-            # a real registrant meeting a cap must not shed anyone.
+            # A refusal that cost a proof verification spends every budget
+            # it falls under. Any other (a country or signer at its daily
+            # cap, a DSC that does not chain) was decided before the
+            # verifier ran, and a real registrant meeting a cap must not
+            # shed anyone else.
             ratelimit.note_refusal(dsc, country)
+        elif priority:
+            # But in the reserved lane every refusal counts against the
+            # signer it named (audit-4 B1): the lane is a place ahead of
+            # the queue, and a request that held it and was turned away for
+            # any reason — a used binding, a dead affiliate, mismatched
+            # inputs, the signer at its cap — demotes that signer as a
+            # failed proof would, so the lane cannot be held indefinitely by
+            # requests that are cheap for the chain to refuse.
+            ratelimit.note_dsc_failure(dsc)
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send. The
         # log keeps only its kind: no nullifier, affiliate or country.

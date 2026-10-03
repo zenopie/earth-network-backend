@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import config  # noqa: E402
 from routers import gas  # noqa: E402
-from services import knowndsc, pow, ratelimit, replay  # noqa: E402
+from services import dsccommit, knowndsc, pow, ratelimit, replay  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +20,7 @@ def fresh_state(tmp_path, monkeypatch):
     ratelimit.reset()
     pow.reset()
     knowndsc.reset()
+    dsccommit.reset()
     yield
     if replay._conn is not None:
         replay._conn.close()

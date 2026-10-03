@@ -23,6 +23,13 @@ from services.zk import privacy
 from services.zk.poseidon2 import P
 
 B64 = base64.b64encode(b"x").decode()
+# A real P-256 DSC certificate (tests/fixtures/dsc) and its chain commitment
+# (pinned against x/pki/certs.DscCommitmentOf in test_audit4): reg_body's
+# dsc_der and public_signals[3] agree, as a real registration's do.
+_DSC_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "dsc")
+DSC_DER = open(os.path.join(_DSC_DIR, "dsc_p256.der"), "rb").read()
+DSC_DER_B64 = base64.b64encode(DSC_DER).decode()
+DSC_KEY = int("304606d727af8b6715f57c615779a33f1b00c00a1c5f50b7dd704b57a62ace59", 16)
 NF = int("aa" * 32, 16) % P
 NF_HEX = privacy.field_bytes(NF).hex()
 OTHER_ADDRESS = "earth1s7rgscltvw8v3kzhj46pptdqg843ngs7th9ywp"
@@ -54,12 +61,12 @@ def signals(nf: int = NF, date: int | None = None, idc=11, pc_anml=12, pc_erth=1
     if data is not None:
         aff = privacy.bytes_field(bytes(bech32.convertbits(data, 5, 8, False)))
     binding = privacy.registration_binding(idc, pc_anml, ct_anml, pc_erth, ct_erth, aff)
-    return [str(today_yymmdd() if date is None else date), str(binding), str(nf), "7"]
+    return [str(today_yymmdd() if date is None else date), str(binding), str(nf), str(DSC_KEY)]
 
 
 def reg_body(gas_pc: bytes = PC_GAS, nf: int = NF, **over):
     body = {"proof": B64, "public_signals": signals(nf, affiliate=over.get("affiliate", "")),
-            "signature_algorithm": "lean_poa", "dsc_der": B64,
+            "signature_algorithm": "lean_poa", "dsc_der": DSC_DER_B64,
             "idc": field_b64(11), "pc_anml": field_b64(12), "pc_erth": field_b64(13),
             "ciphertext_anml": b64(CT_ANML), "ciphertext_erth": b64(CT_ERTH),
             "pc_gas": base64.b64encode(gas_pc).decode(), "ciphertext_gas": b64(CT_GAS)}

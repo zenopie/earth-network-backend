@@ -110,3 +110,122 @@ def test_an_unseen_524_keeps_the_passport_claimed(client, chain_says, monkeypatc
     assert r1.status_code == 202 and r1.json()["tx_hash"]
     assert client.post("/gas/register", json=reg_body()).status_code == 409
     assert len(sent) == 1
+
+
+# --- B1: the reserved lane ---------------------------------------------------
+#
+# poc test_poc_reserved_lane_uncounted.py: junk copying a known DSC
+# commitment into public_signals[3] got the reserved lane with only a
+# POW_RESERVED_BITS stamp, and since gas-check refused it before proof
+# verification (dsc_der does not chain, is not the named DSC, the affiliate
+# has no referrer) the refusal was never counted: no cooldown, no shedding.
+
+import os  # noqa: E402
+
+import config  # noqa: E402
+from services import dsccommit, knowndsc, ratelimit  # noqa: E402
+from services.zk import privacy  # noqa: E402
+from tests.test_proof_grants import DSC_DER_B64, DSC_KEY  # noqa: E402
+from tests.test_queue import with_pow  # noqa: E402
+from tests.test_register_dos import DE, body, chain, post  # noqa: E402,F401
+
+CHEAP_REFUSALS = [
+    "no trusted issuing CSCA found",
+    "proof is not bound to the supplied DSC: proof public inputs do not match",
+    "affiliate earth1xyz: affiliate holds no live referrer binding",
+    "invalid certificate",
+]
+
+_DSC = os.path.join(os.path.dirname(__file__), "fixtures", "dsc")
+
+
+# x/pki/certs.DscCommitmentOf over each certificate, from the chain's own code
+# (csca_*: x/pki/certs/testdata; dsc_*: generated here). Brainpool and the
+# explicit-parameter P-521 are what `cryptography` cannot load.
+@pytest.mark.parametrize("name,want", [
+    ("csca_brainpoolP256r1.der", "268948bb8e64736bdc99290b15d54e82cc588b2cf5d4fe89c7aa2f4c70d51a56"),
+    ("csca_brainpoolP512r1.der", "09832cfbab77ee97dbfabee18ea29b8bf65854c92bc94b9f17f62bed01bbfcae"),
+    ("csca_p521_explicit.der", "2f266d7247853a1d5b98df816ed33aa115d36a7cf087a6093b036ce2fb7c85a1"),
+    ("csca_rsa.der", "09152b8589dabb5428ae48775a3fb60bbe46f597d01a635cb4298b2ba47b6929"),
+    ("dsc_p256.der", "304606d727af8b6715f57c615779a33f1b00c00a1c5f50b7dd704b57a62ace59"),
+    ("dsc_p384.der", "25f951db441d4b3dec429c70838a5d682a20426fb81f7e03df5aed44b1332584"),
+    ("dsc_rsa2048.der", "2ba8a977d31f882307f980ec68766aaca880f9e0249e8bd8543b8fe8e19bd7bf"),
+])
+def test_dsc_commitment_matches_the_chain(name, want):
+    with open(os.path.join(_DSC, name), "rb") as f:
+        assert dsccommit.commitment(f.read()).hex() == want
+
+
+def test_dsc_commitment_matches_the_circuit():
+    """zk/ultrahonk/testdata/lean_poa: dsc_pubkey -> expected_dsc_key (P-256, tag 1)."""
+    key = bytes.fromhex("75c72e3b24013b813e7ee78da1fcf7cd1ac902030ea119b86df9822eddcaac49"
+                        "a8a3b10d8765588476ed35eb6141681534bb7164a2fa9d6c7dd82140776c471d")
+    assert int.from_bytes(dsccommit.commitment_of_key(dsccommit.TAG_P256, key), "big") == \
+        17137993880610033746992863696376072247659308979702652622358731864446692122039
+
+
+@pytest.mark.parametrize("der", [b"", b"AAAA", b"\x30\x03\x02\x01\x01", b"\x30\x84\xff\xff\xff\xff"])
+def test_junk_has_no_commitment(der):
+    assert dsccommit.commitment(der) is None
+
+
+def test_curve_constants_match_ecdsa():
+    import ecdsa
+
+    for c, oid in [(ecdsa.NIST256p, "1.2.840.10045.3.1.7"), (ecdsa.NIST384p, "1.3.132.0.34"),
+                   (ecdsa.NIST521p, "1.3.132.0.35"), (ecdsa.BRAINPOOLP256r1, "1.3.36.3.3.2.8.1.1.7"),
+                   (ecdsa.BRAINPOOLP384r1, "1.3.36.3.3.2.8.1.1.11"), (ecdsa.BRAINPOOLP512r1, "1.3.36.3.3.2.8.1.1.13")]:
+        _, p, n = dsccommit._CURVES[oid]
+        assert (p, n) == (c.curve.p(), c.order), c.name
+
+
+def test_a_copied_commitment_without_its_certificate_gets_no_priority(client, chain, monkeypatch):
+    """The PoC's flood: a known commitment beside junk (or another signer's) dsc_der."""
+    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 5)
+    knowndsc.set_known({privacy.field_bytes(DSC_KEY)})
+    for i, der in enumerate(["AAAA", DE]):
+        r = post(client, with_pow(body(70000 + i, der=der), config.POW_RESERVED_BITS))
+        assert r.status_code == 200
+        assert chain["priority"][-1] is False, "dsc_der is not the signer public_signals names"
+    assert post(client, with_pow(body(70010, der=DSC_DER_B64), config.POW_RESERVED_BITS)).status_code == 200
+    assert chain["priority"][-1] is True
+
+
+def test_every_refusal_in_the_reserved_lane_counts(client, chain, monkeypatch):
+    """The PoC's flood with the real certificate: cheap refusals now demote the signer."""
+    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 5)
+    monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_DSC_PER_MINUTE", 30)
+    monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_MINUTE", 3)
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    held = 0
+    for i in range(20):
+        nf = 71000 + i
+        chain["refuse"][nf] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
+        r = post(client, with_pow(body(nf), config.POW_RESERVED_BITS))
+        assert r.status_code == 403, r.text
+        held += chain["priority"][-1]
+    assert held == 5, "the lane is lost after REGISTER_DSC_FAILURES_BEFORE_COOLDOWN refusals"
+    assert ratelimit.dsc_cooling(dsc)
+    # Counted against the signer only: the network budget (3) is untouched.
+    assert ratelimit.shedding(None, None) is None
+
+
+def test_reserved_lane_refusals_spend_the_signers_budget(client, chain, monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_DSC_FAILURES_BEFORE_COOLDOWN", 0)
+    monkeypatch.setattr(config, "REGISTER_REFUSALS_PER_DSC_PER_MINUTE", 3)
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    for i in range(3):
+        chain["refuse"][72000 + i] = CHEAP_REFUSALS[2]
+        assert post(client, with_pow(body(72000 + i), config.POW_RESERVED_BITS)).status_code == 403
+    assert ratelimit.shedding(dsc, None) == "signer"
+
+
+def test_ordinary_lane_cheap_refusals_still_count_nothing(client, chain):
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    for i in range(10):
+        chain["refuse"][73000 + i] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
+        assert post(client, body(73000 + i)).status_code == 403  # no work: ordinary lane
+    assert not ratelimit.dsc_cooling(dsc) and ratelimit.shedding(dsc, None) is None

@@ -24,7 +24,7 @@ from services.zk import privacy
 from tests.test_proof_grants import reg_body, signals
 from tests.test_queue import weak_pow, with_pow
 
-KNOWN_DSC = 7  # signals()' public_signals[3]
+from tests.test_proof_grants import DSC_KEY as KNOWN_DSC  # reg_body's public_signals[3]
 
 
 def dsc_cert(country: str) -> str:

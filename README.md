@@ -139,13 +139,22 @@ such a check takes the slot ahead of ordinary ones. Without the work the
 same request takes the ordinary lane. The known-DSC set is x/personhood's
 `regs_by_dsc` keys, read whole with one store subspace query
 (`/store/personhood/subspace` over `EARTH_RPC_URL`) at startup and every
-`KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps the last set. A
-commitment is public, so junk can copy one (and the DSC certificate, which
-every registration publishes); that now costs a proof of work a request,
-and `REGISTER_DSC_FAILURES_BEFORE_COOLDOWN` (5) verification failures
-naming one DSC within `REGISTER_DSC_COOLDOWN_SECONDS` (3600, sliding) take
-it out of the lane until they age out — its registrants fall back to the
-ordinary lane, nobody else is touched. A signer's first passport is not in
+`KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps the last set. The
+request's `dsc_der` must also be that signer: the backend recomputes the
+chain's DSC commitment from the certificate (`services/dsccommit`, the
+port of `x/pki/certs.DscCommitmentOf`, Brainpool and explicit-parameter
+curves included, pinned to the chain's output) and a mismatch takes the
+ordinary lane (audit-4 B1). Both the commitment and the certificate are
+public (every registration publishes them), so junk can still copy a real
+pair; that costs a proof of work a request, and **every** refusal of a
+request that held the lane — not only a failed proof: a used binding, a
+dead affiliate, mismatched inputs, the signer at its cap — counts against
+that signer's budget (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`) and its
+cooldown: `REGISTER_DSC_FAILURES_BEFORE_COOLDOWN` (5) such failures naming
+one DSC within `REGISTER_DSC_COOLDOWN_SECONDS` (3600, sliding) take it out
+of the lane until they age out — its registrants fall back to the ordinary
+lane, nobody else is touched (the network and country budgets count only
+failed proofs). A signer's first passport is not in
 the set and takes the ordinary lane, which only fills under a flood.
 
 ### Proof of work (wallets implement this)
