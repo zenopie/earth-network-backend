@@ -21,6 +21,7 @@ TAG_SPC = tag("earth.spc")
 TAG_REG = tag("earth.reg")
 TAG_BYTES = tag("earth.bytes")
 TAG_SNFL = tag("earth.snfl")
+TAG_AFFILIATE = tag("earth.affiliate")
 
 
 def H(*xs: int) -> int:
@@ -72,8 +73,11 @@ def country_field(cc: str) -> int:
     return (ord(cc[0]) << 8) | ord(cc[1])
 
 
-def identity_leaf(idc_: int, dsc_key: int, country: int, activated_at: int) -> int:
-    return H(TAG_LEAF, idc_, dsc_key, country, activated_at)
+def identity_leaf(idc_: int, dsc_key: int, country: int, activated_at: int, predecessor_at: int) -> int:
+    """privacy.IdentityLeaf: H(TAG_LEAF, idc, dsc_key, country, activated_at,
+    predecessor_at). predecessor_at is the time of the switch or re-entry that
+    made the leaf, 0 for a passport never registered before."""
+    return H(TAG_LEAF, idc_, dsc_key, country, activated_at, predecessor_at)
 
 
 def stake_pc(owner: int, rho: int, rcm: int) -> int:
@@ -94,8 +98,14 @@ def bytes_field(b: bytes) -> int:
 def registration_binding(idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, ct_erth: bytes, affiliate: int) -> int:
     """privacy.RegistrationBinding: the passport proof's address input,
     H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
-    affiliate is 0 for none, else bytes_field(its address bytes)."""
+    affiliate is 0 for none, else affiliate_field(handle, pc, ciphertext)."""
     return H(TAG_REG, idc_, pc_anml, bytes_field(ct_anml), pc_erth, bytes_field(ct_erth), affiliate)
+
+
+def affiliate_field(handle: str, pc_: int, ct: bytes) -> int:
+    """privacy.AffiliateField: a registration's referrer in its binding,
+    H(TAG_AFFILIATE, Bytes(handle), affiliate_pc, Bytes(affiliate_ciphertext))."""
+    return H(TAG_AFFILIATE, bytes_field(handle.encode()), pc_, bytes_field(ct))
 
 
 def nf_leaf(value: int, next_value: int, next_index: int) -> int:

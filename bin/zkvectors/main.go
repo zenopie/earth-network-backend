@@ -12,6 +12,7 @@ import (
 	"cosmossdk.io/math"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	personhoodtypes "github.com/earth-network/earth/x/personhood/types"
 	shieldedtypes "github.com/earth-network/earth/x/shielded/types"
 	"github.com/earth-network/earth/zk/indexed"
 	"github.com/earth-network/earth/zk/merkle"
@@ -34,7 +35,8 @@ func main() {
 	pc := privacy.PC(privacy.OwnerPK(u(42)), u(7), u(9))
 	out["pc"] = hx(pc)
 	out["cm_uerth_100000"] = hx(privacy.CM(privacy.AssetID("uerth"), 100000, pc))
-	out["identity_leaf_DE"] = hx(privacy.IdentityLeaf(privacy.IDC(u(11)), u(12), privacy.CountryField("DE"), 1700000000))
+	out["identity_leaf_DE"] = hx(privacy.IdentityLeaf(privacy.IDC(u(11)), u(12), privacy.CountryField("DE"), 1700000000, 0))
+	out["identity_leaf_DE_pred"] = hx(privacy.IdentityLeaf(privacy.IDC(u(11)), u(12), privacy.CountryField("DE"), 1700000000, 1690000000))
 
 	// note tree: 5 cms derived deterministically
 	nt := merkle.NewMem()
@@ -54,7 +56,7 @@ func main() {
 	it := merkle.NewMem()
 	var leaves []string
 	for i := uint64(0); i < 3; i++ {
-		l := privacy.IdentityLeaf(privacy.IDC(u(500+i)), u(600+i), privacy.CountryField("UT"), 1700000000+i)
+		l := privacy.IdentityLeaf(privacy.IDC(u(500+i)), u(600+i), privacy.CountryField("UT"), 1700000000+i, i*1000)
 		it.Append(l)
 		leaves = append(leaves, hx(l))
 	}
@@ -112,21 +114,31 @@ func main() {
 
 	// The registration binding: the passport proof's address input, as
 	// personhood's MsgRegister.Binding computes it (affiliate 0 for none, else
-	// Bytes(its address bytes)). The gas backend checks it before gas-check.
-	aff := make([]byte, 20)
-	for i := range aff {
-		aff[i] = byte(i + 1)
-	}
-	ctA, ctE := make([]byte, 177), make([]byte, 177)
+	// AffiliateField(affiliate_handle, affiliate_pc, affiliate_ciphertext)).
+	// The gas backend checks it before gas-check.
+	ctA, ctE, ctR := make([]byte, 177), make([]byte, 177), make([]byte, 177)
 	for i := range ctA {
-		ctA[i], ctE[i] = byte(i), byte(255-i)
+		ctA[i], ctE[i], ctR[i] = byte(i), byte(255-i), byte(i*7)
+	}
+	affPC := privacy.PC(privacy.OwnerPK(u(77)), u(78), u(79))
+	reg := personhoodtypes.MsgRegister{AffiliateHandle: "amy-2", AffiliatePc: privacy.FieldBytes(affPC), AffiliateCiphertext: ctR}
+	affMsg, err := reg.AffiliateField()
+	if err != nil {
+		panic(err)
+	}
+	aff := privacy.AffiliateField("amy-2", affPC, ctR)
+	if aff != affMsg {
+		panic("AffiliateField differs from MsgRegister.AffiliateField")
 	}
 	out["registration_binding"] = map[string]string{
 		"idc": hx(u(11)), "pc_anml": hx(u(12)), "pc_erth": hx(u(13)),
 		"ct_anml_hex": hex.EncodeToString(ctA), "ct_erth_hex": hex.EncodeToString(ctE),
-		"none":          hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, fr.Element{})),
-		"affiliate_hex": hex.EncodeToString(aff),
-		"affiliate":     hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, privacy.Bytes(aff))),
+		"none":             hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, fr.Element{})),
+		"affiliate_handle": "amy-2",
+		"affiliate_pc":     hx(affPC),
+		"affiliate_ct_hex": hex.EncodeToString(ctR),
+		"affiliate_field":  hx(aff),
+		"affiliate":        hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, aff)),
 		// TestRegistrationBindingPinned's own inputs and value.
 		"pinned": hx(privacy.RegistrationBinding(u(1), u(2), []byte("anml"), u(3), []byte("erth"), fr.Element{})),
 	}

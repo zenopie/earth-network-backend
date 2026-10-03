@@ -39,8 +39,11 @@ def test_commitments_and_leaves():
     pc = privacy.pc(privacy.owner_pk(42), 7, 9)
     assert hx(pc) == VEC["pc"]
     assert hx(privacy.cm(privacy.asset_id("uerth"), 100000, pc)) == VEC["cm_uerth_100000"]
-    leaf = privacy.identity_leaf(privacy.idc(11), 12, privacy.country_field("DE"), 1700000000)
+    leaf = privacy.identity_leaf(privacy.idc(11), 12, privacy.country_field("DE"), 1700000000, 0)
     assert hx(leaf) == VEC["identity_leaf_DE"]
+    # predecessor_at (the switch or re-entry that made the leaf) is in it.
+    pred = privacy.identity_leaf(privacy.idc(11), 12, privacy.country_field("DE"), 1700000000, 1690000000)
+    assert hx(pred) == VEC["identity_leaf_DE_pred"] != VEC["identity_leaf_DE"]
     assert privacy.country_field("DE") == 0x4445
     assert privacy.country_field("de") == 0 and privacy.country_field("") == 0
 
@@ -57,7 +60,7 @@ def test_note_tree_roots_after_each_append():
 def test_identity_tree_with_a_zeroed_leaf():
     t = merkle.SparseTree()
     for i, leaf in enumerate(VEC["identity_leaves"]):
-        want = privacy.identity_leaf(privacy.idc(500 + i), 600 + i, privacy.country_field("UT"), 1700000000 + i)
+        want = privacy.identity_leaf(privacy.idc(500 + i), 600 + i, privacy.country_field("UT"), 1700000000 + i, i * 1000)
         assert hx(want) == leaf
         t.append(want)
     assert hx(t.root()) == VEC["identity_root_3"]
@@ -109,8 +112,15 @@ def test_registration_binding_matches_go():
     idc_, a, e = (int(v[k], 16) for k in ("idc", "pc_anml", "pc_erth"))
     ca, ce = bytes.fromhex(v["ct_anml_hex"]), bytes.fromhex(v["ct_erth_hex"])
     assert hx(privacy.registration_binding(idc_, a, ca, e, ce, 0)) == v["none"]
-    aff = privacy.bytes_field(bytes.fromhex(v["affiliate_hex"]))
+    aff = privacy.affiliate_field(v["affiliate_handle"], int(v["affiliate_pc"], 16), bytes.fromhex(v["affiliate_ct_hex"]))
+    assert hx(aff) == v["affiliate_field"]
     assert hx(privacy.registration_binding(idc_, a, ca, e, ce, aff)) == v["affiliate"]
+    # The affiliate field covers the handle, the pc and the ciphertext.
+    ct = bytes.fromhex(v["affiliate_ct_hex"])
+    pc_ = int(v["affiliate_pc"], 16)
+    assert privacy.affiliate_field("amy-3", pc_, ct) != aff
+    assert privacy.affiliate_field(v["affiliate_handle"], pc_ + 1, ct) != aff
+    assert privacy.affiliate_field(v["affiliate_handle"], pc_, ct[:-1] + b"\x01") != aff
     # The binding covers each ciphertext.
     assert privacy.registration_binding(idc_, a, ca[:-1] + b"\x00", e, ce, 0) != int(v["none"], 16)
     assert privacy.registration_binding(idc_, a, ca, e, ce[:-1] + b"\x00", 0) != int(v["none"], 16)
