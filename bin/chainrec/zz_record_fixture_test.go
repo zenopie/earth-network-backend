@@ -3,8 +3,9 @@
 // hooks it into the app test envs' block helpers; each recorded test then
 // writes every FinalizeBlock response, as CometBFT RPC block_results JSON,
 // with the trees' sizes and roots after the block (note, identity, stake,
-// stake nullifier),
-// to $RECORD_DIR.
+// stake nullifier) and the x/personhood Handles query's answer at the block
+// (QueryHandlesResponse, protobuf, hex: the handle directory as the chain
+// serves it, statuses at the block's time), to $RECORD_DIR.
 
 package app
 
@@ -24,6 +25,9 @@ import (
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 
+	personhoodkeeper "github.com/earth-network/earth/x/personhood/keeper"
+	personhoodtypes "github.com/earth-network/earth/x/personhood/types"
+
 )
 
 type recBlock struct {
@@ -42,6 +46,7 @@ type recBlock struct {
 	NfSize       uint64          `json:"stake_nf_tree_size"`
 	NfRoot       string          `json:"stake_nf_current_root"`
 	NfAnchor     string          `json:"stake_nf_latest_root"`
+	Handles      []string        `json:"handles"`
 }
 
 type cmtjsonRaw []byte
@@ -68,6 +73,26 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 	ianchor, _ := app.PersonhoodKeeper.LatestIdentityRoot.Get(ctx)
 	ssize, sanchor, _ := app.ShieldedStakingKeeper.StakeTreeState(ctx)
 	nfsize, nfroot, nfanchor, _ := app.ShieldedStakingKeeper.StakeNullifierTree(ctx)
+	// The whole directory, paged as an indexer pages it (limit 1, so a
+	// recorded scenario exercises next/start): one hex QueryHandlesResponse
+	// per page, the request it answered implied by the previous page's next.
+	var handles []string
+	hq := personhoodkeeper.NewQueryServerImpl(app.PersonhoodKeeper)
+	for start := ""; ; {
+		page, err := hq.Handles(ctx, &personhoodtypes.QueryHandlesRequest{Start: start, Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bz, err := page.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		handles = append(handles, hex.EncodeToString(bz))
+		if page.Next == "" {
+			break
+		}
+		start = page.Next
+	}
 	br := &coretypes.ResultBlockResults{
 		Height: height, TxsResults: res.TxResults, FinalizeBlockEvents: res.Events,
 		ValidatorUpdates: res.ValidatorUpdates, ConsensusParamUpdates: res.ConsensusParamUpdates, AppHash: res.AppHash,
@@ -83,6 +108,7 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 		IDSize: isize, IDRoot: hex.EncodeToString(iroot), IDAnchor: hex.EncodeToString(ianchor),
 		StakeSize: ssize, StakeAnchor: hex.EncodeToString(sanchor),
 		NfSize: nfsize, NfRoot: hex.EncodeToString(nfroot), NfAnchor: hex.EncodeToString(nfanchor),
+		Handles: handles,
 	}
 	recMu.Lock()
 	defer recMu.Unlock()

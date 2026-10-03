@@ -9,7 +9,7 @@ public referrer addresses; predecessor-aware activation; error codes
       re-generated from 4a663d5
 - [x] B /gas/register: affiliate_handle / affiliate_pc / affiliate_ciphertext
       (all or none), referrer address gone; refusal kinds for 1120-1126
-- [ ] C fixtures re-recorded from 4a663d5 (recorder also records the
+- [x] C fixtures re-recorded from 4a663d5 (recorder also records the
       Handles query per block)
 - [ ] D handle directory stream {base}/handles
 - [ ] E referral-mint note indexed (test on the C2/D1 registrations)
