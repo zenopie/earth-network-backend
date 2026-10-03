@@ -64,6 +64,9 @@ whose expires_at has passed by its own clock as not resolving.
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
+The web wallet reads them cross-origin: services/privacygate adds CORS
+(Access-Control-Allow-Origin: https://erth.network on every response,
+local dev origins reflected and uncached; no credentials).
 
 Caching: a page that ends because it hit its limit covers a closed range that
 can never change (notes, nullifiers and zeroings are append-only and blocks

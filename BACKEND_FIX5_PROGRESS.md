@@ -56,7 +56,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
       network budget 30 -> 5 a minute, country 10 -> 4
 - [x] M2 PrivacyGate canonical URLs (400 no-store); unknown /privacy paths 404
       no-store at the gate
-- [ ] CORS on /privacy (erth.network, localhost)
+- [x] CORS on /privacy: fixed ACAO https://erth.network on every /privacy
+      response (CDN-safe), localhost reflected with no-store; OPTIONS 204
 - [ ] L13 count 422s
 - [ ] L1 .dockerignore, L2 lchown, L11 uvicorn flags
 - [ ] L9 create.py redaction

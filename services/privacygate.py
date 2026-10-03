@@ -29,6 +29,19 @@ one the endpoint takes, at most once, each value 0 or a decimal without a
 leading zero, nothing percent-encoded. A path that is not one of the
 streams is 404, no-store. ENDPOINTS must list every /privacy route
 (tests/test_audit5 checks it against the router).
+
+CORS, for the web wallet: every /privacy response (refusals included)
+carries Access-Control-Allow-Origin: PRIVACY_CORS_ORIGIN
+(https://erth.network), whatever Origin asked. Fixed, not reflected: a CDN
+keeps one copy of a page for every origin (Cloudflare ignores Vary:
+Origin), so a reflected origin cached for one site would be served to
+another. A request from a local dev origin (http://localhost[:port],
+http://127.0.0.1[:port], when PRIVACY_CORS_LOCALHOST) gets its own origin
+back instead, with Cache-Control: no-store so no CDN keeps that copy
+(no Vary: Origin is needed, since a cacheable response never depends on
+Origin). No
+credentials, GET and HEAD only (an OPTIONS preflight is answered 204).
+Nothing outside /privacy has CORS headers.
 """
 import json
 import re
@@ -59,6 +72,16 @@ _SEGMENT = re.compile(r"[^/]+")
 # A plain decimal: 0, or no leading zero; up to 20 digits (past int64 the
 # handler answers 422).
 _PAIR = re.compile(rb"([a-z_]{1,32})=(0|[1-9][0-9]{0,19})")
+_LOCAL_ORIGIN = re.compile(r"http://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?")
+
+
+def _cors(origin: str | None) -> tuple[list[tuple[bytes, bytes]], bool]:
+    """(CORS headers for a response to Origin `origin`, whether it must not be cached)."""
+    local = bool(origin) and config.PRIVACY_CORS_LOCALHOST and _LOCAL_ORIGIN.fullmatch(origin) is not None
+    allow = origin if local else config.PRIVACY_CORS_ORIGIN
+    if not allow:
+        return [], False
+    return [(b"access-control-allow-origin", allow.encode("latin-1"))], local
 
 
 def endpoint(path: str) -> str | None:
@@ -100,6 +123,29 @@ async def _refuse(send, status: int, message: str, retry_after: int | None = Non
     await send({"type": "http.response.body", "body": body})
 
 
+def _with_headers(send, extra: list, no_store: bool):
+    """send, adding extra headers to the response start (and forcing no-store)."""
+    if not extra:
+        return send
+
+    async def wrapped(message):
+        if message["type"] == "http.response.start":
+            headers = [(k, v) for k, v in message.get("headers") or []
+                       if not (no_store and k.lower() == b"cache-control")]
+            if no_store:
+                headers.append((b"cache-control", b"no-store"))
+            message = dict(message, headers=headers + extra)
+        await send(message)
+    return wrapped
+
+
+async def _preflight(send) -> None:
+    await send({"type": "http.response.start", "status": 204,
+                "headers": [(b"access-control-allow-methods", b"GET, HEAD"),
+                            (b"access-control-max-age", b"86400"), (b"cache-control", b"no-store")]})
+    await send({"type": "http.response.body", "body": b""})
+
+
 class _Request:
     """The two attributes ratelimit.client_ip reads, from an ASGI scope."""
 
@@ -117,12 +163,17 @@ class PrivacyGate:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope.get("path", "").startswith(PREFIX):
             return await self.app(scope, receive, send)
-        key = ratelimit.client_key(ratelimit.client_ip(_Request(scope)))
+        req = _Request(scope)
+        cors, local = _cors(req.headers.get("origin"))
+        send = _with_headers(send, cors, no_store=local)
+        key = ratelimit.client_key(ratelimit.client_ip(req))
         if not ratelimit.allow_privacy(key):
             return await _refuse(send, 429, "too many requests; slow down", int(config.PRIVACY_IP_WINDOW_SECONDS))
         name = endpoint(scope["path"])
         if name is None:
             return await _refuse(send, 404, "no such stream; read base from /privacy/status")
+        if scope.get("method") == "OPTIONS":
+            return await _preflight(send)
         problem = query_problem(name, scope.get("query_string") or b"")
         if problem is not None:
             return await _refuse(send, 400, f"not a canonical URL: {problem}")

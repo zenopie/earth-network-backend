@@ -203,3 +203,50 @@ def test_the_gate_knows_every_privacy_route():
         params = {p["name"] for p in item["get"].get("parameters", []) if p["in"] == "query"}
         assert params == set(privacygate.ENDPOINTS.get(name, frozenset())), path
     assert len(app.openapi()["paths"]) == len(privacygate.ENDPOINTS) + 1
+
+
+# --- CORS on /privacy ----------------------------------------------------------
+
+def test_privacy_names_the_web_origin_for_everyone(notes_index):
+    for origin in ("https://erth.network", None, "https://evil.example"):
+        h = {"origin": origin} if origin else {}
+        r = notes_index.get(f"{BASE}/notes?from_pos=1000", headers=h)
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+        assert r.headers["access-control-allow-origin"] == "https://erth.network", origin
+        assert "access-control-allow-credentials" not in r.headers
+    r = notes_index.get("/privacy/status", headers={"origin": "https://erth.network"})
+    assert r.headers["access-control-allow-origin"] == "https://erth.network"
+    # Refusals too, so the wallet can read the status.
+    r = notes_index.get(f"{BASE}/notes?cb=1", headers={"origin": "https://erth.network"})
+    assert r.status_code == 400 and r.headers["access-control-allow-origin"] == "https://erth.network"
+
+
+def test_a_local_dev_origin_is_reflected_and_never_cached(notes_index):
+    for origin in ("http://localhost:5173", "http://127.0.0.1:8080", "http://localhost"):
+        r = notes_index.get(f"{BASE}/notes?from_pos=1000", headers={"origin": origin})
+        assert r.status_code == 200
+        assert r.headers["access-control-allow-origin"] == origin
+        assert r.headers["cache-control"] == "no-store"
+    r = notes_index.get(f"{BASE}/notes?from_pos=1000", headers={"origin": "http://localhost.evil.example"})
+    assert r.headers["access-control-allow-origin"] == "https://erth.network"
+
+
+def test_a_preflight_is_answered(notes_index):
+    r = notes_index.options(f"{BASE}/notes", headers={"origin": "https://erth.network",
+                                                      "access-control-request-method": "GET"})
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "https://erth.network"
+    assert "GET" in r.headers["access-control-allow-methods"]
+
+
+def test_no_cors_outside_privacy():
+    from fastapi.testclient import TestClient
+
+    from services.privacygate import PrivacyGate
+    from tests.conftest import gas_app
+
+    app = gas_app()
+    app.add_middleware(PrivacyGate)
+    r = TestClient(app).get("/gas/pow", headers={"origin": "https://erth.network"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers

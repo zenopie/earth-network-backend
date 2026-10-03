@@ -172,3 +172,9 @@ PRIVACY_PAGE_SIZES = tuple(int(x) for x in os.getenv("PRIVACY_PAGE_SIZES", "100,
 PRIVACY_MAX_CONCURRENT = int(os.getenv("PRIVACY_MAX_CONCURRENT", "4"))
 PRIVACY_IP_MAX_PER_WINDOW = int(os.getenv("PRIVACY_IP_MAX_PER_WINDOW", "240"))
 PRIVACY_IP_WINDOW_SECONDS = float(os.getenv("PRIVACY_IP_WINDOW_SECONDS", "60"))
+# CORS on /privacy for the web wallet (services/privacygate): every response
+# names this origin (fixed, so a CDN copy is right for every visitor), and a
+# local dev origin (http://localhost[:port], http://127.0.0.1[:port]) gets
+# its own back, uncached. No credentials. "" turns the fixed origin off.
+PRIVACY_CORS_ORIGIN = os.getenv("PRIVACY_CORS_ORIGIN", "https://erth.network")
+PRIVACY_CORS_LOCALHOST = os.getenv("PRIVACY_CORS_LOCALHOST", "true").lower() == "true"

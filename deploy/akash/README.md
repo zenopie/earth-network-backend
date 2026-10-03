@@ -64,7 +64,11 @@ the tunnel. In the erth.network zone:
    or repeated parameter, a non-page limit or cursor, or an integer with a
    leading zero, a sign or percent-encoding is 400 no-store from the gate,
    before any handler or in-flight slot. So the cacheable key space is the
-   page set, and junk spellings cost the origin a regex, not a page. Without
+   page set, and junk spellings cost the origin a regex, not a page.
+   Every /privacy response names `Access-Control-Allow-Origin:
+   https://erth.network` whatever the request's Origin, so the cached copy
+   is right for the web wallet and every app (Cloudflare ignores `Vary:
+   Origin`); a localhost origin is reflected with `no-store`, never cached. Without
    it Cloudflare does not cache JSON and every page is a miss.
 2. **Rate-limiting rule** — *Security → WAF → Rate limiting rules*:
    - If: `starts_with(http.request.uri.path, "/privacy/")`
