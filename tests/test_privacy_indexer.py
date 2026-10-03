@@ -471,3 +471,27 @@ def test_a_skipped_tree_size_check_warns(db, caplog):
     warns = [r for r in caplog.records if "tree size check" in r.getMessage()]
     assert warns and all(r.levelno == logging.WARNING for r in warns)
     assert len(warns) < 5, "throttled"
+
+
+def _validator_event(v: str, rate: str) -> dict:
+    return {"type": "shieldedstaking_epoch_validator", "attributes": [
+        {"key": "validator", "value": v}, {"key": "rate", "value": rate}, {"key": "supply", "value": "1"},
+        {"key": "rewards", "value": ""}, {"key": "delegated", "value": "0"}, {"key": "undelegated", "value": "0"},
+        {"key": "mode", "value": "EndBlock"}]}
+
+
+def test_rates_of_a_sweep_past_200_validators_keep_their_epoch(db):
+    """x/shieldedstaking sweeps EpochValidatorLimit (200) books a block: the
+    rest of an epoch's validators come in later blocks with no epoch event."""
+    store = Store(db)
+    first = {"height": "1", "txs_results": [], "finalize_block_events": [
+        *(_validator_event(f"earthvaloper{i:03d}", "1.0") for i in range(200)),
+        {"type": "shieldedstaking_epoch", "attributes": [{"key": "epoch", "value": "7"}, {"key": "mode", "value": "EndBlock"}]},
+    ]}
+    cont = {"height": "2", "txs_results": [], "finalize_block_events": [
+        *(_validator_event(f"earthvaloper{i:03d}", "1.0") for i in range(200, 250)),
+    ]}
+    store.apply(events.parse_block(1, 0, "H1", first))
+    store.apply(events.parse_block(2, 1, "H2", cont))
+    rows = store.conn.execute("SELECT epoch, COUNT(*) FROM rates GROUP BY epoch").fetchall()
+    assert rows == [(7, 250)]

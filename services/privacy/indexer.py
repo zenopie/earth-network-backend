@@ -27,6 +27,16 @@ history the index never saw — notes or leaves imported at genesis, which emit
 no events, or a start height past the first private tx — which events alone
 cannot reveal.
 
+The RPC is trusted for block_results. The next header's last_results_hash
+does not authenticate them: CometBFT v0.38 hashes only each tx result's
+deterministic fields (code, data, gas_wanted, gas_used) — no events — and
+not finalize_block_events at all, which is where every mint, root and rate
+is. Checking it would cost a /block call a block and prove nothing the index
+reads. What does bound a lying RPC is the tree-size check above (state the
+chain committed to, but read from the same RPC) and verify.py / bin/
+verify-trees.py, which rebuild every tree and compare roots with the chain's.
+Point INDEXER_RPC_URL at a node you run or trust.
+
 Needs a node that keeps block results from the start height on
 (storage.discard_abci_responses = false, the default, and no block pruning
 below it).

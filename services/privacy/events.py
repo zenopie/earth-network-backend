@@ -125,6 +125,8 @@ class BlockDelta:
     stake_notes: list[StakeNote] = field(default_factory=list)
     stake_nullifiers: list[bytes] = field(default_factory=list)
     stake_root: Root | None = None
+    # The epoch a shieldedstaking_epoch event in this block ended, if any.
+    epoch_ended: int | None = None
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -249,10 +251,18 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             # that just ended. An epoch end that failed before this event
             # leaves its validator rows without an epoch (they are still the
             # rates the validators now have) and is retried next block.
+            #
+            # The sweep over validator books is EpochValidatorLimit (200) a
+            # block: past 200 validators the epoch's later books are
+            # processed in the following blocks, whose validator events have
+            # no epoch event after them. Those rows come out epoch-less here
+            # and the store labels them with the epoch the sweep belongs to
+            # (the last one ended, Store.apply).
             epoch = _int(_attrs(ev).get("epoch"), "shieldedstaking_epoch epoch")
             for r in pending_rates:
                 r.epoch = epoch
             d.rates.extend(pending_rates)
             pending_rates = []
+            d.epoch_ended = epoch
     d.rates.extend(pending_rates)
     return d

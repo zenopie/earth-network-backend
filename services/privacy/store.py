@@ -281,12 +281,24 @@ class Store:
                 c.execute("INSERT INTO stake_roots (height, root, tree_size, time) VALUES (?, ?, ?, ?)",
                           (d.height, d.stake_root.root, d.stake_root.tree_size, d.time))
 
+            # A validator event with no epoch event after it in its block is
+            # a book of the epoch whose sweep is still going (past 200
+            # validators the sweep spans blocks, x/shieldedstaking
+            # EpochValidatorLimit): the epoch the last epoch event ended.
+            # (An epoch end that failed outright before its event, retried
+            # next block, is labelled the same way; the chain logs that as
+            # a shieldedstaking_epoch_failure.)
+            row = c.execute("SELECT value FROM meta WHERE key = 'sweep_epoch'").fetchone()
+            sweep = d.epoch_ended if d.epoch_ended is not None else (int(row[0]) if row else None)
             for r in d.rates:
                 c.execute(
                     "INSERT OR REPLACE INTO rates (height, validator, epoch, rate, supply, rewards, delegated, undelegated)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (d.height, r.validator, r.epoch, r.rate, r.supply, r.rewards, r.delegated, r.undelegated),
+                    (d.height, r.validator, r.epoch if r.epoch is not None else sweep,
+                     r.rate, r.supply, r.rewards, r.delegated, r.undelegated),
                 )
+            if d.epoch_ended is not None:
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('sweep_epoch', ?)", (str(d.epoch_ended),))
 
             if not last:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('start_height', ?)", (str(d.height),))
