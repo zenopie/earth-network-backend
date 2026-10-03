@@ -96,11 +96,31 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   re-recorded (7 scenarios, + TestStakeVoteConcurrentProposals; nf tree
   size/roots per block). Old indexes refused at open (wipe INDEX_DB).
 
+## Audit 4 (tests/test_audit4.py ports all three PoCs)
+- B1 reserved lane: services/dsccommit (x/pki/certs.DscCommitmentOf in
+  Python, pinned to the chain for 7 certs incl. Brainpool and explicit
+  P-521); the lane needs commitment(dsc_der) == public_signals[3]; every
+  non-ok verdict on a priority request -> ratelimit.note_dsc_failure
+  (signer budget + cooldown). Test fixtures carry a real P-256 DSC.
+- B2: chain._broadcast resolves any post-submit exception by hash (cosmpy
+  RuntimeError on non-200 included); only never-connected and CheckTx
+  BroadcastError (not "already in cache") propagate.
+- B3: /privacy limit in PRIVACY_PAGE_SIZES (100,1000), max 1000;
+  position/index cursors multiple of limit (400); nf-tree first page
+  from_index=0; services/privacygate (4 in flight -> 503, 240/min/client ->
+  429); Cloudflare cache + rate-limit rule in deploy/akash/README.md.
+- B4: switch grants capped apart (REGISTER_SWITCH_GRANT_MAX_PER_DAY, replay
+  kind column).
+- B5: _yymmdd_unix refuses non-calendar dates.
+
 ## Left
 - Wallet apps must move to /privacy/status -> base (old unkeyed stream paths
   are gone), stop calling the removed gas endpoints, and implement the
   /gas/register proof of work (README "Proof of work").
-- nothing else (pytest: 231 passed, 1 skipped = live-earthd test)
+- Wallet apps must follow the audit-4 paging rule (README "Paging rule"):
+  limit 100 or 1000, from_pos/from_index = cursor - cursor % limit, skip
+  held rows; stake/nullifier-tree from_index=0 (mobile still sends 1).
+- nothing else (pytest: 266 passed, 1 skipped = live-earthd test)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit
