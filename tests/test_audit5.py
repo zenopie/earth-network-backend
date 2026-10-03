@@ -260,3 +260,28 @@ def test_a_body_that_fails_the_schema_counts_against_the_client(client, monkeypa
     codes = [client.post("/gas/register", content=raw, headers={"content-type": "application/json"}).status_code
              for _ in range(3)]
     assert codes == [422, 422, 429]
+
+
+# --- L1, L2, L11: the image and its entrypoint --------------------------------
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_secrets_and_state_stay_out_of_the_build_context():
+    import fnmatch
+
+    patterns = [l.strip() for l in open(os.path.join(_ROOT, ".dockerignore")) if l.strip() and not l.startswith("#")]
+    for name in (".env", ".env.local", "ads_for_gas.db", "privacy_index.db", ".venv", ".git"):
+        assert any(fnmatch.fnmatch(name, p) for p in patterns), name
+
+
+def test_entrypoint_chowns_no_symlink_target_and_logs_no_client():
+    import ast
+
+    tree = ast.parse(open(os.path.join(_ROOT, "entrypoint.py")).read())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("chown", "execvp")]
+    chown = [c for c in calls if c.func.attr == "chown"]
+    assert chown and all(any(k.arg == "follow_symlinks" and k.value.value is False for k in c.keywords) for c in chown)
+    (execvp,) = [c for c in calls if c.func.attr == "execvp"]
+    argv = [e.value for e in execvp.args[1].elts]
+    assert "--no-access-log" in argv and "--no-proxy-headers" in argv

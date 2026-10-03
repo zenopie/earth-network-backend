@@ -59,7 +59,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
 - [x] CORS on /privacy: fixed ACAO https://erth.network on every /privacy
       response (CDN-safe), localhost reflected with no-store; OPTIONS 204
 - [x] L13 /gas/register validates its body after counting the client (422s count)
-- [ ] L1 .dockerignore, L2 lchown, L11 uvicorn flags
+- [x] L1 .dockerignore, L2 chown(follow_symlinks=False), L11 --no-access-log
+      --no-proxy-headers
 - [ ] L9 create.py redaction
 - [ ] L12 base image digest / --require-hashes
 - [ ] L3 /health cached

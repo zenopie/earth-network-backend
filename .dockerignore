@@ -1,0 +1,16 @@
+# Never in an image (audit-5 L1). COPY . . takes the build context whole, and
+# config.py load_dotenv()s /app/.env at runtime: a local build would bake
+# the hot wallet mnemonic, TUNNEL_TOKEN and AKASH_API_KEY into a layer, and
+# the replay DB (passport nullifiers) with them.
+.env*
+*.db
+*.db-wal
+*.db-shm
+.venv
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+.DS_Store
+state/
