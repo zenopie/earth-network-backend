@@ -446,6 +446,12 @@ async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: byt
         logger.error("gas note shield is unresolved: %s", exc)
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
     except Exception as exc:
+        # chain.shield_dust raises an ordinary exception only when the tx
+        # demonstrably moved nothing: it failed before the post, the
+        # connection was never made, CheckTx refused it, or the hash lookup
+        # found it included and failed. Any other failure after the post
+        # (a non-200 from a proxy included) was resolved by hash or is
+        # SendUnresolved above.
         replay.release(grant_id)
         # Not logger.exception: a cosmpy error names the tx hash.
         logger.error("gas note shield failed: %s: %s", exc.__class__.__name__, _coarse(exc))

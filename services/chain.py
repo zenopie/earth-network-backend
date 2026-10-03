@@ -141,14 +141,16 @@ def tx_hash_of(tx: Transaction) -> str:
 def _broadcast(submit, tx_hash: str) -> str:
     """Posts a signed tx whose hash is already known, and waits for it.
 
-    A network fault in the post can come after the node has accepted it. Only
-    a connection that was never made proves nothing went out; any other
-    transport failure — a read timeout above all, which the timeout on the
-    session makes a real possibility — may have landed. For those the chain is
-    asked for the tx by its hash before giving up: found and successful is a
-    success, found and failed moved nothing, not found is SendUnresolved
-    carrying the hash. Errors that are not transport errors (CheckTx
-    rejecting it) moved nothing and propagate as they are.
+    A failure in the post can come after the node has accepted it. Only two
+    outcomes prove nothing went out: a connection that was never made, and
+    the node's own CheckTx refusal (cosmpy's BroadcastError, raised from the
+    node's answer — except "already in the mempool cache", which says the
+    opposite). Every other exception — a read timeout, a dropped connection,
+    and cosmpy's bare RuntimeError for any non-200 answer, which behind
+    Cloudflare is a 502/504/524 that can arrive after the node took the tx
+    (audit-4 B2) — may have landed. For those the chain is asked for the tx
+    by its hash before giving up: found and successful is a success, found
+    and failed moved nothing, not found is SendUnresolved carrying the hash.
     """
     try:
         submitted = submit()
@@ -158,9 +160,18 @@ def _broadcast(submit, tx_hash: str) -> str:
         if _never_connected(exc):
             raise
         return _resolve(SubmittedTx(_client, tx_hash), exc)
-    except requests.exceptions.RequestException as exc:
+    except BroadcastError as exc:
+        if _already_in_mempool(exc):
+            return _resolve(SubmittedTx(_client, tx_hash), exc)
+        raise
+    except Exception as exc:
         return _resolve(SubmittedTx(_client, tx_hash), exc)
     return _resolve(submitted, None)
+
+
+def _already_in_mempool(exc: BroadcastError) -> bool:
+    """CheckTx code 19 (ErrTxInMempoolCache): this very tx is already pending."""
+    return "tx already exists in cache" in str(exc) or "already in mempool" in str(exc)
 
 
 def _resolve(submitted, cause: Exception | None) -> str:
