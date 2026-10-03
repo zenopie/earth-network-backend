@@ -71,7 +71,11 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
       meta verified_height (set after the tree-size check passes)
 - [x] L7 blocks table keeps the last block and identity-leaf heights only
       (pruned per block, and on open for an older index)
-- [ ] L4 handle refresh bounded, off the loop; L5 stale flag
+- [x] L4 handle refresh: at most every 10 blocks, pages parsed in a worker
+      thread and staged in SQLite (memory: one page), swapped whole; cap
+      1M -> 200k; size from meta, not COUNT(*)
+- [x] L5 handles_stale (status) / stale (stream) once 30 blocks behind a
+      handle event; the indexer logs a warning while stale
 
 ## Notes
 - M3 network budget: ~10 s an earthd run on the 0.1-CPU lease is an

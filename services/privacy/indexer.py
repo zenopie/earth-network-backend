@@ -58,6 +58,7 @@ import logging
 import config
 
 from . import handles as handles_mod
+from . import store as store_mod
 from .events import EventError, parse_block
 from .rpc import CometRPC, RPCError, varint_field
 from .store import Inconsistent, Store
@@ -80,7 +81,8 @@ class Halted(Exception):
 class Indexer:
     def __init__(self, store: Store, rpc: CometRPC, *, start_height: int = 0, batch: int = 20,
                  concurrency: int = 8, check_sizes: bool = True, handles: bool = True,
-                 handles_limit: int = 1000, handles_max_age: int = 3600, handles_max: int = 1_000_000):
+                 handles_limit: int = 1000, handles_max_age: int = 3600, handles_max: int = 200_000,
+                 handles_min_blocks: int = 0, handles_stale_blocks: int = 30):
         self.store = store
         self.rpc = rpc
         self.start_height = start_height
@@ -91,6 +93,9 @@ class Indexer:
         self.handles_limit = handles_limit
         self.handles_max_age = handles_max_age
         self.handles_max = handles_max
+        self.handles_min_blocks = handles_min_blocks
+        self.handles_stale_blocks = handles_stale_blocks
+        self._handles_stale_steps = 0
         self._handle_failures = 0
         self.tip = 0
         self.halted: str | None = store.meta("halted")
@@ -227,18 +232,39 @@ class Indexer:
             await asyncio.to_thread(self.store.set_meta, "verified_height", str(heights[-1]))
         if self.handles and self.next_height > self.tip:
             await self._refresh_handles()
+        if self.handles:
+            await self._warn_if_handles_stale()
         return applied
 
     async def _refresh_handles(self) -> None:
-        """Re-reads the handle directory at the last applied height when the snapshot is behind."""
+        """Re-reads the handle directory at the last applied height when the snapshot is behind.
+
+        Bounded (audit-5 L4): at most once every handles_min_blocks blocks
+        (a handle event every block, which anyone can pay for, no longer
+        means a full re-read every block); each page parsed in a worker
+        thread and staged in SQLite as it arrives, so memory is one page
+        whatever the directory's size; at most handles_max entries.
+        """
+        height = self.next_height - 1
+        taken = await asyncio.to_thread(self.store.meta, "handles_height")
+        if taken is not None and height - int(taken) < self.handles_min_blocks:
+            return
         if not await asyncio.to_thread(self.store.handles_due, self.handles_max_age):
             return
-        height = self.next_height - 1
         try:
-            entries = await handles_mod.fetch(self.rpc, height, limit=self.handles_limit, max_entries=self.handles_max)
+            n, nxt = 0, None
+            async for page in handles_mod.pages(self.rpc, height, limit=self.handles_limit,
+                                                max_entries=self.handles_max):
+                await asyncio.to_thread(self.store.stage_handles, n, page, fresh=n == 0)
+                n += len(page)
+                change = handles_mod.next_change(page)
+                if change is not None:
+                    nxt = change if nxt is None else min(nxt, change)
         except (RPCError, handles_mod.Malformed) as exc:
-            # The snapshot stays as it was (its height says how old it is);
-            # the first failure of a run and every 100th after it.
+            await asyncio.to_thread(self.store.discard_staged_handles)
+            # The snapshot stays as it was (its height says how old it is,
+            # and /privacy says when it is stale); the first failure of a
+            # run and every 100th after it.
             if self._handle_failures % 100 == 0:
                 logger.warning("handle directory at %d not read (%d in a row): %s", height,
                                self._handle_failures + 1, exc)
@@ -246,7 +272,16 @@ class Indexer:
             return
         self._handle_failures = 0
         when = int(self.store.meta("last_time") or 0)
-        await asyncio.to_thread(self.store.replace_handles, height, when, entries, handles_mod.next_change(entries))
+        await asyncio.to_thread(self.store.commit_handles, height, when, nxt)
+
+    async def _warn_if_handles_stale(self) -> None:
+        """Logs (an alert) while the served directory is behind a handle event (audit-5 L5)."""
+        stale = await asyncio.to_thread(store_mod.handles_stale, self.store.conn, self.handles_stale_blocks)
+        if stale and self._handles_stale_steps % 100 == 0:
+            logger.warning("handle directory is stale: a handle event at height %s is not in the snapshot "
+                           "at %s; /privacy marks it stale", self.store.meta("handles_changed_height"),
+                           self.store.meta("handles_height"))
+        self._handles_stale_steps = self._handles_stale_steps + 1 if stale else 0
 
     async def _check_sizes(self, height: int) -> None:
         try:
@@ -323,6 +358,8 @@ def from_config() -> Indexer:
         handles_limit=config.HANDLES_QUERY_LIMIT,
         handles_max_age=config.HANDLES_MAX_AGE_SECONDS,
         handles_max=config.HANDLES_MAX_ENTRIES,
+        handles_min_blocks=config.HANDLES_MIN_REFRESH_BLOCKS,
+        handles_stale_blocks=config.HANDLES_STALE_BLOCKS,
     )
 
 

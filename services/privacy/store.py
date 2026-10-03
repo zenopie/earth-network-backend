@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS handles (
     expires_at    INTEGER NOT NULL,
     renewal_until INTEGER NOT NULL
 );
+-- A directory being read (services/privacy/indexer), page by page; swapped
+-- into handles whole once every page has arrived.
+CREATE TABLE IF NOT EXISTS handles_staging (
+    idx           INTEGER PRIMARY KEY,
+    handle        TEXT NOT NULL UNIQUE,
+    address       TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    renewal_until INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS rates_by_epoch ON rates (epoch, validator);
 CREATE INDEX IF NOT EXISTS rates_by_validator ON rates (validator, height);
 """
@@ -414,16 +424,46 @@ class Store:
 
     def replace_handles(self, height: int, time: int, entries, next_change: int | None) -> None:
         """Replaces the handle directory with entries (in handle order), the chain's at height."""
+        self.stage_handles(0, entries, fresh=True)
+        self.commit_handles(height, time, next_change)
+
+    def stage_handles(self, offset: int, entries, *, fresh: bool = False) -> None:
+        """Adds one page of a directory being read at places offset.. (fresh: the first page)."""
+        with self._tx() as c:
+            if fresh:
+                c.execute("DELETE FROM handles_staging")
+            c.executemany("INSERT INTO handles_staging (idx, handle, address, status, expires_at, renewal_until)"
+                          " VALUES (?, ?, ?, ?, ?, ?)",
+                          [(offset + i, e.handle, e.address, e.status, e.expires_at, e.renewal_until)
+                           for i, e in enumerate(entries)])
+
+    def commit_handles(self, height: int, time: int, next_change: int | None) -> None:
+        """Makes the staged directory the served one, whole, in one transaction."""
         with self._tx() as c:
             c.execute("DELETE FROM handles")
-            c.executemany("INSERT INTO handles (idx, handle, address, status, expires_at, renewal_until)"
-                          " VALUES (?, ?, ?, ?, ?, ?)",
-                          [(i, e.handle, e.address, e.status, e.expires_at, e.renewal_until)
-                           for i, e in enumerate(entries)])
-            for k, v in (("handles_height", height), ("handles_time", time)):
+            c.execute("INSERT INTO handles SELECT * FROM handles_staging")
+            (size,) = c.execute("SELECT COUNT(*) FROM handles_staging").fetchone()
+            c.execute("DELETE FROM handles_staging")
+            for k, v in (("handles_height", height), ("handles_time", time), ("handles_size", size)):
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (k, str(v)))
             if next_change is None:
                 c.execute("DELETE FROM meta WHERE key = 'handles_next_change'")
             else:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('handles_next_change', ?)",
                           (str(next_change),))
+
+    def discard_staged_handles(self) -> None:
+        with self._tx() as c:
+            c.execute("DELETE FROM handles_staging")
+
+
+def handles_stale(c: sqlite3.Connection, stale_blocks: int) -> bool:
+    """Whether the served handle directory is known to be behind (audit-5 L5):
+    a handle event at least stale_blocks ago that no snapshot has caught up
+    with. A payer resolving a handle from it may pay an address the handle
+    no longer names."""
+    def meta(key):
+        row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return int(row[0]) if row else 0
+    changed, taken, last = meta("handles_changed_height"), meta("handles_height"), meta("last_height")
+    return changed > taken and last - changed >= stale_blocks

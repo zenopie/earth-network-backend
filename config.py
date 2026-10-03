@@ -156,9 +156,18 @@ INDEXER_POLL_SECONDS = float(os.getenv("INDEXER_POLL_SECONDS", "2"))
 # The handle directory ({base}/handles): read from the chain's Handles query
 # this many a page (the chain's maximum is 1000), again at least every
 # HANDLES_MAX_AGE_SECONDS of block time, and refused past HANDLES_MAX_ENTRIES.
+# A re-read is at most every HANDLES_MIN_REFRESH_BLOCKS blocks (anyone can
+# put a handle event in every block), streamed page by page into SQLite
+# (memory: one page), each page parsed off the event loop (audit-5 L4). The
+# cap bounds the CPU of one re-read on the 0.1-CPU lease (~60 ms a page of
+# 1000 there, so ~12 s of worker-thread time at 200k). Past
+# HANDLES_STALE_BLOCKS behind a handle event, /privacy marks the directory
+# stale (audit-5 L5).
 HANDLES_QUERY_LIMIT = int(os.getenv("HANDLES_QUERY_LIMIT", "1000"))
 HANDLES_MAX_AGE_SECONDS = int(os.getenv("HANDLES_MAX_AGE_SECONDS", "3600"))
-HANDLES_MAX_ENTRIES = int(os.getenv("HANDLES_MAX_ENTRIES", "1000000"))
+HANDLES_MAX_ENTRIES = int(os.getenv("HANDLES_MAX_ENTRIES", "200000"))
+HANDLES_MIN_REFRESH_BLOCKS = int(os.getenv("HANDLES_MIN_REFRESH_BLOCKS", "10"))
+HANDLES_STALE_BLOCKS = int(os.getenv("HANDLES_STALE_BLOCKS", "30"))
 # Page sizes for the /privacy streams (routers/privacy, audit-4 B3): limit
 # must be one of PRIVACY_PAGE_SIZES (each at most PRIVACY_PAGE_MAX), and a
 # position/index cursor a multiple of it, so every wallet asks for the same

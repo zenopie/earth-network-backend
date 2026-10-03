@@ -453,8 +453,15 @@ event, once block time reaches the snapshot's earliest `expires_at` (live) or
 (3600) of block time. Each answer is checked against the chain's rules
 (handle format, strict order across pages, `next` = the page's last handle,
 known status, `erthz1` address, `renewal_until >= expires_at >= 0`, at most
-`HANDLES_MAX_ENTRIES`); a failed or malformed read keeps the previous
-snapshot and the trees go on. `/status` adds `handles` and `handles_height`.
+`HANDLES_MAX_ENTRIES`, 200,000); a failed or malformed read keeps the
+previous snapshot and the trees go on. A re-read is at most every
+`HANDLES_MIN_REFRESH_BLOCKS` (10) blocks, since anyone can put a handle
+event in every block; its pages are parsed in a worker thread and staged
+in SQLite one at a time, then swapped in whole (audit-5 L4). `/status` adds
+`handles`, `handles_height` and `handles_stale`; the stream's `stale` is
+the same flag: true once the snapshot is `HANDLES_STALE_BLOCKS` (30) or more
+behind a handle event the index applied (audit-5 L5). Do not pay a handle
+from a stale directory: it may name another address by now.
 
 ### How it follows the chain
 

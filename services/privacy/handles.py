@@ -27,13 +27,18 @@ then free until swept. A record changes only with an event
 and a status only with time, so the indexer refreshes after a block with
 one of those events, once the synced block time reaches the earliest
 expires_at / renewal_until in the snapshot, and at least every
-HANDLES_MAX_AGE_SECONDS.
+HANDLES_MAX_AGE_SECONDS — but at most every HANDLES_MIN_REFRESH_BLOCKS
+blocks, page by page (pages(): each parsed in a worker thread, staged in
+SQLite, the snapshot swapped whole at the end; audit-5 L4). /privacy
+flags the snapshot stale once it is HANDLES_STALE_BLOCKS behind a handle
+event (audit-5 L5).
 
 Everything is checked against the chain's own rules before it replaces
 the snapshot (a malformed answer keeps the previous one): handle format,
 strictly increasing order across pages, a known status, an erthz1
 address, renewal_until >= expires_at >= 0, and a `next` that moves forward.
 """
+import asyncio
 import re
 from dataclasses import dataclass
 
@@ -143,25 +148,39 @@ def parse_page(raw: bytes) -> tuple[list[Entry], str]:
     return entries, _str(f, 2, "next")
 
 
-async def fetch(rpc, height: int, *, limit: int = 1000, max_entries: int = 1_000_000) -> list[Entry]:
-    """The whole directory at height, in handle order. Raises Malformed or the RPC's error."""
-    out: list[Entry] = []
-    start = ""
+async def pages(rpc, height: int, *, limit: int = 1000, max_entries: int = 200_000):
+    """The whole directory at height, page by page, in handle order: an async
+    iterator of entry lists. Each page is parsed in a worker thread, never on
+    the event loop, and only one page is held at a time (audit-5 L4).
+    Raises Malformed or the RPC's error."""
+    start, last, total = "", None, 0
     while True:
-        entries, nxt = parse_page(await rpc.abci_query(HANDLES_QUERY, request(start, limit), height=height))
+        raw = await rpc.abci_query(HANDLES_QUERY, request(start, limit), height=height)
+        entries, nxt = await asyncio.to_thread(parse_page, raw)
         for e in entries:
-            if out and e.handle <= out[-1].handle:
-                raise Malformed(f"handle {e.handle} after {out[-1].handle}: not in order")
+            if last is not None and e.handle <= last:
+                raise Malformed(f"handle {e.handle} after {last}: not in order")
             if start and e.handle <= start:
                 raise Malformed(f"handle {e.handle} at or before start {start}")
-            out.append(e)
-        if len(out) > max_entries:
+            last = e.handle
+        total += len(entries)
+        if total > max_entries:
             raise Malformed(f"more than {max_entries} handles")
-        if not nxt:
-            return out
-        if not entries or nxt != entries[-1].handle:
+        if nxt and (not entries or nxt != entries[-1].handle):
             raise Malformed(f"next {nxt!r} is not the page's last handle")
+        yield entries
+        if not nxt:
+            return
         start = nxt
+
+
+async def fetch(rpc, height: int, *, limit: int = 1000, max_entries: int = 200_000) -> list[Entry]:
+    """The whole directory at height as one list (tests and tools; the
+    indexer streams pages() into the store instead)."""
+    out: list[Entry] = []
+    async for page in pages(rpc, height, limit=limit, max_entries=max_entries):
+        out += page
+    return out
 
 
 def next_change(entries: list[Entry]) -> int | None:

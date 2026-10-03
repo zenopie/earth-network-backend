@@ -450,3 +450,101 @@ def test_blocks_keep_only_the_last_and_identity_heights(tmp_path):
     store = Store(path)
     assert {h for (h,) in store.conn.execute("SELECT height FROM blocks")} == rows
     store.close()
+
+
+# --- L4: the handle refresh is bounded, streamed and off the loop -------------
+
+def test_handle_rereads_are_at_most_every_min_blocks(tmp_path):
+    from services.privacy import handles
+    from tests.test_handles import _follow
+
+    store, rpc, snaps = _follow(str(tmp_path / "i.db"), handles_min_blocks=5, handles_max_age=10**9)
+    reads = sorted({int(c.split()[-1]) for c in rpc.calls if c.startswith(f"abci_query {handles.HANDLES_QUERY}")})
+    assert len(reads) >= 2
+    assert all(b - a >= 5 for a, b in zip(reads, reads[1:])), reads
+    store.close()
+
+
+def test_handle_pages_are_parsed_off_the_loop_and_staged_one_at_a_time(tmp_path, monkeypatch):
+    import asyncio
+
+    from services.privacy import handles
+    from services.privacy.store import Store
+    from tests.test_handles import _entry, _page
+
+    on_main = []
+    real = handles.parse_page
+
+    def parse(raw):
+        on_main.append(threading.current_thread() is threading.main_thread())
+        return real(raw)
+    monkeypatch.setattr(handles, "parse_page", parse)
+
+    class RPC:
+        pages = {"": _page([_entry("amy"), _entry("bob")], "bob"), "bob": _page([_entry("cat")])}
+
+        async def abci_query(self, path, data=b"", height=None):
+            from services.privacy.rpc import proto_fields
+            return self.pages[(proto_fields(data).get(1) or [b""])[-1].decode()]
+
+    from services.privacy.indexer import Indexer
+    store = Store(str(tmp_path / "i.db"))
+    store.set_meta("last_height", "10")
+    store.set_meta("last_time", "1000")
+    staged = []
+    real_stage = store.stage_handles
+    monkeypatch.setattr(store, "stage_handles", lambda off, page, fresh=False: (staged.append(len(page)),
+                                                                                 real_stage(off, page, fresh=fresh)))
+    idx = Indexer(store, RPC(), handles_limit=2)
+    idx.next_height = 11
+    asyncio.run(idx._refresh_handles())
+    assert on_main == [False, False]
+    assert staged == [2, 1], "one page held at a time"
+    assert [r[0] for r in store.conn.execute("SELECT handle FROM handles ORDER BY idx")] == ["amy", "bob", "cat"]
+    assert store.meta("handles_size") == "3"
+
+    # A directory that fails half way keeps the served one and no staged rows.
+    RPC.pages = {"": _page([_entry("amy"), _entry("bob")], "bob"), "bob": _page([_entry("Mallory")])}
+    store.set_meta("handles_changed_height", "20")
+    store.set_meta("last_height", "20")
+    idx.next_height = 21
+    asyncio.run(idx._refresh_handles())
+    assert store.meta("handles_height") == "10"
+    assert store.conn.execute("SELECT COUNT(*) FROM handles_staging").fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM handles").fetchone()[0] == 3
+    store.close()
+
+
+def test_the_handle_cap_fits_the_lease():
+    assert config.HANDLES_MAX_ENTRIES <= 200_000
+    assert config.HANDLES_MIN_REFRESH_BLOCKS >= 1
+
+
+# --- L5: a stale directory says so ----------------------------------------------
+
+def test_a_stale_handle_directory_is_flagged(notes_index):
+    _set_meta(handles_height="5", handles_changed_height="6", last_height="10")
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is False, "within HANDLES_STALE_BLOCKS"
+    assert notes_index.get("/privacy/status").json()["handles_stale"] is False
+    _set_meta(last_height=str(6 + config.HANDLES_STALE_BLOCKS))
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is True
+    assert notes_index.get("/privacy/status").json()["handles_stale"] is True
+    _set_meta(handles_height=str(6 + config.HANDLES_STALE_BLOCKS))
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is False
+
+
+def test_the_indexer_warns_while_stale(tmp_path, caplog):
+    import asyncio
+    import logging
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+
+    store = Store(str(tmp_path / "i.db"))
+    for k, v in (("handles_height", "5"), ("handles_changed_height", "6"), ("last_height", "100")):
+        store.set_meta(k, v)
+    caplog.set_level(logging.WARNING)
+    idx = Indexer(store, None)
+    asyncio.run(idx._warn_if_handles_stale())
+    assert "handle directory is stale" in caplog.text
+    store.close()

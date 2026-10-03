@@ -60,7 +60,11 @@ snapshot is replaced whole when the directory changes, so a wallet reads
 pages 0 .. size-1 and starts over if `height` differs between its pages.
 status is the chain's at `time`: "live" resolves (pay it, name it as a
 referrer), "renewal" and "free" do not; a wallet also treats a "live" entry
-whose expires_at has passed by its own clock as not resolving.
+whose expires_at has passed by its own clock as not resolving. `stale`
+(here and handles_stale in status) is true while the snapshot is
+HANDLES_STALE_BLOCKS or more behind a handle event the index has applied:
+a handle may name another address by now, so a wallet should not pay a
+handle from it (audit-5 L5).
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
@@ -164,6 +168,12 @@ def _genesis(c: sqlite3.Connection) -> str | None:
 def _base(c: sqlite3.Connection) -> str | None:
     chain_id, genesis = _meta(c, "chain_id"), _genesis(c)
     return f"/privacy/{chain_id}/{genesis}" if chain_id and genesis else None
+
+
+def _handles_size(c: sqlite3.Connection) -> int:
+    """Entries in the served directory (meta, not a COUNT(*) scan a request)."""
+    v = _meta(c, "handles_size")
+    return int(v) if v is not None else c.execute("SELECT COUNT(*) FROM handles").fetchone()[0]
 
 
 def _this_chain(chain_id: str, genesis: str) -> None:
@@ -275,8 +285,9 @@ def status(response: Response):
             "stake_notes": stake_notes,
             "stake_nullifiers": stake_nfs,
             "stake_nf_tree_size": store_mod.stake_nf_size(c),
-            "handles": c.execute("SELECT COUNT(*) FROM handles").fetchone()[0],
+            "handles": _handles_size(c),
             "handles_height": int(_meta(c, "handles_height") or 0) or None,
+            "handles_stale": store_mod.handles_stale(c, config.HANDLES_STALE_BLOCKS),
             "halted": _meta(c, "halted"),
         }
 
@@ -552,7 +563,7 @@ def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX
             " WHERE idx BETWEEN ? AND ? ORDER BY idx",
             (from_index, last),
         ).fetchall()
-        (size,) = c.execute("SELECT COUNT(*) FROM handles").fetchone()
+        size = _handles_size(c)
         height, when = _meta(c, "handles_height"), _meta(c, "handles_time")
         response.headers["Cache-Control"] = TIP
         return {
@@ -561,6 +572,10 @@ def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX
             "height": int(height) if height else None,
             "time": int(when) if when else None,
             "size": size,
+            # The snapshot is behind a handle event the index has seen
+            # (audit-5 L5): a handle may name another address by now. A
+            # wallet should not pay a handle from a stale directory.
+            "stale": store_mod.handles_stale(c, config.HANDLES_STALE_BLOCKS),
             "from_index": from_index,
             "next_index": rows[-1][0] + 1 if rows else from_index,
             # This page reaches the end of the directory: nothing to ask after it.
