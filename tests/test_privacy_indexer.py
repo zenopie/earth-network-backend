@@ -60,6 +60,12 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
     assert rep.identity_root.hex() == last["identity_current_root"]
     if last.get("stake_tree_size"):
         assert rep.stake_root.hex() == last["stake_latest_root"]
+    # One note-discovery rule: every note the chain minted or shielded
+    # carries its 177-byte amount-blind v2 ciphertext.
+    bad = store.conn.execute("SELECT COUNT(*) FROM notes WHERE amount IS NOT NULL AND length(ciphertext) != 177").fetchone()[0]
+    assert bad == 0
+    bad = store.conn.execute("SELECT COUNT(*) FROM stake_notes WHERE spc IS NOT NULL AND length(ciphertext) IS NOT 177").fetchone()[0]
+    assert bad == 0
 
 
 def test_personhood_scenario_covers_appends_zeroings_mints_and_rates(db):
@@ -262,6 +268,23 @@ def test_block_events_are_ordered_begin_txs_end():
     assert [n.position for n in d.notes] == [0, 1, 2]
     assert d.notes[0].ciphertext == b"c" and d.notes[2].amount == "5uanml"
     assert d.note_root.tree_size == 3
+
+
+@pytest.mark.parametrize("event", ["shielded_mint", "shielded_shield"])
+def test_a_mint_ciphertext_must_match_its_note(event):
+    ct = base64.b64encode(bytes(177)).decode()
+
+    def res(mint_ct):
+        return {"height": "5", "txs_results": [{"code": 0, "events": [
+            {"type": "shielded_note", "attributes": [
+                {"key": "position", "value": "0"}, {"key": "commitment", "value": "11" * 32}, {"key": "ciphertext", "value": ct}]},
+            {"type": event, "attributes": [
+                {"key": "amount", "value": "5uerth"}, {"key": "position", "value": "0"}, {"key": "ciphertext", "value": mint_ct}]}]}]}
+
+    d = events.parse_block(5, 0, "H", res(ct))
+    assert d.notes[0].ciphertext == bytes(177) and d.notes[0].amount == "5uerth"
+    with pytest.raises(events.EventError, match="differs"):
+        events.parse_block(5, 0, "H", res(base64.b64encode(bytes([1]) * 177).decode()))
 
 
 def test_parse_time_and_proto_fields():

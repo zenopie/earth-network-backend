@@ -6,9 +6,11 @@ x/shieldedstaking/keeper/stake_tree.go):
 
     shielded_note        position, commitment (hex), ciphertext (base64)
                          (a bundle's action outputs, MsgSend's included, and
-                         every chain-minted note)
-    shielded_shield      sender, amount, position     (a public-value note)
-    shielded_mint        module, amount, position     (a public-value note)
+                         every chain-minted note; a minted note's ciphertext
+                         is its required 177-byte amount-blind v2 one)
+    shielded_shield      sender, amount, position, ciphertext  (a public-value note)
+    shielded_mint        module, amount, position, ciphertext  (a public-value note)
+                         ciphertext repeats the shielded_note's; checked equal
     shielded_nullifier   nullifier (hex)
     shielded_root        root (hex), tree_size, height        EndBlock
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
@@ -21,11 +23,13 @@ The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
 tree of owner-locked derth/<valoper> and unbond/<valoper>/<epoch> notes, its
 own nullifier set and roots):
 
-    shieldedstaking_stake_note       position_id, commitment (hex), and either
-                                     denom, amount, spc (hex)  a note the chain
-                                                               minted, value public
-                                     or ciphertext (base64)    a note a stake
-                                                               proof created
+    shieldedstaking_stake_note       position_id, commitment (hex), ciphertext
+                                     (base64), and for a note the chain minted
+                                     (value public) also denom, amount, spc (hex).
+                                     A minted note's ciphertext is its blind
+                                     stake ciphertext (177 bytes, salt
+                                     "earth.stake.v1", version 0x03); a created
+                                     one's is the stake proof's.
     shieldedstaking_stake_nullifier  nullifier (hex)
     shieldedstaking_stake_root       root (hex), tree_size              EndBlock
 
@@ -90,7 +94,7 @@ class Root:
 class StakeNote:
     position: int
     cm: bytes
-    ciphertext: bytes | None = None  # a note a stake proof created
+    ciphertext: bytes = b""          # every stake note (minted: the blind stake ciphertext)
     denom: str | None = None         # a note the chain minted: denom, amount, spc public
     amount: str | None = None
     spc: bytes | None = None
@@ -160,17 +164,16 @@ def _b64(value: str, what: str) -> bytes:
 def _stake_note(a: dict[str, str]) -> StakeNote:
     n = StakeNote(_int(a.get("position_id"), "shieldedstaking_stake_note position_id"),
                   _hex32(a.get("commitment", ""), "shieldedstaking_stake_note commitment"))
+    if "ciphertext" not in a:
+        raise EventError("shieldedstaking_stake_note: no ciphertext")
+    n.ciphertext = _b64(a["ciphertext"], "shieldedstaking_stake_note ciphertext")
     minted = "spc" in a or "denom" in a or "amount" in a
-    if minted == ("ciphertext" in a):
-        raise EventError("shieldedstaking_stake_note: want either denom, amount and spc, or a ciphertext")
     if minted:
         n.denom = a.get("denom") or ""
         if not n.denom:
             raise EventError("shieldedstaking_stake_note: empty denom")
         n.amount = str(_int(a.get("amount"), "shieldedstaking_stake_note amount"))
         n.spc = _hex32(a.get("spc", ""), "shieldedstaking_stake_note spc")
-    else:
-        n.ciphertext = _b64(a["ciphertext"], "shieldedstaking_stake_note ciphertext")
     return n
 
 
@@ -210,6 +213,8 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             if n is None:
                 raise EventError(f"{t} names position {a.get('position')}, not a note of this block")
             n.amount = a.get("amount") or None
+            if "ciphertext" in a and _b64(a["ciphertext"], f"{t} ciphertext") != n.ciphertext:
+                raise EventError(f"{t} at position {n.position}: ciphertext differs from its shielded_note's")
         elif t == "shielded_nullifier":
             d.nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shielded_nullifier"))
         elif t == "shielded_root":

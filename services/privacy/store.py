@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS stake_notes (
     position   INTEGER PRIMARY KEY,
     cm         BLOB NOT NULL,
     height     INTEGER NOT NULL,
-    ciphertext BLOB,            -- created by a stake proof
+    ciphertext BLOB,            -- every note (minted: blind stake ciphertext); NULL only in pre-fced976 indexes
     denom      TEXT,            -- minted by the chain: denom, amount, spc public
     amount     TEXT,
     spc        BLOB

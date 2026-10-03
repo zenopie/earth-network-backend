@@ -35,8 +35,11 @@ def _index(path: str, sc: dict):
 def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
     sc = scenario(name)
     want = summary(sc)
-    assert any("spc" in a for _, a in want["notes"]) and any("ciphertext" in a for _, a in want["notes"]), \
+    assert any("spc" in a for _, a in want["notes"]) and any("spc" not in a for _, a in want["notes"]), \
         "the scenario mints stake notes and creates them by proof"
+    assert all("ciphertext" in a for _, a in want["notes"]), "every stake note carries a ciphertext"
+    assert all(len(base64.b64decode(a["ciphertext"])) == 177 for _, a in want["notes"] if "spc" in a), \
+        "a minted stake note's is its 177-byte blind stake ciphertext"
     assert want["nullifiers"] and want["roots"]
     store, rpc = _index(str(tmp_path / "i.db"), sc)
     last = sc["blocks"][-1]
@@ -47,11 +50,12 @@ def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
         row = store.conn.execute("SELECT height, cm, ciphertext, denom, amount, spc FROM stake_notes WHERE position = ?",
                                  (int(a["position_id"]),)).fetchone()
         assert row[0] == h and row[1].hex() == a["commitment"]
+        assert base64.b64encode(row[2]).decode() == a["ciphertext"]
         if "spc" in a:
-            assert row[2] is None and (row[3], row[4], row[5].hex()) == (a["denom"], a["amount"], a["spc"])
+            assert (row[3], row[4], row[5].hex()) == (a["denom"], a["amount"], a["spc"])
             assert row[3].startswith(("derth/", "unbond/"))
         else:
-            assert base64.b64encode(row[2]).decode() == a["ciphertext"] and row[3:] == (None, None, None)
+            assert row[3:] == (None, None, None)
     rep = verify.rebuild(store.conn, all_roots=True)
     asyncio.run(verify.check_chain(rep, rpc))
     assert rep.ok, rep.errors
@@ -125,9 +129,10 @@ def test_stake_notes_missing_from_the_index_halt(tmp_path):
 
 
 @pytest.mark.parametrize("attrs", [
-    {"position_id": "0", "commitment": "11" * 32},  # neither
-    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "", "denom": "d", "amount": "1", "spc": "22" * 32},  # both
-    {"position_id": "0", "commitment": "11" * 32, "denom": "d", "amount": "1"},  # no spc
+    {"position_id": "0", "commitment": "11" * 32},  # no ciphertext
+    {"position_id": "0", "commitment": "11" * 32, "denom": "d", "amount": "1", "spc": "22" * 32},  # minted, no ciphertext
+    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "", "denom": "d", "amount": "1"},  # no spc
+    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "", "denom": "", "amount": "1", "spc": "22" * 32},
     {"position": "0", "commitment": "11" * 32, "ciphertext": ""},  # x/shielded's key, not position_id
     {"position_id": "0", "commitment": "11" * 32, "ciphertext": "!!"},
 ])
@@ -162,10 +167,11 @@ def test_stake_notes_stream(api):
     assert [n[0] for n in seen] == list(range(len(want["notes"])))
     for (p, h, cm, ct, denom, amount, spc), (wh, a) in zip(seen, want["notes"]):
         assert (h, cm) == (wh, a["commitment"])
+        assert ct == a["ciphertext"]
         if "spc" in a:
-            assert ct is None and (denom, amount, spc) == (a["denom"], a["amount"], a["spc"])
+            assert (denom, amount, spc) == (a["denom"], a["amount"], a["spc"])
         else:
-            assert ct == a["ciphertext"] and denom is None and amount is None and spc is None
+            assert denom is None and amount is None and spc is None
 
 
 def test_stake_nullifiers_and_roots_streams(api):

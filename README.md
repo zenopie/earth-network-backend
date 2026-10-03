@@ -148,15 +148,38 @@ split a block, so `next_height` is always a clean cursor. A page that filled
 its limit covers a closed range and is served `immutable`; the tip page,
 identity leaves (zeroable later), roots, rates and status get short max-ages.
 `amount` is set only for notes whose value is already public (a shield or a
-module mint). A wallet that has synced identity leaves follows
+module mint). Every note row has a `ciphertext`; a shielded or minted note's
+is the required 177-byte amount-blind v2 ciphertext (`EncryptBlindNote`: no
+asset or value inside — the wallet decrypts it, recomputes `pc` and checks
+`cm = H(TAG_CM, AssetID(denom), amount, pc)` against the row's `amount`). A wallet that has synced identity leaves follows
 `/identity/zeroed` rather than re-reading them.
 
 `/stake/*` is x/shieldedstaking's stake note tree (owner-locked
 `derth/<valoper>` and `unbond/<valoper>/<epoch>` notes; its own nullifiers
-and roots), served the same way. A stake note the chain minted (delegation,
-undelegation claim, vote re-mint, unlocked position) has public `denom`,
-`amount` and stake pc `spc` and a null `ciphertext`; one a stake proof
-created has a `ciphertext` and nulls for the rest. `/stake/roots` is every
+and roots), served the same way. Every stake note row has a `ciphertext`. A
+stake note the chain minted (delegation, undelegation claim, vote re-mint,
+unlocked position) also has public `denom`, `amount` and stake pc `spc`, and
+its `ciphertext` is the blind stake ciphertext (177 bytes, salt
+`earth.stake.v1`, version `0x03`; `EncryptBlindStakeNote`); one a stake proof
+created has the proof's `ciphertext` and nulls for the rest.
+
+### Stream row changes for wallets (chain fced976)
+
+One note-discovery rule: a wallet finds every note it owns by trial
+decryption alone.
+
+- `/notes`: unchanged columns. Minted and shielded rows (`amount` set) now
+  always carry a 177-byte v2 ciphertext; before, it could be empty. Decrypt
+  with `DecryptBlindNote`, then match `cm` using the row's public `amount`.
+- `/stake/notes`: unchanged columns. Minted rows (`denom`/`amount`/`spc`
+  set) now carry a `ciphertext` (was `null`): the blind stake ciphertext.
+  Decrypt, recompute `spc = H(TAG_SPC, owner_pk, rho, rcm)`, compare with the
+  row's `spc`. Created rows are as before.
+- Nullifier, identity, root and rate streams are unchanged. MsgSend and the
+  private fee emit the same events as before.
+- An index built before this format has null stake ciphertexts; the chain
+  change is consensus-breaking, so a fresh index (new `INDEX_DB`) goes with
+  the new chain. `/stake/roots` is every
 root the chain recorded (one per block that moved the tree), so a wallet can
 pick any anchor still in the window or a proposal's snapshot root.
 
@@ -173,11 +196,12 @@ the API process (`INDEXER_ENABLED=true`) or alone:
 
 Events it reads (privacy/orchard): `shielded_note`, `shielded_nullifier`
 (every bundle action, MsgSend's included), `shielded_root`,
-`shielded_shield`/`shielded_mint` (public amounts), `identity_leaf` (append,
+`shielded_shield`/`shielded_mint` (public amounts; their `ciphertext` must
+equal the note's), `identity_leaf` (append,
 or zero when the leaf is all zeros), `identity_root`,
 `shieldedstaking_epoch_validator`, `shieldedstaking_epoch`, and the stake
-tree's `shieldedstaking_stake_note` (`position_id`, `commitment`, then
-`denom`/`amount`/`spc` or `ciphertext`), `shieldedstaking_stake_nullifier`
+tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,
+`ciphertext`, and `denom`/`amount`/`spc` when minted), `shieldedstaking_stake_nullifier`
 and `shieldedstaking_stake_root`. Stake notes and nullifiers are written by
 the msg, not the ante, so a failed staking msg leaves none. Ignored: dex LP
 events (private LP shares are ordinary notes), `shielded_unshield`,

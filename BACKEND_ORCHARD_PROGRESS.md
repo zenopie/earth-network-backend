@@ -52,10 +52,26 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
 - DSC-known check not done backend-side (needs PKI state); gas-check does it
   before the proof.
 
+## Final chain formats (chain-orch fced976, 2026-10-02)
+- RegistrationBinding = H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth,
+  Bytes(ct_erth), affiliate); services/zk/privacy + zk_vectors (incl.
+  TestRegistrationBindingPinned 0x20ce5fcc...).
+- /gas/register: ciphertext_anml, ciphertext_erth, ciphertext_gas required,
+  exactly 177 bytes (v2 blind). MsgShield proto unchanged (fields 1-4);
+  shield_dust refuses any other length; msg_shield vector now a 177-byte
+  ciphertext through ValidateBasic.
+- Indexer: shielded_shield/shielded_mint carry ciphertext (checked equal to
+  the shielded_note's); shieldedstaking_stake_note always carries ciphertext
+  (minted: blind stake ct + denom/amount/spc). Stream columns unchanged;
+  minted stake rows' ciphertext no longer null. README "Stream row changes
+  for wallets".
+- Fixtures re-recorded from fced976. No Groundworks/allocation events are
+  indexed (none to change).
+
 ## Left
 - Wallet apps must move to /privacy/status -> base (old unkeyed stream paths
   are gone) and stop calling the removed gas endpoints.
-- nothing else (pytest: 127 passed, 1 skipped = live-earthd test)
+- nothing else (pytest: 142 passed, 1 skipped = live-earthd test)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit

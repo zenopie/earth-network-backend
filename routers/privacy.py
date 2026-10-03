@@ -34,9 +34,11 @@ was built from and start over when status names another.
 
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
 derth/<valoper> and unbond/<valoper>/<epoch> notes), served exactly like the
-pool's: a stake note the chain minted has public denom, amount and stake pc
-(spc) and a null ciphertext; a note a stake proof created has a ciphertext
-and null denom, amount and spc.
+pool's. Every stake note has a ciphertext (a minted one its 177-byte blind
+stake ciphertext, a created one the stake proof's); a note the chain minted
+also has public denom, amount and stake pc (spc), a note a stake proof
+created has them null. Every pool note, minted ones included, has a
+ciphertext too (minted: the 177-byte amount-blind v2 one).
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
