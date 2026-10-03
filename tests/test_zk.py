@@ -8,7 +8,7 @@ poseidon2_test.go pins to @zkpassport/poseidon2 (== the Noir circuits).
 import json
 import os
 
-from services.zk import merkle, poseidon2, privacy
+from services.zk import indexed, merkle, poseidon2, privacy
 
 VEC = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "privacy", "zk_vectors.json")))
 
@@ -121,3 +121,27 @@ def test_registration_binding_pinned_to_chain_test():
     want = "20ce5fccf5e6e20a8a7b80f7565e41a7c73dbb16ac5e53746e7234ba8b305b0c"
     assert VEC["registration_binding"]["pinned"] == want
     assert hx(privacy.registration_binding(1, 2, b"anml", 3, b"erth", 0)) == want
+
+
+def test_stake_nullifier_tree_matches_go():
+    """zk/indexed: nf_leaf, the sentinel-only root, and the root after each insert."""
+    assert hx(privacy.nf_leaf(1, 2, 3)) == VEC["nf_leaf_1_2_3"]
+    # ORCHARD_DESIGN.md section 15's golden values.
+    assert VEC["nf_leaf_1_2_3"] == "0cdc3a81748c6389efaa3a6c29b7f4609a8e9f860230b70413e8bef512978276"
+    assert hx(indexed.EMPTY_ROOT) == VEC["nf_empty_root"]
+    t = indexed.IndexedTree()
+    assert (t.size, hx(t.root())) == (0, VEC["nf_empty_root"])
+    for i, (v, want) in enumerate(zip(VEC["nf_values"], VEC["nf_roots"])):
+        assert t.insert(int(v, 16)) == i + 1
+        assert hx(t.root()) == want, f"root after insert {i + 1}"
+    assert t.size == len(VEC["nf_values"]) + 1
+
+
+def test_stake_nullifier_tree_refuses_zero_repeats_and_non_canonical():
+    import pytest
+
+    t = indexed.IndexedTree()
+    t.insert(5)
+    for bad in (0, 5, poseidon2.P):
+        with pytest.raises(ValueError):
+            t.insert(bad)

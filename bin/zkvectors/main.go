@@ -13,6 +13,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	shieldedtypes "github.com/earth-network/earth/x/shielded/types"
+	"github.com/earth-network/earth/zk/indexed"
 	"github.com/earth-network/earth/zk/merkle"
 	"github.com/earth-network/earth/zk/poseidon2"
 	"github.com/earth-network/earth/zk/privacy"
@@ -79,6 +80,35 @@ func main() {
 	}
 	out["stake_cms"] = scms
 	out["stake_roots"] = sroots
+
+	// The stake nullifier tree (zk/indexed): NFLeaf, the empty (sentinel
+	// only) root, and the root after each insert of values in an order that
+	// is neither sorted nor reversed, small and full-width, so a low leaf in
+	// the middle, at the sentinel and at the largest value are all exercised.
+	out["nf_leaf_1_2_3"] = hx(privacy.NFLeaf(u(1), u(2), 3))
+	out["nf_empty_root"] = hx(indexed.EmptyRoot)
+	nft := indexed.NewMem()
+	var nfs, nfroots []string
+	for i := uint64(0); i < 9; i++ {
+		var v fr.Element
+		switch i % 3 {
+		case 0:
+			v = privacy.H(u(1000 + i))
+		case 1:
+			v = u(50 - i)
+		default:
+			v = u(1 << (40 + i))
+		}
+		idx, err := nft.Insert(v)
+		if err != nil || idx != i+1 {
+			panic("indexed insert")
+		}
+		nfs = append(nfs, hx(v))
+		r, _ := nft.Root()
+		nfroots = append(nfroots, hx(r))
+	}
+	out["nf_values"] = nfs
+	out["nf_roots"] = nfroots
 
 	// The registration binding: the passport proof's address input, as
 	// personhood's MsgRegister.Binding computes it (affiliate 0 for none, else

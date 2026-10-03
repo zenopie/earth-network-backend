@@ -21,8 +21,8 @@ Blocks are fetched in batches (block_results concurrently, block times and
 hashes from /blockchain) and applied strictly in order, one SQLite
 transaction each; see store.py for what applying checks. After each batch
 the indexed tree sizes are compared with the chain's own (an abci_query of
-x/shielded Tree, x/personhood IdentityTree and x/shieldedstaking StakeTree at
-that height). That catches
+x/shielded Tree, x/personhood IdentityTree, x/shieldedstaking StakeTree and
+StakeNullifierTree at that height). That catches
 history the index never saw — notes or leaves imported at genesis, which emit
 no events, or a start height past the first private tx — which events alone
 cannot reveal.
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 NOTE_TREE_QUERY = "/earth.shielded.v1.Query/Tree"  # QueryTreeResponse.tree_size = 1
 IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"  # QueryIdentityTreeResponse.size = 1
 STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"  # QueryStakeTreeResponse.size = 1
+# QueryStakeNullifierTreeResponse.size = 2 (sentinel included). Asked with
+# limit 1 (request field 2), so the answer carries one value, not 1,000.
+STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
+STAKE_NF_TREE_REQUEST = b"\x10\x01"
 
 
 class Halted(Exception):
@@ -208,6 +212,7 @@ class Indexer:
             notes = varint_field(await self.rpc.abci_query(NOTE_TREE_QUERY, height=height), 1)
             ids = varint_field(await self.rpc.abci_query(IDENTITY_TREE_QUERY, height=height), 1)
             stakes = varint_field(await self.rpc.abci_query(STAKE_TREE_QUERY, height=height), 1)
+            nfs = varint_field(await self.rpc.abci_query(STAKE_NF_TREE_QUERY, STAKE_NF_TREE_REQUEST, height=height), 2)
         except (RPCError, ValueError, IndexError) as exc:
             # State at an old height may be pruned while catching up; the
             # check resumes once the indexer reaches heights the node keeps.
@@ -224,10 +229,12 @@ class Indexer:
             self._size_skips = 0
         have_notes, have_ids, _ = await asyncio.to_thread(self.store.counts)
         have_stakes, _ = await asyncio.to_thread(self.store.stake_counts)
-        if (notes, ids, stakes) != (have_notes, have_ids, have_stakes):
+        have_nfs = await asyncio.to_thread(self.store.stake_nf_size)
+        if (notes, ids, stakes, nfs) != (have_notes, have_ids, have_stakes, have_nfs):
             self._halt(
-                f"at height {height} the chain holds {notes} notes, {ids} identity leaves and {stakes} stake notes, "
-                f"the index {have_notes}, {have_ids} and {have_stakes}: history before the start height (or at genesis) is missing"
+                f"at height {height} the chain holds {notes} notes, {ids} identity leaves, {stakes} stake notes and a "
+                f"stake nullifier tree of {nfs} leaves, the index {have_notes}, {have_ids}, {have_stakes} and {have_nfs}: "
+                f"history before the start height (or at genesis) is missing"
             )
 
     async def run(self, stop: asyncio.Event | None = None, poll_seconds: float = 2.0) -> None:

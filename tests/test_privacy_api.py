@@ -165,7 +165,7 @@ def test_no_per_user_lookups():
     base = "/privacy/{chain_id}/{genesis}"
     assert paths == {"/privacy/status"} | {base + p for p in (
         "/status", "/notes", "/nullifiers", "/identity", "/identity/zeroed", "/roots/latest", "/rates",
-        "/stake/notes", "/stake/nullifiers", "/stake/roots",
+        "/stake/notes", "/stake/nullifiers", "/stake/nullifier-tree", "/stake/roots", "/stake/snapshots",
     )}
 
 
@@ -210,6 +210,7 @@ def test_an_index_that_never_met_its_chain_serves_no_streams(tmp_path, monkeypat
     ("/privacy/identity", "from_index"), ("/privacy/identity/zeroed", "from_height"),
     ("/privacy/rates", "epoch"), ("/privacy/stake/notes", "from_pos"),
     ("/privacy/stake/nullifiers", "from_height"), ("/privacy/stake/roots", "from_height"),
+    ("/privacy/stake/nullifier-tree", "from_index"), ("/privacy/stake/snapshots", "from_height"),
     ("/privacy/notes", "limit"),
 ])
 def test_integers_past_int64_are_422_not_500(api, path, param):
@@ -223,13 +224,13 @@ def _racing(monkeypatch, path, table_sql_marker):
     """A reader connection on which the indexer commits block 4 right after
     the page's row query (audit-3 poc_height_page_race.py)."""
     from services.privacy import store as store_mod
-    from services.privacy.events import BlockDelta
+    from services.privacy.events import BlockDelta, StakeNullifier
 
     w = store_mod.Store(path)
     w.set_meta("chain_id", "earth-test")
     w.set_meta("genesis_hash", "ab" * 32)
     w.apply(BlockDelta(1, 1000, "H1"))
-    w.apply(BlockDelta(2, 1001, "H2", nullifiers=[b"\x01" * 32], stake_nullifiers=[b"\x11" * 32]))
+    w.apply(BlockDelta(2, 1001, "H2", nullifiers=[b"\x01" * 32], stake_nullifiers=[StakeNullifier(b"\x11" * 32, 1)]))
     w.apply(BlockDelta(3, 1002, "H3"))
     inner = store_mod.connect(path, readonly=True)
 
@@ -240,7 +241,7 @@ def _racing(monkeypatch, path, table_sql_marker):
             cur = inner.execute(sql, *a)
             if not RacingConn.fired and table_sql_marker in sql:
                 RacingConn.fired = True
-                w.apply(BlockDelta(4, 1003, "H4", nullifiers=[b"\x04" * 32], stake_nullifiers=[b"\x14" * 32]))
+                w.apply(BlockDelta(4, 1003, "H4", nullifiers=[b"\x04" * 32], stake_nullifiers=[StakeNullifier(b"\x14" * 32, 2)]))
             return cur
 
     monkeypatch.setattr(privacy, "_db", lambda: RacingConn())

@@ -21,7 +21,9 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/rates?epoch=
     GET {base}/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext, denom, amount, spc]
     GET {base}/stake/nullifiers?from_height=&limit=  [[height, [nf, ...]], ...]
+    GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nf, height]
     GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
+    GET {base}/stake/snapshots?from_height=&limit=   [height, proposal_id, root, tree_size, nf_root, nf_size]
 
 genesis is the first 16 hex digits (lowercase) of the hash of the chain's
 first block. earth-1 has been relaunched under the same chain id, so the chain
@@ -39,6 +41,14 @@ stake ciphertext, a created one the stake proof's); a note the chain minted
 also has public denom, amount and stake pc (spc), a note a stake proof
 created has them null. Every pool note, minted ones included, has a
 ciphertext too (minted: the 177-byte amount-blind v2 one).
+
+The stake nullifier tree (x/shieldedstaking, ORCHARD_DESIGN.md section 15)
+is an indexed Merkle tree whose leaves are in insertion order: a wallet
+proving a stake vote rebuilds it from the first nf_size - 1 values of
+/stake/nullifier-tree (leaf indexes 1, 2, ...; leaf 0 is the sentinel) and
+checks its root against the proposal snapshot's nf_root. Failed txs' nullifiers
+are in it (a claim spends in the ante). The index refuses a gap or a repeat in
+the leaf indexes, so the stream is exactly the chain's insertion order.
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
@@ -187,6 +197,7 @@ def status(response: Response):
             "nullifiers": nfs,
             "stake_notes": stake_notes,
             "stake_nullifiers": stake_nfs,
+            "stake_nf_tree_size": store_mod.stake_nf_size(c),
             "halted": _meta(c, "halted"),
         }
 
@@ -353,7 +364,7 @@ def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), 
 def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
     with _read() as c:
         rows, nxt, complete = _height_page(
-            c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
+            c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, idx", from_height, _limit(limit))
         response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
         return {
             "fields": ["height", "nullifiers"],
@@ -362,6 +373,58 @@ def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MA
             "next_height": nxt,
             "complete": complete,
             "blocks": _group(rows, bytes.hex),
+        }
+
+
+@chain.get("/stake/nullifier-tree")
+def stake_nullifier_tree(response: Response, from_index: int = Query(1, ge=0, le=MAX_INT),
+                         limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    """The stake nullifier tree's values by leaf index (insertion order), from from_index.
+
+    Leaf 0 is the sentinel and never a row; the first value is leaf 1. size
+    is the tree's leaf count as the chain counts it (values + 1, 0 when
+    empty). A wallet building a vote at a snapshot takes leaves 1 ..
+    nf_size - 1 and rebuilds the indexed tree in that order.
+    """
+    with _read() as c:
+        n = _limit(limit)
+        rows = c.execute(
+            "SELECT idx, nf, height FROM stake_nullifiers WHERE idx >= ? ORDER BY idx LIMIT ?",
+            (from_index, n),
+        ).fetchall()
+        complete = len(rows) == n
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["index", "nullifier", "height"],
+            "synced_height": _synced(c),
+            "size": store_mod.stake_nf_size(c),
+            "from_index": from_index,
+            "next_index": rows[-1][0] + 1 if rows else max(from_index, 1),
+            "complete": complete,
+            "nullifiers": [[i, nf.hex(), h] for i, nf, h in rows],
+        }
+
+
+@chain.get("/stake/snapshots")
+def stake_snapshots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT),
+                    limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    """Every proposal snapshot (the trees a proposal's stake votes prove against), by height.
+
+    root is empty ("") for a snapshot taken before the stake note tree had a
+    root. nf_size counts the sentinel (0: no nullifier yet).
+    """
+    with _read() as c:
+        rows, nxt, complete = _height_page(
+            c, "SELECT height, proposal_id, root, tree_size, nf_root, nf_size FROM stake_snapshots"
+               " WHERE height >= ? ORDER BY height, proposal_id", from_height, _limit(limit))
+        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        return {
+            "fields": ["height", "proposal_id", "root", "tree_size", "nf_root", "nf_size"],
+            "synced_height": _synced(c),
+            "from_height": from_height,
+            "next_height": nxt,
+            "complete": complete,
+            "snapshots": [[h, p, r.hex(), ts, nr.hex(), ns] for h, p, r, ts, nr, ns in rows],
         }
 
 

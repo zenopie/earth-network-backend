@@ -87,11 +87,20 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
 - Ported PoCs: tests/test_register_dos.py, test_ratelimit (ipv6),
   test_privacy_api (race, overflow), test_privacy_indexer (relaunch).
 
+- Stake nullifier tree (chain 9b29f5d, ORCHARD_DESIGN §15): stake
+  nullifiers stored with their leaf index (halt on gap/repeat), snapshots
+  (nf_root/nf_size) stored; /stake/nullifier-tree (by index) and
+  /stake/snapshots; size check adds Query/StakeNullifierTree; verify rebuilds
+  the indexed tree (services/zk/indexed.py, Go vectors in zk_vectors.json)
+  and checks every snapshot's nf_root + the chain's current root. Fixtures
+  re-recorded (7 scenarios, + TestStakeVoteConcurrentProposals; nf tree
+  size/roots per block). Old indexes refused at open (wipe INDEX_DB).
+
 ## Left
 - Wallet apps must move to /privacy/status -> base (old unkeyed stream paths
   are gone), stop calling the removed gas endpoints, and implement the
   /gas/register proof of work (README "Proof of work").
-- nothing else (pytest: 213 passed, 1 skipped = live-earthd test)
+- nothing else (pytest: 231 passed, 1 skipped = live-earthd test)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit
@@ -100,3 +109,5 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
   other per-msg staking events (no tree, no rate).
 - Stake roots served as a full height-ordered stream (anchors in window /
   proposal snapshots), not just latest.
+- vote_nullifier of shieldedstaking_stake_vote not indexed (wallets keep
+  their own votes; no tree depends on it).

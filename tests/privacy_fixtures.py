@@ -3,8 +3,8 @@
 tests/fixtures/privacy/Test*.json.gz are real FinalizeBlock responses from the
 chain's app scenario tests (real proofs, the launch genesis path), recorded by
 bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
-note, identity and stake trees' sizes and roots after the block as the
-keepers reported them (stake fields are absent from fixtures recorded before
+note, identity, stake and stake nullifier trees' sizes and roots after the
+block as the keepers reported them (stake fields are absent from fixtures recorded before
 the stake tree existed, and read as an empty tree).
 """
 import gzip
@@ -60,6 +60,13 @@ def stake_tree_response(block: dict) -> bytes:
             + _field(2, bytes.fromhex(block.get("stake_latest_root", ""))))
 
 
+def stake_nf_tree_response(block: dict) -> bytes:
+    """QueryStakeNullifierTreeResponse{values=1 (omitted), size=2, root=3, latest_root=4}."""
+    return (_field(2, block.get("stake_nf_tree_size", 0))
+            + _field(3, bytes.fromhex(block.get("stake_nf_current_root", "")))
+            + _field(4, bytes.fromhex(block.get("stake_nf_latest_root", ""))))
+
+
 class FakeRPC:
     """Serves a recorded scenario. `tip` limits what the chain has produced so far."""
 
@@ -106,6 +113,10 @@ class FakeRPC:
             return identity_response(b)
         if path == "/earth.shieldedstaking.v1.Query/StakeTree":
             return stake_tree_response(b)
+        if path == "/earth.shieldedstaking.v1.Query/StakeNullifierTree":
+            if "stake_nf_tree_size" not in b:
+                raise RPCError(f"unknown path {path}")  # recorded before the nullifier tree
+            return stake_nf_tree_response(b)
         raise RPCError(f"unknown path {path}")
 
     async def close(self):

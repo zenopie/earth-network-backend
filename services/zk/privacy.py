@@ -20,6 +20,7 @@ TAG_STAKE = tag("earth.stake")
 TAG_SPC = tag("earth.spc")
 TAG_REG = tag("earth.reg")
 TAG_BYTES = tag("earth.bytes")
+TAG_SNFL = tag("earth.snfl")
 
 
 def H(*xs: int) -> int:
@@ -95,3 +96,8 @@ def registration_binding(idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, 
     H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
     affiliate is 0 for none, else bytes_field(its address bytes)."""
     return H(TAG_REG, idc_, pc_anml, bytes_field(ct_anml), pc_erth, bytes_field(ct_erth), affiliate)
+
+
+def nf_leaf(value: int, next_value: int, next_index: int) -> int:
+    """privacy.NFLeaf: a leaf of the stake nullifier indexed tree."""
+    return H(TAG_SNFL, value, next_value, next_index)

@@ -30,17 +30,32 @@ own nullifier set and roots):
                                      stake ciphertext (177 bytes, salt
                                      "earth.stake.v1", version 0x03); a created
                                      one's is the stake proof's.
-    shieldedstaking_stake_nullifier  nullifier (hex)
+    shieldedstaking_stake_nullifier  nullifier (hex), index (its leaf index in
+                                     the stake nullifier tree: 1, 2, 3, ... in
+                                     insertion order; leaf 0 is the sentinel)
     shieldedstaking_stake_root       root (hex), tree_size              EndBlock
+    shieldedstaking_snapshot         proposal_id, root (hex), tree_size,
+                                     nf_root (hex), nf_size: the stake note
+                                     tree and the stake nullifier tree a
+                                     proposal's stake votes prove against
 
-Stake notes and nullifiers are written by the msg (not the ante), so a failed
-staking msg leaves none of them, and none of its events.
+The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
+(sorted) Merkle tree whose leaf positions are insertion order, so wallets
+rebuild it from the nullifiers in index order; the store refuses an index
+that is not exactly the next one.
+
+Most stake notes and nullifiers are written by the msg, so a failed staking
+msg leaves none of them. A claim (MsgClaimUnbonding) runs in the private ante
+(it pays its fee from what it claims): its nullifiers and its change note
+persist, and their events are in the tx result, even when the tx then fails.
+Every tx is read whatever its code (below), so both cases come out right.
 
 Not read, because they change no tree and no rate a wallet derives:
 shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
 (private LP shares are ordinary shielded_note events; add/remove/complete
 liquidity events name no provider), shieldedstaking_delegate / _undelegate /
-_claim / _position / _stake_vote / _snapshot / _matured and
+_claim / _position / _stake_vote (its vote_nullifier is per proposal and
+spends nothing) / _matured and
 shieldedstaking_self_bond_compounded (an operator's own SDK self-bond grows;
 derth rates come from shieldedstaking_epoch_validator as before).
 
@@ -101,6 +116,21 @@ class StakeNote:
 
 
 @dataclass
+class StakeNullifier:
+    nf: bytes
+    index: int  # leaf index in the stake nullifier tree (first value: 1)
+
+
+@dataclass
+class Snapshot:
+    proposal_id: int
+    root: bytes      # stake note tree root (empty when the tree had none)
+    tree_size: int
+    nf_root: bytes   # stake nullifier tree root at nf_size
+    nf_size: int     # leaf count, sentinel included (0: nothing inserted)
+
+
+@dataclass
 class Rate:
     validator: str
     rate: str
@@ -123,8 +153,9 @@ class BlockDelta:
     identity_root: Root | None = None
     rates: list[Rate] = field(default_factory=list)
     stake_notes: list[StakeNote] = field(default_factory=list)
-    stake_nullifiers: list[bytes] = field(default_factory=list)
+    stake_nullifiers: list[StakeNullifier] = field(default_factory=list)
     stake_root: Root | None = None
+    snapshots: list[Snapshot] = field(default_factory=list)
     # The epoch a shieldedstaking_epoch event in this block ended, if any.
     epoch_ended: int | None = None
 
@@ -235,7 +266,23 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))
         elif t == "shieldedstaking_stake_nullifier":
-            d.stake_nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shieldedstaking_stake_nullifier"))
+            a = _attrs(ev)
+            if "index" not in a:
+                raise EventError("shieldedstaking_stake_nullifier: no index (a chain before the stake nullifier tree)")
+            d.stake_nullifiers.append(StakeNullifier(
+                _hex32(a.get("nullifier", ""), "shieldedstaking_stake_nullifier"),
+                _int(a["index"], "shieldedstaking_stake_nullifier index")))
+        elif t == "shieldedstaking_snapshot":
+            a = _attrs(ev)
+            root = a.get("root", "")
+            d.snapshots.append(Snapshot(
+                proposal_id=_int(a.get("proposal_id"), "shieldedstaking_snapshot proposal_id"),
+                # A snapshot taken before any stake note has an empty root.
+                root=_hex32(root, "shieldedstaking_snapshot root") if root else b"",
+                tree_size=_int(a.get("tree_size"), "shieldedstaking_snapshot tree_size"),
+                nf_root=_hex32(a.get("nf_root", ""), "shieldedstaking_snapshot nf_root"),
+                nf_size=_int(a.get("nf_size"), "shieldedstaking_snapshot nf_size"),
+            ))
         elif t == "shieldedstaking_stake_root":
             a = _attrs(ev)
             d.stake_root = Root(_hex32(a.get("root", ""), "shieldedstaking_stake_root"),

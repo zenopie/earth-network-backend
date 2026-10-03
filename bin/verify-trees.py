@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuilds the note, identity and stake trees from the privacy index and checks them.
+"""Rebuilds the note, identity, stake and stake nullifier trees from the privacy index and checks them.
 
     bin/verify-trees.py [--db privacy_index.db] [--rpc https://rpc...] [--all-roots] [--no-chain]
 
@@ -10,9 +10,11 @@ Replays the indexed notes, identity writes and stake notes with Poseidon2
   the root event the chain emitted for that block;
 - every chain-minted stake note's commitment with its public denom, amount
   and stake pc;
-- the rebuilt trees with the chain's own Query/Tree, Query/IdentityTree and
-  Query/StakeTree at the index's synced height, over the RPC (skip with
-  --no-chain).
+- the stake nullifier tree (an indexed tree, rebuilt in leaf-index order)
+  with every proposal snapshot's nf_root at its nf_size;
+- the rebuilt trees with the chain's own Query/Tree, Query/IdentityTree,
+  Query/StakeTree and Query/StakeNullifierTree at the index's synced height,
+  over the RPC (skip with --no-chain).
 
 Exit status 0 when everything matches, 1 on any mismatch, 2 when the chain
 could not be asked.
@@ -47,6 +49,8 @@ def main() -> int:
     print(f"note root     {rep.note_root.hex()}")
     print(f"identity root {rep.identity_root.hex()}")
     print(f"stake root    {rep.stake_root.hex() if rep.stake_root else '(empty)'}")
+    print(f"stake nf root {rep.stake_nf_root.hex()} (size {rep.stake_nf_size}; "
+          f"{rep.snapshots_checked} proposal snapshots checked)")
 
     if not args.no_chain:
         async def ask():

@@ -5,7 +5,7 @@
 #
 # Exports the chain at ref (default HEAD) to a temporary directory, adds
 # bin/chainrec's recorder, hooks it into the shielded and staking test envs'
-# block helpers, and runs six scenario tests with real proofs. The recorded
+# block helpers, and runs seven scenario tests with real proofs. The recorded
 # block_results are exactly what a node's RPC would serve for those blocks.
 # Nothing in the chain repo is touched.
 set -eu
@@ -35,7 +35,7 @@ hook("app/shieldedstaking_env_test.go",
      "recordBlock(e.t, e.app, e.height, e.now, ssChainID, res)")
 PY
 (cd "$TMP/chain" && RECORD_DIR="$TMP/rec" GOFLAGS=-mod=mod go test ./app -count=1 \
-    -run 'TestPrivatePersonhood$|TestShieldedPoolEndToEnd$|TestPrivateStakingLifecycle$|TestStakeNotesOwnerLocked$|TestSelfBondCompounds$|TestDexAnmlPoolLiquidity$')
+    -run 'TestPrivatePersonhood$|TestShieldedPoolEndToEnd$|TestPrivateStakingLifecycle$|TestStakeNotesOwnerLocked$|TestSelfBondCompounds$|TestDexAnmlPoolLiquidity$|TestStakeVoteConcurrentProposals$')
 for f in "$TMP"/rec/*.json; do
     gzip -9 -c "$f" > "$HERE/tests/fixtures/privacy/$(basename "$f").gz"
 done

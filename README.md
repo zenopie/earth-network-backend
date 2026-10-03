@@ -250,7 +250,9 @@ and under `base` = `/privacy/<chain_id>/<genesis>`:
     GET {base}/rates?epoch=                         [validator, rate, supply, epoch, height]
     GET {base}/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext, denom, amount, spc]
     GET {base}/stake/nullifiers?from_height=&limit= [[height, [nf, ...]], ...]
+    GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nullifier, height]
     GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
+    GET {base}/stake/snapshots?from_height=&limit=  [height, proposal_id, root, tree_size, nf_root, nf_size]
 
 ### URL scheme for wallets
 
@@ -316,6 +318,45 @@ decryption alone.
 root the chain recorded (one per block that moved the tree), so a wallet can
 pick any anchor still in the window or a proposal's snapshot root.
 
+### Stake nullifier tree (stake votes, chain ORCHARD_DESIGN.md section 15)
+
+Stake votes no longer spend the note. A vote proves the note's spend
+nullifier was absent at the proposal's snapshot, by non-membership in the
+stake nullifier tree: an indexed (sorted) depth-32 Poseidon2 tree whose leaf
+positions are insertion order (leaf 0 the sentinel, the first nullifier leaf
+1). A wallet must rebuild it in exactly the chain's order, so the backend
+serves it by leaf index:
+
+    GET {base}/stake/nullifier-tree?from_index=1&limit=1000
+
+    {"fields": ["index", "nullifier", "height"],
+     "synced_height": H, "size": S,           // leaf count, sentinel included; 0 when empty
+     "from_index": 1, "next_index": N, "complete": true|false,
+     "nullifiers": [[1, "<hex32>", 9], [2, "<hex32>", 16], ...]}
+
+`from_index` defaults to 1 (0 is accepted; no row has it). Follow
+`next_index` while `complete` is true; full pages are `immutable`. Rows are
+gap-free and every nullifier appears once: the indexer halts on an `index`
+attribute that is not exactly the next one or a repeated nullifier. Failed
+txs' nullifiers are included (a claim spends in the private ante, so its
+nullifier persists when the tx fails).
+
+To vote on a proposal: read its snapshot (chain `Query/Snapshot`, or
+`/stake/snapshots`: `root`, `tree_size`, `nf_root`, `nf_size`); take leaves
+`1 .. nf_size - 1` (none when `nf_size` is 0), insert them in index order
+into an indexed tree (`leaf = H(TAG_SNFL, value, next_value, next_index)`,
+`TAG_SNFL = "earth.snfl"`; `services/zk/indexed.py` is a reference), check
+the root equals `nf_root`, and prove the low leaf of your note's nullifier.
+`/stake/snapshots` is every snapshot the chain emitted (empty `root` when
+the stake note tree had none yet). `/stake/nullifiers` (by height) is
+unchanged and lists the same values, in leaf order within a height.
+`/status` adds `stake_nf_tree_size`. Vote events' `vote_nullifier` is not
+indexed (a wallet remembers its own votes).
+
+An index built before this chain change has no leaf indexes: the API and the
+indexer refuse to open it; wipe `INDEX_DB` (the chain change is
+consensus-breaking, so the new index goes with the new chain).
+
 ### How it follows the chain
 
 `services/privacy/indexer.py` reads `block_results` over CometBFT RPC from
@@ -335,8 +376,12 @@ or zero when the leaf is all zeros), `identity_root`,
 `shieldedstaking_epoch_validator`, `shieldedstaking_epoch`, and the stake
 tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,
 `ciphertext`, and `denom`/`amount`/`spc` when minted), `shieldedstaking_stake_nullifier`
-and `shieldedstaking_stake_root`. Stake notes and nullifiers are written by
-the msg, not the ante, so a failed staking msg leaves none. Ignored: dex LP
+(`nullifier`, `index`: its leaf in the stake nullifier tree),
+`shieldedstaking_stake_root` and `shieldedstaking_snapshot` (`proposal_id`,
+`root`, `tree_size`, `nf_root`, `nf_size`). Most stake notes and nullifiers
+are written by the msg, so a failed staking msg leaves none; a claim runs in
+the private ante, so a failed claim tx's nullifier and change note persist
+(and are read, like every failed tx's events). Ignored: dex LP
 events (private LP shares are ordinary notes), `shielded_unshield`,
 `shieldedstaking_self_bond_compounded` and the other per-msg staking events. Block events are ordered PreBlock/BeginBlock, txs,
 EndBlock (the SDK's `mode` attribute), which is the order notes are appended.
@@ -352,7 +397,9 @@ every later position and root out of step; `test_failed_tx_ante_events_are_index
 and `test_failed_tx_with_only_failure_code_still_counts_every_event` guard it.
 
 It refuses, and halts until an operator steps in, rather than serve trees that
-cannot match the chain: a note position out of sequence, a nullifier twice, a
+cannot match the chain: a note position out of sequence, a nullifier twice,
+a stake nullifier whose leaf `index` is not exactly the next one, a proposal
+snapshot naming a tree size past the index, a
 root event whose size differs from the index, a different chain id or block
 hash behind the RPC than the one indexed (the chain's first-block hash is
 recorded once, and is the `genesis` in the URLs; on every prepare — every
@@ -363,7 +410,8 @@ under the same chain id restarts low; before, that was retried forever with
 `halted` null), a block whose parent (`header.last_block_id`)
 is not the block indexed before it (checked on every block, so an RPC
 swapped mid-run halts at the first block of the other chain), or tree sizes that differ from the
-chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree` at each batch's last height —
+chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree`,
+`Query/StakeNullifierTree` at each batch's last height —
 this is what catches notes imported at genesis, which emit no events, or a
 start height past the first private tx; when the node cannot answer that
 query — state pruned at old heights — the skip is logged at WARNING). The
@@ -393,12 +441,15 @@ rpc.erth.network serves every height from 1.
 
     bin/verify-trees.py --db privacy_index.db [--all-roots] [--no-chain]
 
-rebuilds the note, identity and stake trees from the index with Python
-Poseidon2 (`services/zk`, a port of the chain's `zk/poseidon2`, `zk/merkle`
-and `zk/privacy`), checks every chain-minted stake note's commitment against
-its public denom, amount and spc, checks the latest root of each (every recorded root with `--all-roots`) against the root
-events the chain emitted, and compares the rebuilt trees with the chain's own
-at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
+rebuilds the note, identity, stake and stake nullifier trees from the index
+with Python Poseidon2 (`services/zk`, a port of the chain's `zk/poseidon2`,
+`zk/merkle`, `zk/indexed` and `zk/privacy`), checks every chain-minted stake
+note's commitment against its public denom, amount and spc, checks the latest
+root of each (every recorded root with `--all-roots`) against the root
+events the chain emitted, checks the stake nullifier tree's root at every
+proposal snapshot's `nf_size` against its `nf_root` (the chain emits no
+per-block nullifier root), and compares the rebuilt trees with the chain's
+own (including `Query/StakeNullifierTree` size and root) at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
 asked.
 
 ### Fixtures
@@ -406,8 +457,9 @@ asked.
 `tests/fixtures/privacy/Test*.json.gz` are real blocks: the chain's own app
 scenario tests (real proofs, the launch genesis path) recorded as RPC
 `block_results` with the keepers' note, identity and stake tree sizes and
-roots after each block (personhood, shielded pool, staking lifecycle,
-owner-locked stake notes, self-bond compounding, private dex LP).
+roots after each block, and the stake nullifier tree's (personhood, shielded
+pool, staking lifecycle, owner-locked stake notes, self-bond compounding,
+private dex LP, stake votes on concurrent proposals).
 `zk_vectors.json` comes from the chain's Go zk packages. Both regenerate from
 a chain checkout without touching it:
 

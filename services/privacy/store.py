@@ -15,8 +15,11 @@ match the chain's roots:
 - a root event's tree_size equals the indexed size at that block.
 
 The stake note tree (x/shieldedstaking) is held the same way, in its own
-tables: stake note positions in sequence, stake nullifiers once, stake root
-sizes equal to the indexed stake tree.
+tables: stake note positions in sequence, stake root sizes equal to the
+indexed stake tree. Stake nullifiers carry their leaf index in the stake
+nullifier tree, which must be exactly the next one (1, 2, 3, ...), each
+nullifier once; a proposal snapshot is recorded once and never names a tree
+size past what is indexed.
 
 Readers (the API) use their own connections; WAL keeps them from blocking the
 writer.
@@ -98,12 +101,23 @@ CREATE TABLE IF NOT EXISTS stake_notes (
     spc        BLOB
 );
 CREATE INDEX IF NOT EXISTS stake_notes_by_height ON stake_notes (height);
+-- The stake nullifier tree's values: idx is the leaf index the chain gave
+-- each (1, 2, 3, ... in insertion order; leaf 0 is the sentinel).
 CREATE TABLE IF NOT EXISTS stake_nullifiers (
-    seq    INTEGER PRIMARY KEY,
+    idx    INTEGER PRIMARY KEY,
     nf     BLOB NOT NULL UNIQUE,
     height INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS stake_nullifiers_by_height ON stake_nullifiers (height, seq);
+CREATE INDEX IF NOT EXISTS stake_nullifiers_by_height ON stake_nullifiers (height, idx);
+CREATE TABLE IF NOT EXISTS stake_snapshots (
+    proposal_id INTEGER PRIMARY KEY,
+    height      INTEGER NOT NULL,
+    root        BLOB NOT NULL,      -- empty when the stake note tree had no root yet
+    tree_size   INTEGER NOT NULL,
+    nf_root     BLOB NOT NULL,
+    nf_size     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS stake_snapshots_by_height ON stake_snapshots (height, proposal_id);
 CREATE TABLE IF NOT EXISTS stake_roots (
     height    INTEGER PRIMARY KEY,
     root      BLOB NOT NULL,
@@ -124,12 +138,24 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(stake_nullifiers)")]
+    if cols and "idx" not in cols:
+        conn.close()
+        raise RuntimeError(f"{path} predates the stake nullifier tree (stake nullifiers without leaf indexes, "
+                           f"from a chain before it): wipe INDEX_DB and index again")
     # Readers create the schema too, so an API started before the indexer
     # serves empty streams rather than errors.
     conn.executescript(SCHEMA)
     if readonly:
         conn.execute("PRAGMA query_only=1")
     return conn
+
+
+def stake_nf_size(c: sqlite3.Connection) -> int:
+    """The stake nullifier tree's leaf count as the chain reports it: the
+    values plus the sentinel, 0 before the first insert."""
+    (n,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM stake_nullifiers").fetchone()
+    return n
 
 
 def stake_counts(c: sqlite3.Connection) -> tuple[int, int]:
@@ -179,6 +205,9 @@ class Store:
 
     def stake_counts(self) -> tuple[int, int]:
         return stake_counts(self.conn)
+
+    def stake_nf_size(self) -> int:
+        return stake_nf_size(self.conn)
 
     # --- writing ----------------------------------------------------------
 
@@ -269,11 +298,37 @@ class Store:
                           (n.position, n.cm, d.height, n.ciphertext, n.denom, n.amount, n.spc))
                 stakes += 1
 
-            for nf in d.stake_nullifiers:
+            # Leaf indexes exactly in sequence from 1 (leaf 0 is the
+            # sentinel): wallets rebuild the indexed tree in this order, so a
+            # gap or a repeat would give every later root wrongly.
+            (nf_next,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 1) FROM stake_nullifiers").fetchone()
+            for n in d.stake_nullifiers:
+                if n.index != nf_next:
+                    raise Inconsistent(
+                        f"block {d.height}: stake nullifier {n.nf.hex()} at leaf {n.index}, expected {nf_next}"
+                        + (" (history before the start height is missing)" if not last and nf_next == 1 else "")
+                    )
                 try:
-                    c.execute("INSERT INTO stake_nullifiers (nf, height) VALUES (?, ?)", (nf, d.height))
+                    c.execute("INSERT INTO stake_nullifiers (idx, nf, height) VALUES (?, ?, ?)", (n.index, n.nf, d.height))
                 except sqlite3.IntegrityError as exc:
-                    raise Inconsistent(f"block {d.height}: stake nullifier {nf.hex()} spent twice") from exc
+                    raise Inconsistent(f"block {d.height}: stake nullifier {n.nf.hex()} spent twice") from exc
+                nf_next += 1
+
+            for sn in d.snapshots:
+                # A snapshot takes the nullifier tree as recorded at the end
+                # of an earlier block, so it can never be past what is indexed.
+                if sn.nf_size > nf_next or sn.nf_size == 1:
+                    raise Inconsistent(f"block {d.height}: proposal {sn.proposal_id} snapshot at nullifier tree size "
+                                       f"{sn.nf_size}, indexed {nf_next if nf_next > 1 else 0}")
+                if sn.tree_size > stakes:
+                    raise Inconsistent(f"block {d.height}: proposal {sn.proposal_id} snapshot at stake tree size "
+                                       f"{sn.tree_size}, indexed {stakes}")
+                try:
+                    c.execute("INSERT INTO stake_snapshots (proposal_id, height, root, tree_size, nf_root, nf_size)"
+                              " VALUES (?, ?, ?, ?, ?, ?)",
+                              (sn.proposal_id, d.height, sn.root, sn.tree_size, sn.nf_root, sn.nf_size))
+                except sqlite3.IntegrityError as exc:
+                    raise Inconsistent(f"block {d.height}: proposal {sn.proposal_id} snapshotted twice") from exc
 
             if d.stake_root is not None:
                 if d.stake_root.tree_size != stakes:
