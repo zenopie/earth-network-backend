@@ -67,7 +67,8 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
       bin/lock-requirements.py) installed --require-hashes --only-binary;
       build-essential dropped (every package has a wheel)
 - [x] L3 /health serves a background reading (every 30 s), cacheable
-- [ ] L6 halted index: 503 on {base}/*
+- [x] L6 halted index: 503 no-store on {base}/*; pages immutable only up to
+      meta verified_height (set after the tree-size check passes)
 - [ ] L7 blocks table pruned
 - [ ] L4 handle refresh bounded, off the loop; L5 stale flag
 

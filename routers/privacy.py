@@ -72,7 +72,10 @@ Caching: a page that ends because it hit its limit covers a closed range that
 can never change (notes, nullifiers and zeroings are append-only and blocks
 are final), so it is served immutable and any CDN can keep it. The page that
 reaches the synced tip, the identity leaves (a leaf can be zeroed later),
-roots, rates and status get short max-ages.
+roots, rates and status get short max-ages. A page is immutable only once
+every height in it has passed the indexer's tree-size check (meta
+verified_height), and while the index is halted every {base}/* answer is
+503 no-store; /privacy/status still says why (audit-5 L6).
 
 Paging (audit-4 B3): limit is one of PRIVACY_PAGE_SIZES (100, 1000) and
 nothing else, and a position- or index-paged stream (notes, identity,
@@ -164,11 +167,33 @@ def _base(c: sqlite3.Connection) -> str | None:
 
 
 def _this_chain(chain_id: str, genesis: str) -> None:
-    """404 unless the path names the chain the index holds (see the module doc)."""
+    """404 unless the path names the chain the index holds (see the module doc);
+    503 while the index is halted (audit-5 L6): a halted index may hold
+    blocks it has found to diverge from the chain, and serving them, let
+    alone as immutable pages, would spread them through every cache."""
     with _read() as c:
         if chain_id != _meta(c, "chain_id") or genesis != _genesis(c) or genesis is None:
             raise HTTPException(status_code=404, detail="not the chain this index holds; read base from /privacy/status",
                                 headers={"Cache-Control": "no-store"})
+        if _meta(c, "halted"):
+            raise HTTPException(status_code=503, detail="the index is halted (see /privacy/status); nothing is served from it",
+                                headers={"Cache-Control": "no-store", "Retry-After": "60"})
+
+
+def _verified(c: sqlite3.Connection) -> int:
+    """The last height whose tree sizes the indexer compared with the chain's."""
+    v = _meta(c, "verified_height")
+    return int(v) if v else 0
+
+
+def _closed(complete: bool, last_height: int, c: sqlite3.Connection) -> str:
+    """IMMUTABLE for a complete page whose rows the indexer has verified up to, else TIP.
+
+    A page is cached for a year, so it must never hold a block the indexer
+    could still find to diverge: the tree-size check runs after a batch is
+    committed, and only heights it passed are final here (audit-5 L6).
+    """
+    return IMMUTABLE if complete and last_height <= _verified(c) else TIP
 
 
 router = APIRouter(tags=["privacy"])
@@ -265,7 +290,7 @@ def notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit:
             (from_pos, last),
         ).fetchall()
         complete = bool(rows) and rows[-1][0] == last
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, rows[-1][1] if rows else 0, c)
         return {
             "fields": ["position", "height", "cm", "ciphertext", "amount"],
             "synced_height": _synced(c),
@@ -281,7 +306,7 @@ def nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT)
     with _read() as c:
         rows, nxt, complete = _height_page(
             c, "SELECT height, nf FROM nullifiers WHERE height >= ? ORDER BY height, seq", from_height, _limit(limit))
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, nxt - 1, c)
         return {
             "fields": ["height", "nullifiers"],
             "synced_height": _synced(c),
@@ -323,7 +348,7 @@ def identity_zeroed(response: Response, from_height: int = Query(0, ge=0, le=MAX
         rows, nxt, complete = _height_page(
             c, "SELECT height, idx FROM identity_writes WHERE zeroed = 1 AND height >= ? ORDER BY height, seq",
             from_height, _limit(limit))
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, nxt - 1, c)
         return {
             "fields": ["height", "indexes"],
             "synced_height": _synced(c),
@@ -402,7 +427,7 @@ def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), 
             (from_pos, last),
         ).fetchall()
         complete = bool(rows) and rows[-1][0] == last
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, rows[-1][1] if rows else 0, c)
         return {
             "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
             "synced_height": _synced(c),
@@ -419,7 +444,7 @@ def stake_nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MA
     with _read() as c:
         rows, nxt, complete = _height_page(
             c, "SELECT height, nf FROM stake_nullifiers WHERE height >= ? ORDER BY height, idx", from_height, _limit(limit))
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, nxt - 1, c)
         return {
             "fields": ["height", "nullifiers"],
             "synced_height": _synced(c),
@@ -449,7 +474,7 @@ def stake_nullifier_tree(response: Response, from_index: int = Query(0, ge=0, le
             (from_index, last),
         ).fetchall()
         complete = bool(rows) and rows[-1][0] == last
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, rows[-1][2] if rows else 0, c)
         return {
             "fields": ["index", "nullifier", "height"],
             "synced_height": _synced(c),
@@ -473,7 +498,7 @@ def stake_snapshots(response: Response, from_height: int = Query(0, ge=0, le=MAX
         rows, nxt, complete = _height_page(
             c, "SELECT height, proposal_id, root, tree_size, nf_root, nf_size FROM stake_snapshots"
                " WHERE height >= ? ORDER BY height, proposal_id", from_height, _limit(limit))
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, nxt - 1, c)
         return {
             "fields": ["height", "proposal_id", "root", "tree_size", "nf_root", "nf_size"],
             "synced_height": _synced(c),
@@ -499,7 +524,7 @@ def stake_roots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT
             (from_height, n),
         ).fetchall()
         complete = len(rows) == n
-        response.headers["Cache-Control"] = IMMUTABLE if complete else TIP
+        response.headers["Cache-Control"] = _closed(complete, rows[-1][0] if rows else 0, c)
         return {
             "fields": ["height", "root", "tree_size", "time"],
             "synced_height": _synced(c),

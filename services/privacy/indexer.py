@@ -47,6 +47,10 @@ snapshot (logged); the trees go on regardless.
 Needs a node that keeps block results from the start height on
 (storage.discard_abci_responses = false, the default, and no block pruning
 below it).
+
+Pages are served immutable only up to meta verified_height, the last
+height whose tree sizes matched the chain's (or the last applied, with
+the check off), and nothing under {base} is served while halted.
 """
 import asyncio
 import logging
@@ -219,6 +223,8 @@ class Indexer:
             applied += 1
         if self.check_sizes:
             await self._check_sizes(heights[-1])
+        else:
+            await asyncio.to_thread(self.store.set_meta, "verified_height", str(heights[-1]))
         if self.handles and self.next_height > self.tip:
             await self._refresh_handles()
         return applied
@@ -271,6 +277,9 @@ class Indexer:
                 f"stake nullifier tree of {nfs} leaves, the index {have_notes}, {have_ids}, {have_stakes} and {have_nfs}: "
                 f"history before the start height (or at genesis) is missing"
             )
+        # Only now are this batch's pages final: the API marks a page
+        # immutable only up to here (audit-5 L6).
+        await asyncio.to_thread(self.store.set_meta, "verified_height", str(height))
 
     async def run(self, stop: asyncio.Event | None = None, poll_seconds: float = 2.0) -> None:
         stop = stop or asyncio.Event()

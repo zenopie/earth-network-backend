@@ -361,3 +361,52 @@ def test_health_serves_the_last_background_reading(monkeypatch):
     asyncio.run(health.refresh())
     assert c.get("/health").json() == {"status": "degraded"}
     health.reset()
+
+
+# --- L6: a halted index serves nothing under {base}; immutable only once verified
+
+def _set_meta(**kv):
+    from services.privacy import store as store_mod
+
+    c = store_mod.connect(config.INDEX_DB)
+    for k, v in kv.items():
+        c.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (k, v))
+    c.close()
+
+
+def test_a_halted_index_serves_no_stream(notes_index):
+    _set_meta(halted="block 9: note at position 3, expected 0")
+    for path in ("/notes?from_pos=1000", "/status", "/roots/latest", "/handles"):
+        r = notes_index.get(BASE + path)
+        assert r.status_code == 503 and r.headers["cache-control"] == "no-store", path
+    s = notes_index.get("/privacy/status")
+    assert s.status_code == 200 and "expected 0" in s.json()["halted"]
+
+
+def test_a_page_is_immutable_only_once_its_heights_are_verified(notes_index):
+    _set_meta(verified_height="0")  # the rows are at height 1
+    r = notes_index.get(f"{BASE}/notes?from_pos=1000")
+    assert r.status_code == 200 and r.json()["complete"]
+    assert r.headers["cache-control"] == "public, max-age=2"
+    _set_meta(verified_height="1")
+    assert "immutable" in notes_index.get(f"{BASE}/notes?from_pos=1000").headers["cache-control"]
+
+
+def test_the_indexer_records_the_verified_height(tmp_path):
+    import asyncio
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+    from tests.privacy_fixtures import FakeRPC, load
+
+    store = Store(str(tmp_path / "i.db"))
+    sc = load("TestPrivatePersonhood")
+    idx = Indexer(store, FakeRPC(sc), batch=5)
+
+    async def go():
+        await idx.prepare()
+        while await idx.step():
+            assert store.meta("verified_height") == str(idx.next_height - 1)
+    asyncio.run(go())
+    assert store.meta("verified_height") == str(sc["blocks"][-1]["height"])
+    store.close()
