@@ -250,3 +250,13 @@ def test_no_cors_outside_privacy():
     r = TestClient(app).get("/gas/pow", headers={"origin": "https://erth.network"})
     assert r.status_code == 200
     assert "access-control-allow-origin" not in r.headers
+
+
+# --- L13: bodies that fail the schema are counted -----------------------------
+
+@pytest.mark.parametrize("raw", [b"{", b"[]", b'{"proof": 1}', b"\xff"])
+def test_a_body_that_fails_the_schema_counts_against_the_client(client, monkeypatch, raw):
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 2)
+    codes = [client.post("/gas/register", content=raw, headers={"content-type": "application/json"}).status_code
+             for _ in range(3)]
+    assert codes == [422, 422, 429]

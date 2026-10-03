@@ -58,7 +58,7 @@ PoCs of scratchpad/a5/test_poc_a5.py, now refused).
       no-store at the gate
 - [x] CORS on /privacy: fixed ACAO https://erth.network on every /privacy
       response (CDN-safe), localhost reflected with no-store; OPTIONS 204
-- [ ] L13 count 422s
+- [x] L13 /gas/register validates its body after counting the client (422s count)
 - [ ] L1 .dockerignore, L2 lchown, L11 uvicorn flags
 - [ ] L9 create.py redaction
 - [ ] L12 base image digest / --require-hashes

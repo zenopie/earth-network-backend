@@ -52,8 +52,9 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
 import config
 
@@ -351,13 +352,41 @@ def pow_params():
     }
 
 
-@router.post("/register", summary="Fund a fee note for a registration the chain would accept")
-async def register(body: RegisterGrant, request: Request):
+def _inline_schema(model) -> dict:
+    """model's JSON schema with its $defs inlined (OpenAPI resolves no local $defs)."""
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+
+    def walk(o):
+        if isinstance(o, dict):
+            ref = o.get("$ref", "")
+            if ref.startswith("#/$defs/"):
+                return walk(defs[ref[len("#/$defs/"):]])
+            return {k: walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        return o
+    return walk(schema)
+
+
+@router.post("/register", summary="Fund a fee note for a registration the chain would accept",
+             openapi_extra={"requestBody": {"required": True, "content": {
+                 "application/json": {"schema": _inline_schema(RegisterGrant)}}}})
+async def register(request: Request):
+    # The body is validated here, after the request is counted (audit-5
+    # L13): as a FastAPI parameter it was validated first, and a body that
+    # failed the schema (422) never reached the per-client window.
     client = ratelimit.client_key(ratelimit.client_ip(request))
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
     if ratelimit.client_refused_out(client):
         return _reply(429, "error", "too many refused registrations from this network lately; try again later")
+    try:
+        body = RegisterGrant.model_validate_json(await request.body())
+    except ValidationError as exc:
+        return JSONResponse(status_code=422, content={
+            "status": "error", "message": "the body is not a registration request",
+            "detail": jsonable_encoder(exc.errors(include_url=False, include_input=False))})
     try:
         nullifier, grant_id, pc_gas, ciphertext_gas, dsc, dsc_der = _precheck(body)
     except _Refuse as exc:
