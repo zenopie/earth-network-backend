@@ -28,10 +28,34 @@ Test venv: /Users/zenopie/Documents/projects/earth-network-backend/.venv/bin/pyt
 - zkvectors: stake_pc/stake_cm/stake tree vectors from Go, pinned in test_zk.
 - Legacy tests adjusted to bundles (>= 2 actions instead of 3-in/3-out).
 - gas: /gas/register unchanged (gas-check ignores MsgRegister.fee, may be
-  absent); /gas/transparent unchanged (GasTransparentSignal). Comments only.
+  absent). (/gas/transparent since removed, see Audit fixes.)
+
+## Audit fixes (2026-10-02)
+- Removed /gas/transparent and the device-attestation grants (/gas/ios,
+  /gas/android, /gas/challenge; appattest/keyattest/challenges + certs;
+  chain.send_dust; gascheck.membership; per-address cap; IOS_*/ANDROID_*/
+  APP_ATTEST_ALLOW_DEVELOPMENT/CHALLENGE_* config, env, SDL; cbor2).
+  build-sdl.py refuses the old keys. /gas/register is the only grant.
+- /gas/register cheap checks before gas-check: per-IP window
+  (CF-Connecting-IP if TRUST_CF_CONNECTING_IP), ValidateBasic bounds,
+  canonical decimal signals, RegistrationBinding at address_index (Python,
+  pinned to new Go vector), current_date skew, replay key
+  passport:<public_signals[2]>:<YYYY-MM> (nullifier_index 2 per
+  chain-orch networks/genesis.json), daily cap. One gas-check per client in
+  flight (429). gas-check nullifier != ours -> 503, unclaimed.
+- Daily cap is REGISTER_GRANT_MAX_PER_DAY, counting passport: ids only.
+- L3: streams under /privacy/<chain_id>/<genesis16>/ (genesis = first block
+  hash, meta genesis_hash, recorded once); other pairs 404 no-store;
+  /privacy/status gives base. README "URL scheme for wallets".
+- L4: confirmed failed-tx events indexed; comment at the tx loop + test
+  marking every tx failed.
+- DSC-known check not done backend-side (needs PKI state); gas-check does it
+  before the proof.
 
 ## Left
-- nothing (pytest: 141 passed, 2 skipped = live-earthd tests)
+- Wallet apps must move to /privacy/status -> base (old unkeyed stream paths
+  are gone) and stop calling the removed gas endpoints.
+- nothing else (pytest: 127 passed, 1 skipped = live-earthd test)
 
 ## Decisions
 - shielded_* events unchanged in shape (bundle actions / MsgSend emit

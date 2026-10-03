@@ -94,13 +94,24 @@ for k in ("IOS_APP_ID", "APP_ATTEST_ALLOW_DEVELOPMENT", "ANDROID_PACKAGE", "ANDR
           "ANDROID_REQUIRE_LOCKED_BOOTLOADER", "GRANT_MAX_PER_ADDRESS_PER_DAY", "GRANT_MAX_PER_DAY"):
     assert k not in a, "%s is no longer read; remove it from deploy.yaml" % k
 
+# CF-Connecting-IP keys the per-client limits only while Cloudflare is the
+# sole way in; a globally published app port lets clients choose their key.
+if a.get("TRUST_CF_CONNECTING_IP", "true").lower() == "true":
+    for e in svcs["app"].get("expose") or []:
+        assert not any(t.get("global") for t in e.get("to") or []), (
+            "TRUST_CF_CONNECTING_IP=true with app port %s published globally" % e.get("port"))
+
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
 
 print("services:   ", ", ".join(sorted(svcs)))
 print("node:       ", node, " chain:", a.get("EARTH_CHAIN_ID"))
 print("dust:       ", a.get("DUST_UERTH"), "uerth")
-print("daily cap:  ", a.get("REGISTER_GRANT_MAX_PER_DAY", "500"), "register grants")
+print("daily cap:  ", a.get("REGISTER_GRANT_MAX_PER_DAY", "500"), "register grants;",
+      "per client:", a.get("REGISTER_IP_MAX_PER_WINDOW", "10"), "per", a.get("REGISTER_IP_WINDOW_SECONDS", "3600"), "s",
+      " cf-ip:", a.get("TRUST_CF_CONNECTING_IP", "true"))
+print("passport:    nullifier/address/date index", a.get("PASSPORT_NULLIFIER_INDEX", "2"),
+      a.get("PASSPORT_ADDRESS_INDEX", "1"), a.get("PASSPORT_CURRENT_DATE_INDEX", "0"))
 print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars)" % (len(mn.split()), len(tok)))
 
 open(out, "w").write(s)

@@ -32,9 +32,14 @@ nothing outside the devnet. Do not reuse this key for anything that is.
 ## Endpoints
 
     GET  /health          hot wallet balance and grants remaining
-    POST /gas/challenge   a single-use challenge to attest over
-    POST /gas/ios         grant on an App Attest attestation
-    POST /gas/android     grant on an Android hardware key attestation
+    POST /gas/register    a shielded fee note for a registration the chain would accept
+    GET  /privacy/status  chain_id, genesis and `base` for the wallet streams
+    GET  /privacy/<chain_id>/<genesis>/...   the streams (see ../../README.md)
+
+Per-client limits on /gas/register key on `CF-Connecting-IP`
+(`TRUST_CF_CONNECTING_IP=true`). That is only safe because the app is
+reachable solely through the tunnel: never publish port 8000 globally while
+it is on, or any client picks its own key.
 
 Exposed on a mapped port, not `as: 80`. The chain repo's SDL explains why: the
 provider's generated ingress hostname returned nginx 404 for ten minutes with a
@@ -52,7 +57,7 @@ before printing anything, and every proof-backed grant answers 503. Akash cannot
 filter bids by CPU feature, so `bin/create.py <tag> --provider <addr>` names the
 provider; the chain's own provider (akash15tl6v6gd0nte0syyxnv57zmmspgju4c3xfmdhk,
 AMD EPYC) is known good. Check a new host with
-`earthd gas-check human <address>` in the container before closing the old lease.
+`earthd gas-check registration < msg.json` in the container before closing the old lease.
 
 Sharing a provider with the chain is fine now. It used to hang, because
 `EARTH_NODE_URL` named the chain's provider hostname and NodePort, a hairpin
@@ -61,7 +66,7 @@ from inside the cluster; both URLs are the Cloudflare tunnel now.
 ## Watch the balance
 
 `/health` reports `grants_remaining`. When the wallet runs dry every grant fails
-after its attestation verifies, and new users are stuck at their first
+after the registration checks out, and new users are stuck at their first
 transaction.
 
 ## Sizing
@@ -72,7 +77,9 @@ The memory is measured rather than guessed: the service idles at 69 MB RSS with
 the wallet built and a `/health` round trip served, so 256Mi is ~4x headroom. If
 it ever does OOM, that is the first number to raise.
 
-The persistent volume holds the replay database. Losing it does not lose money
-directly — it loses the record of which SSV transaction ids were already
-honoured, and every one of them becomes replayable. Closing the lease destroys
-it, same as on the chain.
+The persistent volume holds the replay database and the privacy index. Losing
+the replay database loses the record of which passports were granted this
+month — each could be paid once more — and resets the daily cap. Closing the
+lease destroys it, same as on the chain. (The index rebuilds from the chain;
+after a chain relaunch, wipe it — the indexer halts on the new chain — and the
+URLs move to the new genesis on their own.)

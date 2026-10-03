@@ -8,7 +8,9 @@ nothing. See `earthd gas-check --help` in the chain repo.
 
 One check at a time. A proof verification peaks near 120 MB, and this lease has
 256 MiB beside a ~70 MB service; two at once would be killed. Waiting is
-bounded, so a burst is refused quickly instead of queueing forever.
+bounded, so a burst is refused quickly instead of queueing forever, and
+routers/gas lets each client hold at most one place in it (services/ratelimit)
+after every check that needs no proof verification has passed.
 """
 import asyncio
 import json

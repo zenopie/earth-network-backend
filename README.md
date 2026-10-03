@@ -13,19 +13,19 @@ private tx that pays its fee from a shielded note, so what they need is a note
 Registration mints a shielded ERTH reward that pays every later fee, so this
 subsidises exactly one transaction per new human.
 
-Device attestation is the Sybil defence. A grant needs proof, from Apple or
-Google, that the request came from our signed app on real hardware — App Attest
-on iOS, hardware key attestation on Android — over a single-use challenge
-bound to the address. A script cannot produce one. A real phone can attest for many fresh
-addresses, so per-address and daily caps bound what one device can take.
+The Sybil defence is the passport: a grant needs a registration the chain
+itself would accept, and is paid once per passport per month. `/gas/register`
+is the only grant. The device-attestation grants (`/gas/challenge`,
+`/gas/ios`, `/gas/android`), `/gas/transparent` and `/gas/human` are gone.
 
 ## Endpoints
 
     POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
                            idc, pc_anml, pc_erth, ciphertext_anml?, ciphertext_erth?,
                            affiliate?, pc_gas, ciphertext_gas?}
+    GET  /health          hot wallet balance and how many grants are left in it
 
-What the apps call. It takes the MsgRegister the app is about to broadcast
+`/gas/register` takes the MsgRegister the app is about to broadcast
 (bytes as standard base64, its fee bundle left out; `earthd gas-check`
 ignores the bundle, so it may be absent or empty) and, if the chain would
 accept it, shields `DUST_UERTH` from the hot wallet into a note to `pc_gas` (a
@@ -37,35 +37,46 @@ chain's own, through `earthd gas-check registration` (installed in the image
 from the chain release; see the Dockerfile). Proofs are verified here, never by
 the node.
 
-    POST /gas/transparent {address, proof, root, nullifier, max_activation, month?}
+Answers are `{status, message, tx_hash?}` with 200 (sent), 202 (broadcast,
+unresolved), 4xx (cannot succeed as sent; 409 already granted, 429 rate or
+daily limit) or 5xx (retry).
 
-For a registered human who wants transparent ERTH (fees from an ordinary
-account). A membership proof (bytes base64) that its prover holds a live
-identity leaf, with scope `GasScope(YYYYMM) = H(TAG_SCOPE, Bytes("gas"),
-YYYYMM)`, signal `H(TAG_SIGNAL, Bytes("earth.gas.transparent"),
-Bytes(chain_id), Bytes(address bytes))`, no exclusions, and `max_activation`
-at most now; `month` must be the current UTC month. Checked by `earthd
-gas-check membership` against an identity root inside the chain's window,
-then `DUST_UERTH` is bank-sent to `address`. Once per nullifier per month,
-keyed `gas-transparent:<nullifier>:<YYYY-MM>` with no address stored: the
-backend never learns which human asked.
+### What runs before gas-check
 
-`/gas/human` is gone: nothing on chain links an address to a registration any
-more, and a registered human pays every fee from their reward note.
+A proof verification is the expensive part (one at a time, ~120 MB), so
+everything that can refuse a request without one runs first, in this order:
 
-The device-attestation endpoints below predate these and stay until the app
-builds that call them are retired:
+1. **Per-client window**: `REGISTER_IP_MAX_PER_WINDOW` requests per
+   `REGISTER_IP_WINDOW_SECONDS` (default 10 an hour), junk included → 429.
+   The client is `CF-Connecting-IP` when `TRUST_CF_CONNECTING_IP=true` (the
+   default, right only where Cloudflare is the sole ingress — the Akash lease
+   is tunnel-only), otherwise the TCP peer.
+2. **Shape**, as `MsgRegister.ValidateBasic`: base64, idc/pcs canonical
+   32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, ciphertexts
+   ≤ 1024 bytes, 1..16 public signals that are canonical decimals, affiliate
+   an earth address → 400.
+3. **Binding**: `public_signals[address_index]` must equal
+   `RegistrationBinding(idc, pc_anml, pc_erth, affiliate)` (Python Poseidon2,
+   pinned to the chain's Go vectors) → 400. Someone else's proof with notes of
+   one's own stops here.
+4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
+   `current_date_max_skew_seconds` of now (+10 min) → 400.
+5. **Replay**: `passport:<public_signals[nullifier_index] as 32-byte hex>:<YYYY-MM>`
+   already claimed → 409.
+6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` passport grants in the last
+   24 h → 429.
+7. **One check per client**: a client with a gas-check already queued or
+   running gets 429 at once rather than a second place in the queue; the queue
+   as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
 
-    POST /gas/challenge   {address}                                -> {challenge, expires_in}
-    POST /gas/ios         {address, challenge, key_id, attestation}  App Attest
-    POST /gas/android     {address, challenge, chain}                Key Attestation
-    GET  /health          hot wallet balance and how many grants are left in it
-
-The app attests `SHA-256(base64url_decode(challenge) || address)`: as App
-Attest's `clientDataHash` on iOS, and as the attestation challenge of a fresh
-AndroidKeyStore key on Android, whose certificate chain (leaf first, base64 DER)
-is what it sends. Grant endpoints answer `{status, message, tx_hash?}` with 200
-(sent), 202 (broadcast, unresolved), 4xx (cannot succeed as sent) or 5xx (retry).
+The indexes are personhood params, mirrored in config:
+`PASSPORT_NULLIFIER_INDEX=2`, `PASSPORT_ADDRESS_INDEX=1`,
+`PASSPORT_CURRENT_DATE_INDEX=0`, `PASSPORT_DATE_MAX_SKEW_SECONDS=172800`
+(earth-1 genesis `nullifier_index`, `address_index`, `current_date_index`,
+`current_date_max_skew_seconds`). If gas-check returns a nullifier other than
+ours the request is 503 and nothing is claimed: the index is misconfigured.
+Whether the DSC is a known, trusted signer is not checked here (it needs the
+chain's PKI state); gas-check does that before verifying the proof.
 
 ## Running
 
@@ -73,35 +84,16 @@ is what it sends. Grant endpoints answer `{status, message, tx_hash?}` with 200
     cp example.env .env      # fill in GAS_WALLET_MNEMONIC, or GAS_ENABLED=false
     uvicorn main:app --host 0.0.0.0 --port 8000
 
-Tests need no chain, no Apple and no Google: they build their own attestation
-certificate chains under roots they generate, and replay recorded chain blocks
-for the indexer.
+Tests need no chain: gas-check's verdict is stood in for, and recorded chain
+blocks are replayed for the indexer.
 
     pip install -r requirements-dev.txt
     python -m pytest
 
-## Android: key attestation
-
-Nothing to sign up for. The phone's secure hardware certifies a fresh key whose
-certificate carries the challenge, the boot state, and the package name and
-signing-certificate digest of the app that asked; the chain ends at one of
-Google's public hardware-attestation roots (`services/certs/`). The backend
-checks it locally and fetches only Google's public revocation list.
-
-It needs `ANDROID_SIGNING_CERT_SHA256`: the SHA-256 of every certificate the
-APK is signed with. That is the release key for sideloaded builds and, when
-Play App Signing is on, Play's app-signing key for Play installs (Play Console →
-Test and release → App integrity → App signing). Unset, `/gas/android` answers
-503.
-
-Refused: phones whose keys are only in software, phones with an unlocked
-bootloader (`ANDROID_REQUIRE_LOCKED_BOOTLOADER`), and any APK signed with a
-certificate not on the list — so a modified, re-signed app gets nothing.
-
 ## Watch the wallet
 
 `/health` reports `grants_remaining`. When the hot wallet runs dry every grant
-fails after its attestation verifies. Alert on it.
+fails after the registration checks out. Alert on it.
 
 ## Privacy indexer
 
@@ -111,16 +103,39 @@ identity leaf, rebuild both trees locally and trial-decrypt. This serves that
 data, and nothing narrower: there is no endpoint keyed by anything a wallet
 derives from its keys.
 
-    GET /privacy/status                               synced height, counts, halted reason
-    GET /privacy/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount]
-    GET /privacy/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
-    GET /privacy/identity?from_index=&limit=          [index, height, leaf, zeroed_height]
-    GET /privacy/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
-    GET /privacy/roots/latest                         note, identity and stake roots, size, height, time
-    GET /privacy/rates?epoch=                         [validator, rate, supply, epoch, height]
-    GET /privacy/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext, denom, amount, spc]
-    GET /privacy/stake/nullifiers?from_height=&limit= [[height, [nf, ...]], ...]
-    GET /privacy/stake/roots?from_height=&limit=      [height, root, tree_size, time]
+    GET /privacy/status          chain_id, genesis, base, synced height, counts, halted reason
+
+and under `base` = `/privacy/<chain_id>/<genesis>`:
+
+    GET {base}/status
+    GET {base}/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount]
+    GET {base}/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
+    GET {base}/identity?from_index=&limit=          [index, height, leaf, zeroed_height]
+    GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
+    GET {base}/roots/latest                         note, identity and stake roots, size, height, time
+    GET {base}/rates?epoch=                         [validator, rate, supply, epoch, height]
+    GET {base}/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext, denom, amount, spc]
+    GET {base}/stake/nullifiers?from_height=&limit= [[height, [nf, ...]], ...]
+    GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
+
+### URL scheme for wallets
+
+`genesis` is the first 16 hex digits (lowercase) of the hash of the chain's
+first block; `/privacy/status` also gives the full `genesis_hash`. earth-1
+has been relaunched under the same chain id, and full pages are served
+`immutable`, so a CDN could otherwise hand a wallet the previous chain's
+notes after a relaunch. Keyed paths make that impossible:
+
+1. `GET /privacy/status` (unkeyed, `max-age=2`). Read `base`, `chain_id`
+   and `genesis`. `base` is null until the indexer has met its chain.
+2. If `(chain_id, genesis)` differs from what the wallet's local sync was
+   built from, discard the local trees and resync from zero.
+3. Fetch every stream under `base`. A path naming any other chain is
+   `404` with `Cache-Control: no-store`; on a 404, go back to 1.
+
+A wallet that wants to pin the chain independently can compare
+`genesis_hash` with its own node's hash for the chain's first block.
+The old unkeyed stream paths (`/privacy/notes`, ...) are gone.
 
 Compact JSON (rows as arrays, field order in `fields`), gzip'd. Pages default
 to 1000 rows and cap at `PRIVACY_PAGE_MAX` (5000). Height-paged streams never
@@ -164,17 +179,21 @@ events (private LP shares are ordinary notes), `shielded_unshield`,
 `shieldedstaking_self_bond_compounded` and the other per-msg staking events. Block events are ordered PreBlock/BeginBlock, txs,
 EndBlock (the SDK's `mode` attribute), which is the order notes are appended.
 
-**Failed txs are read too.** A private tx's notes and nullifiers are written in
+**Failed txs are read too — never filter on `code`.** A private tx's notes and nullifiers are written in
 the ante. SDK v0.53 commits the ante's writes before running the msgs and,
 when a msg fails, still returns the ante's events (only those) in the failed
 tx's result; a tx whose ante fails writes nothing and returns no events. So
 every event in every tx result is state that persisted, whatever the code.
 (`bin/sdkcheck`, run in the SDK v0.53.6 baseapp test harness, confirms it.)
+Skipping `code != 0` results would drop notes the chain appended and put
+every later position and root out of step; `test_failed_tx_ante_events_are_indexed`
+and `test_failed_tx_with_only_failure_code_still_counts_every_event` guard it.
 
 It refuses, and halts until an operator steps in, rather than serve trees that
 cannot match the chain: a note position out of sequence, a nullifier twice, a
 root event whose size differs from the index, a different chain id or block
-hash behind the RPC than the one indexed, or tree sizes that differ from the
+hash behind the RPC than the one indexed (the chain's first-block hash is
+recorded once, and is the `genesis` in the URLs), or tree sizes that differ from the
 chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree` at each batch's last height —
 this is what catches notes imported at genesis, which emit no events, or a
 start height past the first private tx). The reason is in `/privacy/status`;

@@ -44,8 +44,24 @@ services:
       # Rolling 24h cap on /gas/register payouts: 500 x 0.1 ERTH = 50 ERTH a
       # day, whatever a run of fresh or stolen passports tries.
       - REGISTER_GRANT_MAX_PER_DAY=500
+      # Per-client limits on /gas/register, ahead of the one-at-a-time
+      # gas-check: 10 requests an hour, one check in flight. The client is
+      # CF-Connecting-IP — correct only because the app is reachable solely
+      # through the tunnel (see expose below). Publish 8000 globally and this
+      # must be false.
+      - TRUST_CF_CONNECTING_IP=true
+      - REGISTER_IP_MAX_PER_WINDOW=10
+      - REGISTER_IP_WINDOW_SECONDS=3600
+      # personhood params the cheap pre-checks read (earth-1 genesis:
+      # nullifier_index 2, address_index 1, current_date_index 0,
+      # current_date_max_skew_seconds 172800). Change with the chain's.
+      - PASSPORT_NULLIFIER_INDEX=2
+      - PASSPORT_ADDRESS_INDEX=1
+      - PASSPORT_CURRENT_DATE_INDEX=0
+      - PASSPORT_DATE_MAX_SKEW_SECONDS=172800
       # The privacy indexer (services/privacy): follows the chain over CometBFT
-      # RPC into /app/state/privacy_index.db and serves /privacy/* to wallets.
+      # RPC into /app/state/privacy_index.db and serves /privacy/status and
+      # /privacy/<chain_id>/<genesis>/* to wallets.
       # The RPC must keep block results from the start height on — for a full
       # history, a node that has never pruned blocks since genesis.
       # rpc.erth.network is that node: earth-1 runs one node, the validator,
