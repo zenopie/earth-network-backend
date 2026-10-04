@@ -204,3 +204,70 @@ skipped.
   with four slots.
 
 pytest: 423 passed, 1 skipped (live-earthd test); full suite run 3x clean.
+
+---
+
+# Chain one-note-per-validator and slash debt format adoption (backend)
+
+Chain: wt/chain-orch privacy/orchard dff3a9b (ORCHARD_DESIGN.md sections
+19-20; CHANGELOG [Unreleased]; STAKING_WAVE_PROGRESS.md change 4;
+shieldedstaking protos). Feature freeze: format adoption only. Baseline
+(44bc983): 423 passed, 1 skipped.
+
+## Steps
+- [x] zk: services/zk/debt.py (zk/debt indexed tree, rows rewritten in
+      place), stake_cm with the label, stake_label, debt_leaf; zk_vectors
+      from dff3a9b (DebtLeaf/EmptyRoot = zk/debt TestNoirParity, a Set
+      sequence with a rewritten row, labelled StakeCM) (8392830)
+- [x] Fixtures re-recorded from dff3a9b; recorder adds the debt tree's
+      size, root and Query/DebtTree answer; its own scenario
+      TestRecordRedelegateSlashDebt (the chain's redelegation tests write
+      outside blocks), 18 proofs in bin/chainrec/proofs, script takes the
+      mobile circuits dir as an optional third argument (865198d)
+- [x] Index: stake notes are proof outputs only (201-byte ciphertext,
+      denom/amount/spc refused, columns dropped, old index refused);
+      /stake/notes format 2 [position, height, cm, ciphertext];
+      shieldedstaking_debt_row stored and checked (next leaf / own leaf /
+      never rising), move_slashed and slash_debt checked, redelegate's
+      move_key checked against the block's stake nullifiers, minted
+      refused; indexer compares Query/DebtTree size and root each batch
+      and keeps window_seconds / clear_before; verify replays the debt
+      tree and checks the chain's rows; {base}/debt_rows; stake votes 1..2
+      slots; the empty stake root compared (74e8f7f)
+- [x] Tests: tests/test_debt_rows.py (36), stake note format tests
+      (db03fb3)
+- [x] README "Stake row format 2 and the slash debt tree (chain dff3a9b)"
+      (14f85bc)
+- [x] Query/Redelegation: never used by the backend; documented as gone
+
+## Formats (for the wallets)
+- /stake/notes: {"format": 2, "fields": ["position", "height", "cm",
+  "ciphertext"], ...}; ciphertext base64, 201 bytes, never null. Status
+  "stake_note_format": 2.
+- /debt_rows?from_index=&limit=: {"format": 1, "fields": ["index", "key",
+  "retained", "height", "updated_height"], "size", "root" (hex; empty root
+  0cea3d3e...6903 when none), "root_height", "window_seconds",
+  "clear_before", "clear_before_height", "from_index", "next_index",
+  "complete", "rows"}; page 0 = leaves 1..limit-1; max-age=2 always.
+  Status "debt_tree_size".
+
+## Notes
+- Padding nullifiers are ordinary stake nullifier rows: a first delegation
+  1 nullifier + 1 note, a redelegation 2 + 2 (move_key = the second
+  nullifier). Nothing else distinguishes them, by design.
+- clear_before served is the chain's at the indexer's last check
+  (clear_before_height); it only grows, so it is always safe to name.
+- Two chain scenarios (TestPrivatePersonhood, TestSelfBondCompounds)
+  record differently run to run (nondeterminism in the chain tests); the
+  recorder's own scenario reproduces byte for byte.
+- No recorded scenario rewrites a debt row (a second slash of one move
+  needs a second slash of a tombstoned validator); the rewrite is a
+  synthetic test in zk/debt's Set shape and the Go vector sequence.
+
+## Left
+- Dockerfile EARTHD_VERSION bumped at release (unchanged reason).
+- Wallets: read /stake/notes by fields and refuse format != 2; 201-byte
+  stake ciphertexts with labels; rebuild the debt tree from /debt_rows and
+  check root before clearing or voting a labelled note.
+
+pytest: 470 passed, 1 skipped (live-earthd test); full suite run 3x clean.
