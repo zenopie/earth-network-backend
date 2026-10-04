@@ -16,8 +16,8 @@ x/shieldedstaking/keeper/stake_tree.go):
                          address) has no ciphertext ("" on both events) and
                          adds owner_pk, rho, rcm (hex): the opening, public,
                          so the owner matches it by owner_pk and recomputes
-                         pc and cm. A split payout (MintNoteSplit: an LP
-                         payout leg above 2^64-1) is several notes, each its
+                         pc and cm. A split payout (MintNoteSplit: a
+                         payout above 2^63-1) is several notes, each its
                          own shielded_note + shielded_mint at its own
                          position, all with the same ciphertext. An
                          undelegation's payout (x/shieldedstaking, module

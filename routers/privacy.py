@@ -36,8 +36,9 @@ URLs under it. A wallet should keep the (chain_id, genesis) its local sync
 was built from and start over when status names another.
 
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
-derth/<valoper> and unbond/<valoper>/<epoch> notes), served exactly like the
-pool's. Every stake note has a ciphertext (a minted one its 177-byte blind
+derth/<valoper> notes), served exactly like the pool's. An undelegation's
+payout is pool notes (ordinary minted rows of /notes, split ones sharing a
+ciphertext), not stake notes. Every stake note has a ciphertext (a minted one its 177-byte blind
 stake ciphertext, a created one the stake proof's); a note the chain minted
 also has public denom, amount and stake pc (spc), a note a stake proof
 created has them null. Every pool note but an open one has a ciphertext
@@ -53,9 +54,9 @@ The stake nullifier tree (x/shieldedstaking, ORCHARD_DESIGN.md section 15)
 is an indexed Merkle tree whose leaves are in insertion order: a wallet
 proving a stake vote rebuilds it from the first nf_size - 1 values of
 /stake/nullifier-tree (leaf indexes 1, 2, ...; leaf 0 is the sentinel) and
-checks its root against the proposal snapshot's nf_root. Failed txs' nullifiers
-are in it (a claim spends in the ante). The index refuses a gap or a repeat in
-the leaf indexes, so the stream is exactly the chain's insertion order.
+checks its root against the proposal snapshot's nf_root. The index refuses a
+gap or a repeat in the leaf indexes, so the stream is exactly the chain's
+insertion order.
 
 The handle directory (x/personhood handles, services/privacy/handles) is
 served whole, like every other stream: there is no endpoint for one handle,

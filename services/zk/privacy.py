@@ -87,7 +87,7 @@ def stake_pc(owner: int, rho: int, rcm: int) -> int:
 
 
 def stake_cm(asset: int, amount: int, spc: int) -> int:
-    """privacy.StakeCM: a stake tree leaf, asset = asset_id(derth/<valoper> or unbond/<valoper>/<epoch>)."""
+    """privacy.StakeCM: a stake tree leaf, asset = asset_id(derth/<valoper>)."""
     return H(TAG_STAKE, asset, amount, spc)
 
 

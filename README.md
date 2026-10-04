@@ -369,10 +369,10 @@ asset or value inside — the wallet decrypts it, recomputes `pc` and checks
 the block time (unix seconds) of its `height`.
 
 `/stake/*` is x/shieldedstaking's stake note tree (owner-locked
-`derth/<valoper>` and `unbond/<valoper>/<epoch>` notes; its own nullifiers
-and roots), served the same way. Every stake note row has a `ciphertext`. A
-stake note the chain minted (delegation, undelegation claim, vote re-mint,
-unlocked position) also has public `denom`, `amount` and stake pc `spc`, and
+`derth/<valoper>` notes; its own nullifiers and roots), served the same way.
+Every stake note row has a `ciphertext`. A stake note the chain minted
+(delegation, unlocked position) also has public `denom`, `amount` and stake
+pc `spc`, and
 its `ciphertext` is the blind stake ciphertext (177 bytes, salt
 `earth.stake.v1`, version `0x03`; `EncryptBlindStakeNote`); one a stake proof
 created has the proof's `ciphertext` and nulls for the rest.
@@ -440,10 +440,10 @@ and `/privacy/status` (and `{base}/status`) has `"note_format": 2`.
    leaf_index, 0)`, `rcm = H(..., 1)` (TAG_REFERRAL = "earth.referral"),
    which the wallet need not recompute (the cm check suffices).
 
-**Split LP payouts.** An LP payout leg above 2^64-1 is minted as up to 64
-notes (`MintNoteSplit`): consecutive kind-2 rows with the **same**
-`ciphertext` and each its own `position` and `amount` (2^64-1 each, the
-last the remainder). Decrypt once, then check each row's `cm` with that
+**Split payouts.** An LP payout leg (or an undelegation payout, below)
+above 2^63-1 is minted as several notes (`MintNoteSplit`; up to 128 for an
+LP leg): consecutive kind-2 rows with the **same** `ciphertext` and each its
+own `position` and `amount` (2^63-1 each, the last the remainder). Decrypt once, then check each row's `cm` with that
 row's amount; every row is a separate note the wallet owns. A wallet that
 stops at the first row a ciphertext decrypts to, or dedupes by ciphertext,
 loses the rest.
@@ -454,6 +454,35 @@ is not 2 (an old backend). The chain change is a fresh genesis, so the
 `base` changes and no format-1 page exists under the new one; an index
 built by an earlier backend refuses to open ("predates open notes": wipe
 `INDEX_DB`).
+
+### Undelegation payouts and four-note votes (chain 48b631c)
+
+Chain ORCHARD_DESIGN.md section 18. **No stream format change**: notes stay
+format 2 (same `fields`), `/stake/*` keeps its columns.
+
+- **An undelegation pays out by itself.** MsgUndelegate names a pool pc and
+  ciphertext; once the unbonding matures the chain mints the payout (uerth)
+  to that pc with that ciphertext, in a later block's EndBlock. The payout
+  notes are ordinary kind-2 rows of `/notes` (`amount` `"<n>uerth"`,
+  `ciphertext` the msg's 177-byte blind one, opening null): the wallet finds
+  them by trial decryption like any chain-minted note. A payout above
+  2^63-1 is split as above (same ciphertext at several positions, each row
+  its own note). `shieldedstaking_unbond_payout` (`payout_id`, `validator`,
+  `epoch`, `value`, `amount`, `notes`, `positions`) follows the mints; the
+  indexer checks its positions are this block's x/shieldedstaking uerth
+  mints with one ciphertext summing to `amount` (else it halts) and stores
+  nothing else. A failed payout (`shieldedstaking_unbond_payout_failed`)
+  mints nothing and is retried by the chain.
+- **Gone:** MsgClaimUnbonding, the `unbond/<valoper>/<epoch>` claim notes
+  (no `/stake/notes` row has an `unbond/` denom; wallets drop claim-note
+  scanning and the claim flow).
+- **Stake votes:** `shieldedstaking_stake_vote` carries `vote_nullifiers`
+  (comma-separated hex) instead of `vote_nullifier`. The event lists the
+  used slots only (1..4 entries; the msg itself always has four, zeros
+  after the used ones). Vote nullifiers spend nothing and are in no tree:
+  the stake nullifier tree is unchanged. The index does not read votes.
+- The chain change is a fresh genesis, so `base` changes; an older index is
+  not reused.
 
 ### Stake nullifier tree (stake votes, chain ORCHARD_DESIGN.md section 15)
 
@@ -475,9 +504,7 @@ serves it by leaf index:
 of `limit` (the first page holds leaves 1..limit-1; no row has index 0).
 Follow `next_index` while `complete` is true; full pages are `immutable`. Rows are
 gap-free and every nullifier appears once: the indexer halts on an `index`
-attribute that is not exactly the next one or a repeated nullifier. Failed
-txs' nullifiers are included (a claim spends in the private ante, so its
-nullifier persists when the tx fails).
+attribute that is not exactly the next one or a repeated nullifier.
 
 To vote on a proposal: read its snapshot (chain `Query/Snapshot`, or
 `/stake/snapshots`: `root`, `tree_size`, `nf_root`, `nf_size`); take leaves
@@ -488,7 +515,7 @@ the root equals `nf_root`, and prove the low leaf of your note's nullifier.
 `/stake/snapshots` is every snapshot the chain emitted (empty `root` when
 the stake note tree had none yet). `/stake/nullifiers` (by height) is
 unchanged and lists the same values, in leaf order within a height.
-`/status` adds `stake_nf_tree_size`. Vote events' `vote_nullifier` is not
+`/status` adds `stake_nf_tree_size`. Vote events' `vote_nullifiers` are not
 indexed (a wallet remembers its own votes).
 
 An index built before this chain change has no leaf indexes: the API and the
@@ -574,12 +601,14 @@ tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,
 `ciphertext`, and `denom`/`amount`/`spc` when minted), `shieldedstaking_stake_nullifier`
 (`nullifier`, `index`: its leaf in the stake nullifier tree),
 `shieldedstaking_stake_root` and `shieldedstaking_snapshot` (`proposal_id`,
-`root`, `tree_size`, `nf_root`, `nf_size`). Most stake notes and nullifiers
-are written by the msg, so a failed staking msg leaves none; a claim runs in
-the private ante, so a failed claim tx's nullifier and change note persist
-(and are read, like every failed tx's events). Ignored: dex LP
+`root`, `tree_size`, `nf_root`, `nf_size`), and `shieldedstaking_unbond_payout`
+(`payout_id`, `amount`, `notes`, `positions`: checked to name this block's
+x/shieldedstaking uerth mints, one ciphertext, summing to `amount`; nothing
+of it is stored). Stake notes and nullifiers are written by the msg, so a
+failed staking msg leaves none. Ignored: dex LP
 events (private LP shares are ordinary notes), `shielded_unshield`,
-`shieldedstaking_self_bond_compounded` and the other per-msg staking events. Block events are ordered PreBlock/BeginBlock, txs,
+`shieldedstaking_self_bond_compounded`, `shieldedstaking_unbond_payout_failed`,
+`shieldedstaking_stake_vote` and the other per-msg staking events. Block events are ordered PreBlock/BeginBlock, txs,
 EndBlock (the SDK's `mode` attribute), which is the order notes are appended.
 
 **Failed txs are read too — never filter on `code`.** A private tx's notes and nullifiers are written in
