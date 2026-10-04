@@ -45,8 +45,13 @@ import json,sys
 json.dump({'data':{'sdl':open(sys.argv[1]).read()}}, open(sys.argv[2],'w'))
 " "$WORK/sdl.yaml" "$WORK/body.json"
 
+# The key goes to curl in a header file, not argv, where any local user's
+# `ps` would read it (audit-6 L6). printf is a builtin: no process holds it
+# in its arguments either. The file is in the 700 work directory.
+( umask 077; printf 'x-api-key: %s\n' "$AKASH_API_KEY" > "$WORK/auth.hdr" )
+
 CODE=$(curl -sS -m 180 -X PUT \
-  -H "x-api-key: ${AKASH_API_KEY}" -H 'content-type: application/json' \
+  -H @"$WORK/auth.hdr" -H 'content-type: application/json' \
   --data-binary @"$WORK/body.json" \
   "https://console-api.akash.network/v1/deployments/${DSEQ}" \
   -o "$WORK/resp.json" -w '%{http_code}')

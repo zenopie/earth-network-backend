@@ -73,7 +73,8 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
       required global service, answering nothing); bin/build-sdl.py refuses
       a non-loopback --metrics
 - [x] L5 .dockerignore patterns `**/` (any depth, root included)
-- [ ] L6 AKASH_API_KEY out of curl's argv
+- [x] L6 AKASH_API_KEY to curl as `-H @file` (umask 077, the 700 work
+      dir), not argv
 - [ ] L4 canonical /privacy parameter order (if simple)
 - [x] I1 dead SendUnresolved-without-hash branch removed (46113bc)
 - [x] I2 _coarse: the hex pattern already cuts 16+ digit decimal runs;
