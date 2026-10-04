@@ -14,7 +14,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 import config
-from routers import gas, privacy
+from routers import circuits, gas, privacy
 from services import chain
 from services.bodylimit import BodyLimit
 from services.privacygate import PrivacyGate
@@ -35,6 +35,7 @@ app.add_middleware(BodyLimit)
 if config.GAS_ENABLED:
     app.include_router(gas.router)
 app.include_router(privacy.router)
+app.include_router(circuits.router)
 
 _stop = asyncio.Event()
 _indexer_task: asyncio.Task | None = None

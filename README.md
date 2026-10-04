@@ -27,6 +27,8 @@ code comments refer to it.
     entrypoint.py           container entrypoint: chown the state volume, drop root, exec uvicorn
     routers/gas.py          POST /gas/register, GET /gas/pow
     routers/privacy.py      the /privacy streams
+    routers/circuits.py     GET /circuits/<variant>.json.gz: the passport circuits the wallets do not bundle
+    circuits/               those circuits, gzipped (written by the mobile repo's circuits/tools/variants.py build)
     services/
       bodylimit.py          request body cap (413 before parsing)
       chain.py              the hot wallet: MsgShield of the dust, broadcast resolved by tx hash
@@ -105,10 +107,16 @@ deploy tools read: `DSEQ`, `AKASH_API_KEY`, `TUNNEL_TOKEN`.
     POST /gas/register                     a fee note for a registration the chain would accept
     GET  /gas/pow                          the proof of work /gas/register needs now
     GET  /health                           hot wallet balance and grants remaining
+    GET  /circuits/<variant>.json.gz       a passport register circuit outside the wallets' bundle
     GET  /privacy/status                   which chain the index holds, and its stream base
     GET  /privacy/<chain_id>/<genesis>/... the streams (below)
 
-`/gas/*` exists only with `GAS_ENABLED=true`. FastAPI's `/docs` and
+`/gas/*` exists only with `GAS_ENABLED=true`. `/circuits` serves the 17
+passport register circuits above the wallets' 2^18 tier (PASSPORT_COVERAGE.md
+in the mobile repo), byte for byte as `circuits/` holds them; the wallets
+inflate each one and refuse it unless it hashes to the sha256 their bundled
+`passport_variants.json` pins, so the server is trusted for availability
+only. FastAPI's `/docs` and
 `/openapi.json` describe the request schemas.
 
 ### GET /health
