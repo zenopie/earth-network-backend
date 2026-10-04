@@ -21,15 +21,11 @@ services:
       # The chain this grants dust on. cosmpy wants a scheme-prefixed URL, and
       # REST is what the node exposes.
       #
-      # DO NOT lease this on the same provider as the chain. The URL is the
-      # provider's own public hostname and NodePort, so from inside that
-      # provider's cluster it is a hairpin back to itself, and it hangs rather
-      # than failing. cosmpy builds its LedgerClient during FastAPI's startup
-      # event, so a hang there means uvicorn never finishes starting: the port
-      # accepts TCP from the socket backlog and then never answers, while the
-      # pod reports ready=1 because nothing here defines a readiness probe.
-      # Deployed on hurricane alongside the chain it did exactly that; moved to
-      # another provider, unchanged, it came up on the second poll.
+      # Always the tunnel hostname, never a provider's hostname and NodePort
+      # (bin/build-sdl.py refuses one): from inside that provider's cluster it
+      # is a hairpin back to itself that hangs rather than fails, and cosmpy
+      # builds its LedgerClient during FastAPI's startup, so uvicorn would
+      # never finish starting while the pod reports ready.
       - EARTH_NODE_URL=rest+https://lcd.erth.network
       - EARTH_CHAIN_ID=earth-1
       - EARTH_PREFIX=earth

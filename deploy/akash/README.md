@@ -1,7 +1,9 @@
 # Akash deployment — earth gas grants
 
-Same image as the compose deployment; only the hosting primitives differ.
-`deploy.yaml` is the SDL.
+`deploy.yaml` is the SDL. `bin/create.py` makes a new lease, `bin/deploy.sh`
+updates one in place, and both submit the SDL `bin/build-sdl.py` builds:
+`deploy.yaml` with the image digest and the two secrets from `.env`
+(`GAS_WALLET_MNEMONIC`, `TUNNEL_TOKEN`) substituted in.
 
 ## Build the image first
 
@@ -21,9 +23,8 @@ Then pin the digest CI publishes rather than the tag.
 committing it would put a spendable hot key in the repository *and* hand it to a
 third party; leaving it out avoids the first of those, not the second.
 
-Substitute it into the SDL you submit, never into the file you commit:
-
-    SDL=$(sed "s|^      - EARTH_GAS_PRICE=.*|&\n      - GAS_WALLET_MNEMONIC=$MNEMONIC|" deploy/akash/deploy.yaml)
+It lives in the gitignored `.env`; `bin/build-sdl.py` substitutes it into the
+SDL that is submitted, never into the file that is committed.
 
 Treat the balance as the blast radius. It is seeded with 10,000 ERTH in the
 chain's genesis — enough for 100,000 grants at `DUST_UERTH=100000`, and worth
@@ -101,9 +102,10 @@ provider; the chain's own provider (akash15tl6v6gd0nte0syyxnv57zmmspgju4c3xfmdhk
 AMD EPYC) is known good. Check a new host with
 `earthd gas-check registration < msg.json` in the container before closing the old lease.
 
-Sharing a provider with the chain is fine now. It used to hang, because
-`EARTH_NODE_URL` named the chain's provider hostname and NodePort, a hairpin
-from inside the cluster; both URLs are the Cloudflare tunnel now.
+Sharing a provider with the chain is fine: `EARTH_NODE_URL` and
+`EARTH_RPC_URL` are Cloudflare tunnel hostnames, never a provider hostname
+(a hairpin from inside that provider's cluster; `bin/build-sdl.py` refuses
+one).
 
 ## Watch the balance
 
@@ -113,7 +115,7 @@ transaction.
 
 ## Sizing
 
-0.1 cpu / 256Mi / 2Gi root / 1Gi persistent, about $1/month.
+0.1 cpu / 256Mi / 2Gi root / 4Gi persistent (`deploy.yaml`).
 
 The memory is measured rather than guessed: the service idles at 69 MB RSS with
 the wallet built and a `/health` round trip served, so 256Mi is ~4x headroom. If

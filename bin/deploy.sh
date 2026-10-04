@@ -5,14 +5,12 @@
 #   bin/deploy.sh v1.1.47           update the running deployment
 #   bin/deploy.sh v1.1.47 --print   build the SDL and show it, submit nothing
 #
-# In place means the volume survives, so the replay database of used SSV
-# transaction ids survives with it. That database is the only thing stopping a
-# captured callback being replayed for another grant, so losing it matters more
-# than it looks.
+# In place means the volume survives, so the replay database survives with it.
+# That database is the only record of which passports were granted in the last
+# 30 days, so losing it matters more than it looks.
 #
 # The chain's node has its own repo and its own lease. Do not point this at that
-# DSEQ, and do not lease this on the same provider as the node — EARTH_NODE_URL
-# would then be a hairpin that hangs rather than fails.
+# DSEQ.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
