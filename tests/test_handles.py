@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 
 import pytest
 from fastapi import FastAPI
@@ -22,9 +23,12 @@ from services.privacy.events import HANDLE_EVENTS
 from services.privacy.indexer import Indexer
 from services.privacy.rpc import proto_fields
 from services.privacy.store import Store
-from tests.privacy_fixtures import ChainClient, FakeRPC, load
+from tests.privacy_fixtures import BASE, ChainClient, FakeRPC, load, set_meta
+
 
 VEC = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "privacy", "zk_vectors.json")))["handles_query"]
+
+
 SCENARIO = "TestPrivatePersonhood"
 
 
@@ -39,8 +43,6 @@ def recorded(block: dict) -> list[handles.Entry]:
 def as_rows(entries) -> list[list]:
     return [[e.handle, e.address, e.status, e.expires_at, e.renewal_until, e.owner] for e in entries]
 
-
-# --- wire shape, against the chain's own types ------------------------------
 
 def test_request_encoding_matches_the_chain():
     assert handles.request(VEC["request_start"], VEC["request_limit"]).hex() == VEC["request"]
@@ -178,8 +180,6 @@ def test_fetch_is_bounded():
         asyncio.run(handles.fetch(rpc, 5, max_entries=2))
 
 
-# --- the indexer keeps a snapshot of the chain's directory ------------------
-
 def _follow(path: str, upto: int | None = None, rpc: FakeRPC | None = None, **kw) -> tuple[Store, FakeRPC, list]:
     """Indexes the scenario one block at a time (caught up after each, as a
     live indexer is), recording the snapshot after each block."""
@@ -291,8 +291,6 @@ def test_a_chain_without_the_query_indexes_the_trees(tmp_path):
     store.close()
 
 
-# --- the stream -------------------------------------------------------------
-
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     path = str(tmp_path / "index.db")
@@ -392,4 +390,136 @@ def test_a_directory_from_before_owner_is_read_again(tmp_path):
     assert store.meta("handles_height") is None and store.meta("handles_size") is None
     assert store.meta("last_height") == "7" and store.meta("chain_id") == "earth-test"
     assert store.handles_due(3600)
+    store.close()
+
+
+def test_handle_rereads_are_at_most_every_min_blocks(tmp_path):
+    from services.privacy import handles
+
+    store, rpc, snaps = _follow(str(tmp_path / "i.db"), handles_min_blocks=5, handles_max_age=10**9)
+    reads = sorted({int(c.split()[-1]) for c in rpc.calls if c.startswith(f"abci_query {handles.HANDLES_QUERY}")})
+    assert len(reads) >= 2
+    assert all(b - a >= 5 for a, b in zip(reads, reads[1:])), reads
+    store.close()
+
+
+def test_handle_pages_are_parsed_off_the_loop_and_staged_one_at_a_time(tmp_path, monkeypatch):
+    import asyncio
+
+    from services.privacy import handles
+    from services.privacy.store import Store
+
+    on_main = []
+    real = handles.parse_page
+
+    def parse(raw):
+        on_main.append(threading.current_thread() is threading.main_thread())
+        return real(raw)
+    monkeypatch.setattr(handles, "parse_page", parse)
+
+    class RPC:
+        pages = {"": _page([_entry("amy"), _entry("bob")], "bob"), "bob": _page([_entry("cat")])}
+
+        async def abci_query(self, path, data=b"", height=None):
+            from services.privacy.rpc import proto_fields
+            return self.pages[(proto_fields(data).get(1) or [b""])[-1].decode()]
+
+    from services.privacy.indexer import Indexer
+    store = Store(str(tmp_path / "i.db"))
+    store.set_meta("last_height", "10")
+    store.set_meta("last_time", "1000")
+    staged = []
+    real_stage = store.stage_handles
+    monkeypatch.setattr(store, "stage_handles", lambda off, page, fresh=False: (staged.append(len(page)),
+                                                                                 real_stage(off, page, fresh=fresh)))
+    idx = Indexer(store, RPC(), handles_limit=2)
+    idx.next_height = 11
+    asyncio.run(idx._refresh_handles())
+    assert on_main == [False, False]
+    assert staged == [2, 1], "one page held at a time"
+    assert [r[0] for r in store.conn.execute("SELECT handle FROM handles ORDER BY idx")] == ["amy", "bob", "cat"]
+    assert store.meta("handles_size") == "3"
+
+    # A directory that fails half way keeps the served one and no staged rows.
+    RPC.pages = {"": _page([_entry("amy"), _entry("bob")], "bob"), "bob": _page([_entry("Mallory")])}
+    store.set_meta("handles_changed_height", "20")
+    store.set_meta("last_height", "20")
+    idx.next_height = 21
+    asyncio.run(idx._refresh_handles())
+    assert store.meta("handles_height") == "10"
+    assert store.conn.execute("SELECT COUNT(*) FROM handles_staging").fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM handles").fetchone()[0] == 3
+    store.close()
+
+
+def test_the_handle_cap_fits_the_lease():
+    assert config.HANDLES_MAX_ENTRIES <= 200_000
+    assert config.HANDLES_MIN_REFRESH_BLOCKS >= 1
+
+
+def test_a_stale_handle_directory_is_flagged(notes_index):
+    set_meta(handles_height="5", handles_changed_height="6", last_height="10")
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is False, "within HANDLES_STALE_BLOCKS"
+    assert notes_index.get("/privacy/status").json()["handles_stale"] is False
+    set_meta(last_height=str(6 + config.HANDLES_STALE_BLOCKS))
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is True
+    assert notes_index.get("/privacy/status").json()["handles_stale"] is True
+    set_meta(handles_height=str(6 + config.HANDLES_STALE_BLOCKS))
+    assert notes_index.get(f"{BASE}/handles").json()["stale"] is False
+
+
+def test_the_indexer_warns_while_stale(tmp_path, caplog):
+    import asyncio
+    import logging
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+
+    store = Store(str(tmp_path / "i.db"))
+    for k, v in (("handles_height", "5"), ("handles_changed_height", "6"), ("last_height", "100")):
+        store.set_meta(k, v)
+    caplog.set_level(logging.WARNING)
+    idx = Indexer(store, None)
+    asyncio.run(idx._warn_if_handles_stale())
+    assert "handle directory is stale" in caplog.text
+    store.close()
+
+
+def test_handle_events_every_block_do_not_hide_a_stale_directory(tmp_path):
+    """A handle event in every block kept `last - changed` under the
+    threshold, so a snapshot whose refreshes kept failing never read
+    stale. Now staleness counts from the first event it has not caught up
+    with."""
+    from services.privacy import handles as handles_mod
+    from services.privacy.events import BlockDelta
+    from services.privacy.store import Store, handles_stale
+
+    store = Store(str(tmp_path / "i.db"))
+    store.apply(BlockDelta(height=1, hash="h1", time=1000))
+    store.replace_handles(1, 1000, [handles_mod.Entry("amy", "earth1x", "live", 10**9, 10**9 + 1)], None)
+    n = 5
+    for h in range(2, 2 + 3 * n):
+        store.apply(BlockDelta(height=h, hash=f"h{h}", time=1000 + h, handles_changed=True))
+    assert store.meta("handles_pending_height") == "2"
+    assert handles_stale(store.conn, n), "behind since height 2, not since the latest event"
+    assert not handles_stale(store.conn, 3 * n + 1)
+    # A snapshot at the last height catches up and clears it.
+    last = 1 + 3 * n
+    store.replace_handles(last, 2000, [], None)
+    assert store.meta("handles_pending_height") is None
+    assert not handles_stale(store.conn, 1)
+    # The next event starts a new pending height.
+    store.apply(BlockDelta(height=last + 1, hash="x", time=3000, handles_changed=True))
+    assert store.meta("handles_pending_height") == str(last + 1)
+    store.close()
+
+
+def test_an_index_without_a_pending_height_falls_back_to_the_latest_event(tmp_path):
+    from services.privacy.store import Store, handles_stale
+
+    store = Store(str(tmp_path / "i.db"))
+    for k, v in (("handles_height", "5"), ("handles_changed_height", "6"), ("last_height", "10")):
+        store.set_meta(k, v)
+    assert not handles_stale(store.conn, 5)
+    assert handles_stale(store.conn, 4)
     store.close()

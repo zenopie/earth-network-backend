@@ -29,8 +29,8 @@ alphabetical order (from_* before limit; audit-6 L4), each value 0 or a
 decimal without a leading zero, nothing percent-encoded. (An omitted
 parameter and its explicit default are still two spellings; that is
 bounded, two per page.) A path that is not one of the streams is 404,
-no-store. ENDPOINTS must list every /privacy route (a test checks it
-against the router).
+no-store. ENDPOINTS must list every /privacy route
+(tests/test_privacy_gate.py checks it against the router).
 
 CORS, for the web wallet: every /privacy response (refusals included)
 carries Access-Control-Allow-Origin: PRIVACY_CORS_ORIGIN

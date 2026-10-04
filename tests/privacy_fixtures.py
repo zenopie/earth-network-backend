@@ -4,16 +4,16 @@ tests/fixtures/privacy/Test*.json.gz are real FinalizeBlock responses from the
 chain's app scenario tests (real proofs, the launch genesis path), recorded by
 bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
 note, identity, stake and stake nullifier trees' sizes and roots after the
-block as the keepers reported them (stake fields are absent from fixtures
-recorded before the stake tree existed, and read as an empty tree), the
-slash debt tree's size, root and whole Query/DebtTree answer (chain dff3a9b
-on), and the chain's Handles query answer at the block (pages of one, hex
-QueryHandlesResponse).
+block as the keepers reported them (a field a scenario lacks reads as an
+empty tree), the slash debt tree's size, root and whole Query/DebtTree
+answer, and the chain's Handles query answer at the block (pages of one,
+hex QueryHandlesResponse).
 """
 import gzip
 import json
 import os
 
+import config
 from services.privacy.rpc import RPCError
 
 DIR = os.path.join(os.path.dirname(__file__), "fixtures", "privacy")
@@ -193,3 +193,15 @@ def seed_chain(path: str, chain_id: str = "earth-test", genesis_hash: str = "ab"
     store.set_meta("chain_id", chain_id)
     store.set_meta("genesis_hash", genesis_hash)
     store.close()
+
+
+BASE = "/privacy/earth-1/" + "ab" * 8
+
+
+def set_meta(**kv):
+    from services.privacy import store as store_mod
+
+    c = store_mod.connect(config.INDEX_DB)
+    for k, v in kv.items():
+        c.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (k, v))
+    c.close()

@@ -73,7 +73,7 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
     assert rep.open_notes_checked == store.conn.execute(
         "SELECT COUNT(*) FROM notes WHERE owner_pk IS NOT NULL").fetchone()[0]
     # Every stake note is a stake proof output with its 201-byte wallet stake
-    # ciphertext (chain dff3a9b).
+    # ciphertext.
     bad = store.conn.execute("SELECT COUNT(*) FROM stake_notes WHERE length(ciphertext) != 201").fetchone()[0]
     assert bad == 0
 
@@ -140,7 +140,7 @@ def test_a_different_chain_behind_the_rpc_halts(db):
 
 
 def test_a_block_that_does_not_follow_the_indexed_one_halts(db):
-    """Re-audit K14: continuity is checked on every block, not only at start.
+    """Continuity is checked on every block, not only at start (re-audit K14).
     An RPC swapped mid-run (a load balancer, a relaunch) serves blocks whose
     parent is not the block the index holds."""
     sc = load("TestPrivatePersonhood")
@@ -368,8 +368,6 @@ def test_failed_tx_with_only_failure_code_still_counts_every_event(db):
     assert got.counts() == want.counts()
 
 
-# --- audit 3: relaunch under the same chain id ---------------------------------
-
 class _CometLike(FakeRPC):
     """CometBFT v0.38 /blockchain: minHeight above the tip is an RPC error."""
 
@@ -395,8 +393,8 @@ def _index_all(store, rpc):
 
 
 def test_a_relaunched_chain_with_a_lower_tip_halts(db):
-    """audit-3 poc_relaunch_no_halt.py: chain B (same id, tip below A's last
-    height) was retried forever with halted=null."""
+    """Chain B (same id, tip below A's last height) halts rather than being
+    retried forever with halted null (audit 3)."""
     sc = load("TestPrivatePersonhood")
     store = Store(db)
     _index_all(store, _CometLike(sc))
@@ -508,8 +506,7 @@ def test_rates_of_a_sweep_past_200_validators_keep_their_epoch(db):
 
 
 def test_a_referred_registrations_referral_note_is_indexed_with_its_opening(db):
-    # Chain 203d3b2 (audit round 5): a registration naming a live handle has
-    # the chain mint the referrer's half to the handle's owner_pk with
+    # A registration naming a live handle has the chain mint the referrer's half to the handle's owner_pk with
     # rho/rcm = H("earth.referral", passport nullifier, leaf index, 0|1),
     # no ciphertext; the shielded_mint event carries the opening and the
     # register event handle, referral and referral_position.
@@ -555,4 +552,62 @@ def test_a_referred_registrations_referral_note_is_indexed_with_its_opening(db):
             other = [m for m in mints if m["position"] != str(pos)]
             assert other and all(len(base64.b64decode(m["ciphertext"])) == 177 for m in other)
     assert referred == 2  # C2 and D1
+    store.close()
+
+
+def test_the_indexer_records_the_verified_height(tmp_path):
+    import asyncio
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+    from tests.privacy_fixtures import FakeRPC, load
+
+    store = Store(str(tmp_path / "i.db"))
+    sc = load("TestPrivatePersonhood")
+    idx = Indexer(store, FakeRPC(sc), batch=5)
+
+    async def go():
+        await idx.prepare()
+        while await idx.step():
+            assert store.meta("verified_height") == str(idx.next_height - 1)
+    asyncio.run(go())
+    assert store.meta("verified_height") == str(sc["blocks"][-1]["height"])
+    store.close()
+
+
+def test_blocks_keep_only_the_last_and_identity_heights(tmp_path):
+    import asyncio
+    import sqlite3
+
+    from services.privacy.indexer import Indexer
+    from services.privacy.store import Store
+    from tests.privacy_fixtures import FakeRPC, load
+
+    path = str(tmp_path / "i.db")
+    store = Store(path)
+    sc = load("TestPrivatePersonhood")
+    idx = Indexer(store, FakeRPC(sc))
+
+    async def go():
+        await idx.prepare()
+        while await idx.step():
+            pass
+    asyncio.run(go())
+    rows = {h for (h,) in store.conn.execute("SELECT height FROM blocks")}
+    leaves = {h for (h,) in store.conn.execute("SELECT DISTINCT height FROM identity_leaves")}
+    last = store.last_height()
+    assert leaves and rows == leaves | {last}
+    assert len(rows) < len(sc["blocks"])
+    # A restart resumes from the last block's hash.
+    store.close()
+    store = Store(path)
+    assert store.block_hash(last)
+    # An index from before pruning is pruned on open.
+    c = sqlite3.connect(path)
+    c.execute("INSERT INTO blocks VALUES (?, 'x', 0)", (min(rows) - 1,))
+    c.commit()
+    c.close()
+    store.close()
+    store = Store(path)
+    assert {h for (h,) in store.conn.execute("SELECT height FROM blocks")} == rows
     store.close()

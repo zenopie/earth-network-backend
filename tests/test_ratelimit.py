@@ -1,12 +1,16 @@
-"""The per-client limiter: keyed by network, fixed-size entries, LRU-bounded
-(re-audit K2/K3; poc_limiter_mem.py, poc_queue_starve.py's per-address keying)."""
+"""Per-client limits (services/ratelimit): who a client is (an IPv4 address,
+an IPv6 /48 for requests, a /64 for refusals), the sliding window, bounded
+memory, one gas-check in flight, and how /gas/register applies them.
+"""
 import ipaddress
 import tracemalloc
 
 import pytest
 
 import config
-from services import ratelimit
+from services import gascheck, ratelimit
+from tests.gas_fixtures import reg_body
+
 
 BASE6 = int(ipaddress.IPv6Address("2001:db8:1:2::"))
 
@@ -23,8 +27,8 @@ def test_every_address_in_one_64_is_one_client(monkeypatch):
 
 
 def test_one_48_is_one_client_by_default():
-    """audit-3 poc_ipv6.py: 2000 /64s of one VPS customer's /48 were 2000
-    clients (20000 requests a window); keyed by /48 they are one."""
+    """2000 /64s of one VPS customer's /48 are one client, not 2000 (20000
+    requests a window; audit 3)."""
     assert config.REGISTER_IPV6_PREFIX == 48
     base = "2001:db8:abcd:{:x}::1"
     allowed = 0
@@ -59,8 +63,8 @@ def test_rotating_addresses_in_a_64_share_one_budget():
 
 
 def test_memory_is_bounded_at_the_cap(monkeypatch):
-    """poc_limiter_mem.py: REGISTER_IP_MAX_TRACKED distinct clients used to hold
-    a deque each and then be cleared wholesale."""
+    """REGISTER_IP_MAX_TRACKED distinct clients cost one small fixed-size
+    entry each, and the table is never cleared wholesale."""
     cap = 20_000
     monkeypatch.setattr(config, "REGISTER_IP_MAX_TRACKED", cap)
     tracemalloc.start()
@@ -115,3 +119,72 @@ def test_refusal_budget_off(monkeypatch):
     for _ in range(100):
         ratelimit.note_refusal(now=60.0)
     assert not ratelimit.shedding(now=60.0)
+
+
+def test_refusals_are_keyed_per_64_and_requests_per_48():
+    a, b = "2001:db8:1:0::1", "2001:db8:1:1::1"
+    assert ratelimit.client_key(a) == ratelimit.client_key(b)
+    assert ratelimit.refusal_key(a) != ratelimit.refusal_key(b)
+    assert ratelimit.refusal_key("2001:db8:1:0::1") == ratelimit.refusal_key("2001:db8:1:0:ffff::2")
+    assert ratelimit.refusal_key("::ffff:100.64.0.1") == ratelimit.refusal_key("100.64.0.1") == \
+        ratelimit.client_key("100.64.0.1")
+
+
+def test_the_window_slides():
+    ratelimit.reset()
+    lim = config.REGISTER_IP_MAX_PER_WINDOW
+    for i in range(lim):
+        assert ratelimit.allow("x", now=1000.0 + i)
+    assert not ratelimit.allow("x", now=1000.0 + lim)
+    assert ratelimit.allow("x", now=1000.0 + config.REGISTER_IP_WINDOW_SECONDS + 0.5)
+
+
+def test_per_ip_window_counts_junk_too(client, shields, chain_says, monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 2)
+    assert client.post("/gas/register", json=reg_body(proof="")).status_code == 400
+    assert client.post("/gas/register", json=reg_body()).status_code == 200
+    resp = client.post("/gas/register", json=reg_body(nf=2))
+    assert resp.status_code == 429
+    assert len(chain_says["asked"]) == 1
+
+
+def test_cf_connecting_ip_separates_clients(client, shields, chain_says, monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", True)
+    a, b = {"CF-Connecting-IP": "203.0.113.1"}, {"CF-Connecting-IP": "203.0.113.2"}
+    assert client.post("/gas/register", json=reg_body(nf=1), headers=a).status_code == 200
+    assert client.post("/gas/register", json=reg_body(nf=2), headers=a).status_code == 429
+    assert client.post("/gas/register", json=reg_body(nf=3), headers=b).status_code == 200
+
+
+def test_cf_connecting_ip_ignored_when_not_trusted(client, shields, chain_says, monkeypatch):
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 1)
+    monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", False)
+    assert client.post("/gas/register", json=reg_body(nf=1), headers={"CF-Connecting-IP": "203.0.113.1"}).status_code == 200
+    # A new header value is not a new client: the peer is the same.
+    assert client.post("/gas/register", json=reg_body(nf=2), headers={"CF-Connecting-IP": "203.0.113.2"}).status_code == 429
+
+
+def test_one_gas_check_per_client_at_a_time(client, shields, chain_says, monkeypatch):
+    monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", True)
+    ratelimit._busy.add(ratelimit.client_key("203.0.113.9"))  # a check of this client's is in flight
+    resp = client.post("/gas/register", json=reg_body(), headers={"CF-Connecting-IP": "203.0.113.9"})
+    assert resp.status_code == 429
+    assert chain_says["asked"] == []
+    assert client.post("/gas/register", json=reg_body(), headers={"CF-Connecting-IP": "203.0.113.10"}).status_code == 200
+
+
+def test_the_client_slot_is_freed_after_the_check(client, shields, chain_says, monkeypatch):
+    chain_says["registration"] = gascheck.Unavailable("node down")
+    assert client.post("/gas/register", json=reg_body()).status_code == 503
+    assert ratelimit._busy == set()
+    chain_says["registration"] = None
+    assert client.post("/gas/register", json=reg_body()).status_code == 200
+
+
+@pytest.mark.parametrize("raw", [b"{", b"[]", b'{"proof": 1}', b"\xff"])
+def test_a_body_that_fails_the_schema_counts_against_the_client(client, monkeypatch, raw):
+    monkeypatch.setattr(config, "REGISTER_IP_MAX_PER_WINDOW", 2)
+    codes = [client.post("/gas/register", content=raw, headers={"content-type": "application/json"}).status_code
+             for _ in range(3)]
+    assert codes == [422, 422, 429]

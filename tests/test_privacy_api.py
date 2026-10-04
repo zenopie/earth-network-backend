@@ -1,6 +1,7 @@
 """The /privacy streams, served from an index of recorded chain blocks."""
 import asyncio
 import base64
+import tracemalloc
 
 import pytest
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ import config
 from routers import privacy
 from services.privacy.indexer import Indexer
 from services.privacy.store import Store
-from tests.privacy_fixtures import ChainClient, FakeRPC, load, seed_chain
+from tests.privacy_fixtures import BASE, ChainClient, FakeRPC, load, seed_chain, set_meta
 
 
 def _index(path: str, name: str, tip: int | None = None) -> None:
@@ -77,7 +78,7 @@ def test_notes_pages_cover_everything_once_and_full_pages_are_immutable(api):
 
 
 def test_referral_mint_rows_carry_their_opening_and_match_locally(api):
-    # Format 2 (chain audit round 5): the referral note the chain mints to a
+    # Notes format 2: the referral note the chain mints to a
     # handle's address has no ciphertext; its row carries owner_pk, rho, rcm.
     # A wallet that knows its owner_pk matches the row from the row alone:
     # cm == H(TAG_CM, AssetID(denom), amount, PC(owner_pk, rho, rcm)).
@@ -243,8 +244,6 @@ def test_an_index_that_never_met_its_chain_serves_no_streams(tmp_path, monkeypat
     assert c.get("/privacy/None/None/notes").status_code == 404
 
 
-# --- audit 3 -----------------------------------------------------------------
-
 @pytest.mark.parametrize("path,param", [
     ("/privacy/notes", "from_pos"), ("/privacy/nullifiers", "from_height"),
     ("/privacy/identity", "from_index"), ("/privacy/identity/zeroed", "from_height"),
@@ -254,7 +253,7 @@ def test_an_index_that_never_met_its_chain_serves_no_streams(tmp_path, monkeypat
     ("/privacy/notes", "limit"),
 ])
 def test_integers_past_int64_are_422_not_500(api, path, param):
-    """audit-3 poc_overflow_500.py: 2^64 reached SQLite's bind as an OverflowError."""
+    """2^64 must be a 422, not an OverflowError at SQLite's bind (a 500; audit 3)."""
     assert api.get(path, params={param: str(2**64)}).status_code == 422
     assert api.get(path, params={param: str(2**63)}).status_code == 422
     top = 2**63 - 1
@@ -270,7 +269,7 @@ def test_integers_past_int64_are_422_not_500(api, path, param):
 
 def _racing(monkeypatch, path, table_sql_marker):
     """A reader connection on which the indexer commits block 4 right after
-    the page's row query (audit-3 poc_height_page_race.py)."""
+    the page's row query (audit 3)."""
     from services.privacy import store as store_mod
     from services.privacy.events import BlockDelta, StakeNullifier
 
@@ -315,3 +314,49 @@ def test_a_page_and_its_synced_height_are_one_snapshot(tmp_path, monkeypatch, ro
     assert body["synced_height"] == 3 and body["next_height"] == 4
     nxt = c.get(f"/privacy/earth-test/{'ab' * 8}/{route}", params={"from_height": body["next_height"]}).json()
     assert [h for h, _ in nxt[key]] == [4], "following next_height reaches block 4's rows"
+
+
+def test_only_aligned_pages_of_fixed_sizes(notes_index):
+    get = notes_index.get
+    for params in ({"from_pos": 1}, {"from_pos": 999}, {"from_pos": 100, "limit": 1000},
+                   {"from_pos": 0, "limit": 5000}, {"from_pos": 0, "limit": 999}):
+        r = get(BASE + "/notes", params=params)
+        assert r.status_code == 400, params
+        assert r.headers["cache-control"] == "no-store"
+    r = get(BASE + "/notes", params={"from_pos": 1000})
+    body = r.json()
+    assert [n[0] for n in body["notes"]] == list(range(1000, 2000))
+    assert body["complete"] and body["next_pos"] == 2000 and "immutable" in r.headers["cache-control"]
+    tip = get(BASE + "/notes", params={"from_pos": 5000}).json()
+    assert [n[0] for n in tip["notes"]] == list(range(5000, 5500)) and not tip["complete"]
+    assert tip["next_pos"] == 5500, "where the data ends; the wallet asks for page 5000 again later"
+    r = get(BASE + "/notes", params={"from_pos": 200, "limit": 100})
+    assert [n[0] for n in r.json()["notes"]] == list(range(200, 300))
+
+
+def test_a_max_page_is_bounded(notes_index):
+    tracemalloc.start()
+    r = notes_index.get(BASE + "/notes", params={"from_pos": 0, "limit": config.PRIVACY_PAGE_MAX},
+                        headers={"accept-encoding": "gzip"})
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert r.status_code == 200 and len(r.json()["notes"]) == 1000
+    assert peak < 4 * 2**20, f"peak heap {peak / 2**20:.1f} MiB for one max page"
+
+
+def test_a_halted_index_serves_no_stream(notes_index):
+    set_meta(halted="block 9: note at position 3, expected 0")
+    for path in ("/notes?from_pos=1000", "/status", "/roots/latest", "/handles"):
+        r = notes_index.get(BASE + path)
+        assert r.status_code == 503 and r.headers["cache-control"] == "no-store", path
+    s = notes_index.get("/privacy/status")
+    assert s.status_code == 200 and "expected 0" in s.json()["halted"]
+
+
+def test_a_page_is_immutable_only_once_its_heights_are_verified(notes_index):
+    set_meta(verified_height="0")  # the rows are at height 1
+    r = notes_index.get(f"{BASE}/notes?from_pos=1000")
+    assert r.status_code == 200 and r.json()["complete"]
+    assert r.headers["cache-control"] == "public, max-age=2"
+    set_meta(verified_height="1")
+    assert "immutable" in notes_index.get(f"{BASE}/notes?from_pos=1000").headers["cache-control"]

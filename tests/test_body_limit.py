@@ -1,8 +1,8 @@
-"""Request bodies are capped before they are parsed (re-audit K4, poc_body_mem.py).
+"""Request bodies are capped before they are parsed (services/bodylimit, re-audit K4).
 
-/gas/register used to read and JSON-decode a body of any size before the
-handler and its per-client limit ran: one ~50 MB body (Cloudflare passes up to
-100 MB) peaked far past the lease's 256 MiB.
+Without the cap FastAPI reads and JSON-decodes a body of any size before the
+handler and its per-client limit run: one ~50 MB body (Cloudflare passes up
+to 100 MB) peaks far past the lease's 256 MiB.
 """
 import asyncio
 import json
@@ -12,8 +12,8 @@ import httpx
 import pytest
 
 import config
-from tests.conftest import gas_app
-from tests.test_proof_grants import REFERRAL, reg_body
+from tests.gas_fixtures import gas_app
+from tests.gas_fixtures import REFERRAL, reg_body
 
 
 def _junk_body(n_signals: int) -> bytes:

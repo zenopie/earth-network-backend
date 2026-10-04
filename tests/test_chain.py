@@ -14,6 +14,8 @@ from cosmpy.crypto.keypairs import PrivateKey
 
 import config
 from services import chain, shielded_msg
+from tests.gas_fixtures import reg_body
+
 
 CT = bytes(range(177))
 
@@ -184,3 +186,91 @@ def test_shield_builds_msg_shield_from_the_hot_wallet(monkeypatch):
     assert msg.sender == str(wallet.address())
     assert (msg.amount.denom, msg.amount.amount) == (config.EARTH_DENOM, str(config.DUST_UERTH))
     assert msg.pc == b"\x07" * 32 and msg.ciphertext == CT
+
+
+
+
+# --- a non-200 answer after the node took the tx (audit-4 B2) ---------------------
+#
+# cosmpy raises a bare RuntimeError for any non-200 answer, and behind
+# Cloudflare a 524 can arrive after the node accepted the tx: it is resolved
+# by hash, never taken as "moved nothing".
+
+
+CF_524 = RuntimeError("Error when sending a POST request.\n Request: {...}\n Response: 524, b'error code: 524'")
+
+
+def test_a_non_200_after_accept_is_resolved_by_hash(monkeypatch):
+    assert _send_with(monkeypatch, CF_524, landed=True) == SIGNED_HASH
+
+
+def test_a_non_200_never_seen_is_unresolved(monkeypatch):
+    with pytest.raises(chain.SendUnresolved) as info:
+        _send_with(monkeypatch, CF_524)
+    assert info.value.tx_hash == SIGNED_HASH
+
+
+def test_checktx_refusal_moved_nothing(monkeypatch):
+    with pytest.raises(BroadcastError):
+        _send_with(monkeypatch, BroadcastError("H", "insufficient fees"))
+
+
+def test_already_in_mempool_is_resolved_by_hash(monkeypatch):
+    exc = BroadcastError("H", "tx already exists in cache")
+    assert _send_with(monkeypatch, exc, landed=True) == SIGNED_HASH
+
+
+def _cf524_broadcast(monkeypatch, landed_after_first: bool):
+    """chain internals stubbed: the first broadcast raises a 524 after the tx
+    reached the mempool (it lands); later ones succeed."""
+    import asyncio
+
+    from routers import gas
+
+    sent = []
+
+    class Tx:
+        tx = type("T", (), {"SerializeToString": lambda self: b"signed%d" % len(sent)})()
+
+    class Client:
+        def broadcast_tx(self, tx):
+            sent.append(tx)
+            if len(sent) == 1:
+                raise CF_524
+            return chain.SubmittedTx(self, chain.tx_hash_of(tx))
+
+    def waited(self, *a, **k):
+        if not landed_after_first:
+            raise chain.QueryTimeoutError()
+        return self
+
+    class _W:
+        def address(self):
+            return "earth1x"
+
+    monkeypatch.setattr(chain, "Transaction", lambda: type("B", (), {"add_message": lambda self, m: None, "tx": Tx.tx})())
+    monkeypatch.setattr(chain, "prepare_basic_transaction", lambda *a, **k: None)
+    monkeypatch.setattr(chain.shielded_msg, "build", lambda *a, **k: None)
+    monkeypatch.setattr(chain.SubmittedTx, "wait_to_complete", waited)
+    monkeypatch.setattr(chain, "_client", Client())
+    monkeypatch.setattr(chain, "_wallet", _W())
+    monkeypatch.setattr(chain, "_send_lock", asyncio.Lock())
+    assert gas.chain is chain
+    return sent
+
+
+def test_the_passport_is_paid_once(client, chain_says, monkeypatch):
+    sent = _cf524_broadcast(monkeypatch, landed_after_first=True)
+    r1 = client.post("/gas/register", json=reg_body())
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/gas/register", json=reg_body())
+    assert r2.status_code == 409
+    assert len(sent) == 1
+
+
+def test_an_unseen_524_keeps_the_passport_claimed(client, chain_says, monkeypatch):
+    sent = _cf524_broadcast(monkeypatch, landed_after_first=False)
+    r1 = client.post("/gas/register", json=reg_body())
+    assert r1.status_code == 202 and r1.json()["tx_hash"]
+    assert client.post("/gas/register", json=reg_body()).status_code == 409
+    assert len(sent) == 1
