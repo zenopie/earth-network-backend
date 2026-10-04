@@ -71,12 +71,15 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
       handles_changed_height) (9b0c8f6)
 - [x] L3 cloudflared --metrics 127.0.0.1:2000 (port 2000 stays the
       required global service, answering nothing); bin/build-sdl.py refuses
-      a non-loopback --metrics
-- [x] L5 .dockerignore patterns `**/` (any depth, root included)
+      a non-loopback --metrics (e67eb20)
+- [x] L5 .dockerignore patterns `**/` (any depth, root included) (debe141;
+      its test made Docker-faithful in 651ebb5)
 - [x] L6 AKASH_API_KEY to curl as `-H @file` (umask 077, the 700 work
-      dir), not argv
+      dir), not argv (345eab2)
 - [ ] L4 canonical /privacy parameter order (if simple)
 - [x] I1 dead SendUnresolved-without-hash branch removed (46113bc)
 - [x] I2 _coarse: the hex pattern already cuts 16+ digit decimal runs;
       documented and tested, no code change (0c14094)
-- [ ] I3 replay pruning; I4 action SHAs
+- [x] I3 replay rows older than 31 days pruned in claim(), at most once an
+      hour (_paid_today already used the granted_at index, not a scan)
+- [ ] I4 action SHAs

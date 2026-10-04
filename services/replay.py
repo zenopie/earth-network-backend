@@ -49,6 +49,13 @@ class LimitReached(Exception):
 
 
 _DAY = 86400
+# Rows older than every window anything reads (the 30-day passport window,
+# the 24-hour caps) decide nothing and are pruned (audit-6 I3): a grant id
+# carries its day, so an old one cannot come back, and the dates the
+# precheck accepts are days old at most. At most once an hour, in claim().
+KEEP_SECONDS = 31 * _DAY
+_PRUNE_EVERY = 3600
+_pruned_at = 0.0
 
 
 def _granted_within(key_prefix: str, seconds: int) -> bool:
@@ -112,6 +119,7 @@ def claim(transaction_id: str, *, prefix: str, max_per_day: int,
     as the insert.
     """
     with _lock:
+        _prune()
         if _paid_today(prefix, kind) >= max_per_day:
             raise LimitReached("daily")
         if key_prefix is not None and once_per is not None and _granted_within(key_prefix, once_per):
@@ -125,6 +133,17 @@ def claim(transaction_id: str, *, prefix: str, max_per_day: int,
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def _prune(now: float | None = None) -> None:
+    """Deletes rows past KEEP_SECONDS, at most once every _PRUNE_EVERY. Under _lock."""
+    global _pruned_at
+    now = time.time() if now is None else now
+    if now - _pruned_at < _PRUNE_EVERY:
+        return
+    _pruned_at = now
+    _db().execute("DELETE FROM used_transactions WHERE granted_at < ?", (int(now - KEEP_SECONDS),))
+    _db().commit()
 
 
 def release(transaction_id: str) -> None:

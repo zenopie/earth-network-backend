@@ -220,3 +220,28 @@ def test_an_index_without_a_pending_height_falls_back_to_the_latest_event(tmp_pa
     assert not handles_stale(store.conn, 5)
     assert handles_stale(store.conn, 4)
     store.close()
+
+
+# --- I3: the replay table is pruned ----------------------------------------------
+
+def test_replay_rows_past_every_window_are_pruned(client, monkeypatch):
+    import time
+
+    from services import replay
+
+    assert replay.KEEP_SECONDS >= gas.GRANT_ONCE_PER_SECONDS + 86400
+    monkeypatch.setattr(replay, "_pruned_at", 0.0)
+    db = replay._db()
+    now = int(time.time())
+    db.executemany("INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES (?, '', ?)",
+                   [("passport:aa:2026-08-01", now - 40 * 86400), ("passport:bb:2026-09-05", now - 29 * 86400)])
+    db.commit()
+    assert replay.claim("passport:cc:2026-10-03", prefix="passport:", max_per_day=10)
+    ids = {r[0] for r in db.execute("SELECT transaction_id FROM used_transactions")}
+    assert ids == {"passport:bb:2026-09-05", "passport:cc:2026-10-03"}
+    # Throttled: not again within the hour.
+    db.execute("INSERT INTO used_transactions (transaction_id, address, granted_at) VALUES ('passport:dd:x', '', ?)",
+               (now - 40 * 86400,))
+    db.commit()
+    assert replay.claim("passport:ee:2026-10-03", prefix="passport:", max_per_day=10)
+    assert db.execute("SELECT 1 FROM used_transactions WHERE transaction_id = 'passport:dd:x'").fetchone()
