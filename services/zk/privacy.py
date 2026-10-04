@@ -96,11 +96,14 @@ def bytes_field(b: bytes) -> int:
     return H(TAG_BYTES, len(b), *_chunks31(b))
 
 
-def registration_binding(idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, ct_erth: bytes, affiliate: int) -> int:
+def registration_binding(chain_id: str, idc_: int, pc_anml: int, ct_anml: bytes, pc_erth: int, ct_erth: bytes,
+                         affiliate: int) -> int:
     """privacy.RegistrationBinding: the passport proof's address input,
-    H(TAG_REG, idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
-    affiliate is 0 for none, else affiliate_field(handle)."""
-    return H(TAG_REG, idc_, pc_anml, bytes_field(ct_anml), pc_erth, bytes_field(ct_erth), affiliate)
+    H(TAG_REG, Bytes(chain_id), idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
+    The chain id (audit round 6, B6-4) keeps a proof made for one chain from
+    registering on another. affiliate is 0 for none, else affiliate_field(handle)."""
+    return H(TAG_REG, bytes_field(chain_id.encode()), idc_, pc_anml, bytes_field(ct_anml), pc_erth,
+             bytes_field(ct_erth), affiliate)
 
 
 def affiliate_field(handle: str) -> int:

@@ -18,7 +18,9 @@ consistent state:
                            next = 2 (the last handle returned; "" when done)}
     HandleEntry           {handle = 1, address = 2 ("erthz1..." bech32m),
                            status = 3 ("live" | "renewal" | "free"),
-                           expires_at = 4 (int64), renewal_until = 5 (int64)}
+                           expires_at = 4 (int64), renewal_until = 5 (int64),
+                           owner = 6 (the handle-scope nullifier holding it,
+                           64 lowercase hex; "" for a handle never claimed)}
 
 Status is the chain's at the block's time: live while time < expires_at
 (it resolves), renewal until renewal_until (owner only, does not resolve),
@@ -36,7 +38,13 @@ event (audit-5 L5).
 Everything is checked against the chain's own rules before it replaces
 the snapshot (a malformed answer keeps the previous one): handle format,
 strictly increasing order across pages, a known status, an erthz1
-address, renewal_until >= expires_at >= 0, and a `next` that moves forward.
+address, renewal_until >= expires_at >= 0, an owner of 64 lowercase hex
+characters or none, and a `next` that moves forward.
+
+owner (chain audit round 6) is what a wallet compares with its own
+handle-scope nullifier to know a handle is its own; an entry merely naming
+its address is not. It is already public (the claiming bind's membership
+nullifier, a move's new_owner; the handle events carry it).
 """
 import asyncio
 import re
@@ -52,6 +60,8 @@ STATUSES = ("live", "renewal", "free")
 _HANDLE = re.compile(r"[a-z0-9][a-z0-9-]{1,30}[a-z0-9]")
 # zk/privacy ShieldedAddress.Encode: bech32m, hrp "erthz", owner_pk || ek_pub.
 _ADDRESS = re.compile(r"erthz1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{6,200}")
+# x/personhood HandleEntry.owner: a 32-byte nullifier as lowercase hex, or "".
+_OWNER = re.compile(r"(?:[0-9a-f]{64})?")
 
 
 def valid_handle(handle: str) -> bool:
@@ -69,6 +79,7 @@ class Entry:
     status: str
     expires_at: int
     renewal_until: int
+    owner: str = ""
 
 
 def _varint(v: int) -> bytes:
@@ -122,7 +133,7 @@ def parse_entry(raw: bytes) -> Entry:
     except (ValueError, IndexError) as exc:
         raise Malformed(f"HandleEntry: {exc}") from exc
     e = Entry(_str(f, 1, "handle"), _str(f, 2, "address"), _str(f, 3, "status"),
-              _int64(f, 4, "expires_at"), _int64(f, 5, "renewal_until"))
+              _int64(f, 4, "expires_at"), _int64(f, 5, "renewal_until"), _str(f, 6, "owner"))
     if not valid_handle(e.handle):
         raise Malformed(f"handle {e.handle!r} is not a handle")
     if e.status not in STATUSES:
@@ -131,6 +142,8 @@ def parse_entry(raw: bytes) -> Entry:
         raise Malformed(f"handle {e.handle}: address is not a shielded (erthz1) address")
     if e.expires_at < 0 or e.renewal_until < e.expires_at:
         raise Malformed(f"handle {e.handle}: expires_at {e.expires_at}, renewal_until {e.renewal_until}")
+    if _OWNER.fullmatch(e.owner) is None:
+        raise Malformed(f"handle {e.handle}: owner is not 64 lowercase hex characters")
     return e
 
 

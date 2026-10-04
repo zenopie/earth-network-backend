@@ -49,7 +49,9 @@ def test_request_encoding_matches_the_chain():
 def test_response_decoding_matches_the_chain():
     entries, nxt = handles.parse_page(bytes.fromhex(VEC["response"]))
     assert nxt == VEC["next"]
-    assert [e.__dict__ for e in entries] == VEC["entries"]
+    # The chain's JSON leaves an empty owner out (a handle never claimed).
+    assert [e.__dict__ for e in entries] == [{"owner": "", **v} for v in VEC["entries"]]
+    assert entries[0].owner == "" and len(entries[2].owner) == 64
     assert {e.status for e in entries} == set(handles.STATUSES)
     assert handles.next_change(entries) == 1700000000 + 2592000  # bob's renewal_until < zed-99's expires_at
 
@@ -63,14 +65,25 @@ def test_every_recorded_page_is_well_formed():
     {"handle": "Bob"}, {"handle": "-ab"}, {"handle": "ab"}, {"handle": "a" * 33},
     {"status": "expired"}, {"address": "earth1abcdefgh"}, {"address": ""},
     {"expires_at": -1}, {"renewal_until": 1699999999},
+    {"owner": "ab" * 31}, {"owner": "ab" * 33}, {"owner": "AB" * 32}, {"owner": "0x" + "ab" * 31},
+    {"owner": "g" * 64}, {"owner": " " + "a" * 63},
 ])
 def test_a_malformed_entry_is_refused(bad):
     good = dict(VEC["entries"][1])
     good.update(bad)
-    raw = (_s(1, good["handle"]) + _s(2, good["address"]) + _s(3, good["status"])
-           + _v(4, good["expires_at"]) + _v(5, good["renewal_until"]))
     with pytest.raises(handles.Malformed):
-        handles.parse_entry(raw)
+        handles.parse_entry(_raw_entry(good))
+
+
+@pytest.mark.parametrize("owner", ["", "0f" * 32])
+def test_owner_is_64_lowercase_hex_or_none(owner):
+    e = handles.parse_entry(_raw_entry(dict(VEC["entries"][1], owner=owner)))
+    assert e.owner == owner
+
+
+def _raw_entry(e: dict) -> bytes:
+    return (_s(1, e["handle"]) + _s(2, e["address"]) + _s(3, e["status"])
+            + _v(4, e["expires_at"]) + _v(5, e["renewal_until"]) + (_s(6, e["owner"]) if e.get("owner") else b""))
 
 
 def _varint(v: int) -> bytes:

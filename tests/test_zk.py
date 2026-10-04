@@ -109,17 +109,20 @@ def test_stake_commitments_and_tree():
 
 def test_registration_binding_matches_go():
     v = VEC["registration_binding"]
+    cid = v["chain_id"]
     idc_, a, e = (int(v[k], 16) for k in ("idc", "pc_anml", "pc_erth"))
     ca, ce = bytes.fromhex(v["ct_anml_hex"]), bytes.fromhex(v["ct_erth_hex"])
-    assert hx(privacy.registration_binding(idc_, a, ca, e, ce, 0)) == v["none"]
+    assert hx(privacy.registration_binding(cid, idc_, a, ca, e, ce, 0)) == v["none"]
     aff = privacy.affiliate_field(v["affiliate_handle"])
     assert hx(aff) == v["affiliate_field"]
-    assert hx(privacy.registration_binding(idc_, a, ca, e, ce, aff)) == v["affiliate"]
+    assert hx(privacy.registration_binding(cid, idc_, a, ca, e, ce, aff)) == v["affiliate"]
     # The affiliate field covers the handle (only: the chain makes the note).
     assert privacy.affiliate_field("amy-3") != aff
     # The binding covers each ciphertext.
-    assert privacy.registration_binding(idc_, a, ca[:-1] + b"\x00", e, ce, 0) != int(v["none"], 16)
-    assert privacy.registration_binding(idc_, a, ca, e, ce[:-1] + b"\x00", 0) != int(v["none"], 16)
+    assert privacy.registration_binding(cid, idc_, a, ca[:-1] + b"\x00", e, ce, 0) != int(v["none"], 16)
+    assert privacy.registration_binding(cid, idc_, a, ca, e, ce[:-1] + b"\x00", 0) != int(v["none"], 16)
+    # And the chain id (audit round 6, B6-4).
+    assert hx(privacy.registration_binding("earth-2", idc_, a, ca, e, ce, 0)) == v["other_chain"] != v["none"]
 
 
 def test_referral_opening_matches_go():
@@ -132,10 +135,10 @@ def test_referral_opening_matches_go():
 
 
 def test_registration_binding_pinned_to_chain_test():
-    # chain zk/privacy TestRegistrationBindingPinned (fced976).
-    want = "20ce5fccf5e6e20a8a7b80f7565e41a7c73dbb16ac5e53746e7234ba8b305b0c"
+    # chain zk/privacy TestRegistrationBindingPinned (f4a217c, chain id bound).
+    want = "148b3513a501b6ff9c02314f355cb83fb544e22b2a9df79552fe49c944424159"
     assert VEC["registration_binding"]["pinned"] == want
-    assert hx(privacy.registration_binding(1, 2, b"anml", 3, b"erth", 0)) == want
+    assert hx(privacy.registration_binding("earth-1", 1, 2, b"anml", 3, b"erth", 0)) == want
 
 
 def test_stake_nullifier_tree_matches_go():

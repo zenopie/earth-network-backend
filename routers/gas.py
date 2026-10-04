@@ -252,10 +252,12 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None
     if max(config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX) >= n:
         raise _Refuse(400, "too few public signals for a passport proof")
 
-    # The binding: the proof's address input must be this msg's idc, pcs,
-    # note ciphertexts (and referral). Someone replaying another registration's proof with
-    # notes of their own fails here, as on chain.
-    if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(idc, pc_anml, ciphertexts[0], pc_erth, ciphertexts[1], affiliate_field):
+    # The binding: the proof's address input must be this chain's id and
+    # this msg's idc, pcs, note ciphertexts (and referral). Someone replaying
+    # another registration's proof with notes of their own, or a proof made
+    # for another chain, fails here, as on chain.
+    if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(
+            config.EARTH_CHAIN_ID, idc, pc_anml, ciphertexts[0], pc_erth, ciphertexts[1], affiliate_field):
         raise _Refuse(400, "proof is bound to a different identity and notes than this registration names")
 
     try:

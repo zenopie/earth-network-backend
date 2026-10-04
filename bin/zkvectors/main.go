@@ -129,15 +129,19 @@ func main() {
 	if aff != affMsg {
 		panic("AffiliateField differs from MsgRegister.AffiliateField")
 	}
+	// The binding covers the chain id (audit round 6, B6-4).
+	const chainID = "earth-1"
 	out["registration_binding"] = map[string]string{
-		"idc": hx(u(11)), "pc_anml": hx(u(12)), "pc_erth": hx(u(13)),
+		"chain_id": chainID,
+		"idc":      hx(u(11)), "pc_anml": hx(u(12)), "pc_erth": hx(u(13)),
 		"ct_anml_hex": hex.EncodeToString(ctA), "ct_erth_hex": hex.EncodeToString(ctE),
-		"none":             hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, fr.Element{})),
+		"none":             hx(privacy.RegistrationBinding(chainID, u(11), u(12), ctA, u(13), ctE, fr.Element{})),
 		"affiliate_handle": "amy-2",
 		"affiliate_field":  hx(aff),
-		"affiliate":        hx(privacy.RegistrationBinding(u(11), u(12), ctA, u(13), ctE, aff)),
+		"affiliate":        hx(privacy.RegistrationBinding(chainID, u(11), u(12), ctA, u(13), ctE, aff)),
+		"other_chain":      hx(privacy.RegistrationBinding("earth-2", u(11), u(12), ctA, u(13), ctE, fr.Element{})),
 		// TestRegistrationBindingPinned's own inputs and value.
-		"pinned": hx(privacy.RegistrationBinding(u(1), u(2), []byte("anml"), u(3), []byte("erth"), fr.Element{})),
+		"pinned": hx(privacy.RegistrationBinding(chainID, u(1), u(2), []byte("anml"), u(3), []byte("erth"), fr.Element{})),
 	}
 
 	// The referral note's opening (the chain mints it; its shielded_mint
@@ -180,9 +184,11 @@ func main() {
 	}
 	addr := privacy.ShieldedAddress{OwnerPK: privacy.OwnerPK(u(42)), EKPub: ek}.Encode()
 	hres := personhoodtypes.QueryHandlesResponse{Handles: []personhoodtypes.HandleEntry{
+		// owner (field 6): "" for a handle never claimed, else the
+		// handle-scope nullifier as 64 lowercase hex.
 		{Handle: "a-1", Address: addr, Status: "free", ExpiresAt: 1600000000, RenewalUntil: 1602592000},
-		{Handle: "bob", Address: addr, Status: "renewal", ExpiresAt: 1700000000, RenewalUntil: 1702592000},
-		{Handle: "zed-99", Address: addr, Status: "live", ExpiresAt: 1800000000, RenewalUntil: 1802592000},
+		{Handle: "bob", Address: addr, Status: "renewal", ExpiresAt: 1700000000, RenewalUntil: 1702592000, Owner: hx(u(5))},
+		{Handle: "zed-99", Address: addr, Status: "live", ExpiresAt: 1800000000, RenewalUntil: 1802592000, Owner: hx(u(6))},
 	}, Next: "zed-99"}
 	hresBz, err := hres.Marshal()
 	if err != nil {
