@@ -1,8 +1,8 @@
-"""Undelegation payouts (chain 48b631c, ORCHARD_DESIGN section 18.1): the chain
-mints an undelegation's value x payout / requested to the msg's pc, with the
-msg's ciphertext, as pool notes (MintNoteSplit, 2^63-1 a note), then emits
-shieldedstaking_unbond_payout. No claim, no unbond/ stake note. Also the
-four-slot stake vote's event (section 18.2), which the index does not read."""
+"""Undelegation payouts (ORCHARD_DESIGN section 18.1): the chain mints an
+undelegation's value x payout / requested to the msg's pc, with the msg's
+ciphertext, as pool notes (MintNoteSplit, 2^63-1 a note), then emits
+shieldedstaking_unbond_payout; no stake note is involved. Also the stake
+vote's event, which the index does not read."""
 import asyncio
 import base64
 import copy
@@ -193,11 +193,11 @@ def test_a_failed_payout_changes_nothing():
     assert d.notes == [] and d.payouts == []
 
 
-# --- two-slot stake votes (four slots at 48b631c) ------------------------------
+# --- two-slot stake votes ---------------------------------------------------------
 
 def test_a_two_note_vote_lists_its_used_slots_only():
-    """The event's vote_nullifiers are the used slots (1..2 since chain
-    dff3a9b), not the msg's two with zeros: a one-note vote lists one."""
+    """The event's vote_nullifiers are the used slots (1..2), not the msg's
+    two with zeros: a one-note vote lists one."""
     counts = {len(a["vote_nullifiers"].split(","))
               for name in (MANY_NOTES, VOTE_SCENARIO) for _, a in _events(load(name), "shieldedstaking_stake_vote")
               if "vote_nullifiers" in a}

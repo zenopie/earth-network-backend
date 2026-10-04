@@ -1,5 +1,5 @@
-"""Note stream format 2 (chain 203d3b2, audit round 5): open notes (the
-referral note the chain mints with a public opening) and split LP payouts
+"""Notes stream format 2: open notes (the referral note the chain mints
+with a public opening) and split LP payouts
 (one payout leg minted as several notes with the same ciphertext)."""
 import base64
 import sqlite3

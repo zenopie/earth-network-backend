@@ -1,4 +1,4 @@
-"""The slash debt tree (chain dff3a9b) and the stake notes private redelegations make.
+"""The slash debt tree ({base}/debt_rows) and the stake notes private redelegations make.
 
 TestRecordRedelegateSlashDebt (bin/chainrec's own scenario, every write in a
 block): a first delegation (a padding spend), two private redelegations A ->

@@ -1,9 +1,9 @@
 """What the recorded staking scenarios hold of the stake note tree.
 
 TestPrivateStakingLifecycle and TestStakeNotesOwnerLocked are real blocks
-(bin/record-chain-fixtures.sh) with shieldedstaking_stake_note events (since
-chain dff3a9b every one a stake proof output with its 201-byte wallet stake
-ciphertext; the chain mints none), shieldedstaking_stake_nullifier (with its
+(bin/record-chain-fixtures.sh) with shieldedstaking_stake_note events (every
+one a stake proof output with its 201-byte wallet stake ciphertext; the
+chain mints none), shieldedstaking_stake_nullifier (with its
 leaf index in the stake nullifier tree; a first delegation's padding
 nullifier included) and shieldedstaking_stake_root (the empty tree's at the
 first block), and the keeper's stake tree and stake nullifier tree sizes and
