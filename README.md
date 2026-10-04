@@ -306,7 +306,7 @@ and under `base` = `/privacy/<chain_id>/<genesis>`:
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nullifier, height]
     GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=  [height, proposal_id, root, tree_size, nf_root, nf_size]
-    GET {base}/handles?from_index=&limit=           [handle, address, status, expires_at, renewal_until]
+    GET {base}/handles?from_index=&limit=           [handle, address, status, expires_at, renewal_until, owner]
 
 ### URL scheme for wallets
 
@@ -504,7 +504,7 @@ endpoint: `{base}/handles` is the whole directory, like every other stream.
 
     GET {base}/handles?from_index=0&limit=1000
     -> {fields, synced_height, height, time, size, from_index, next_index, last_page,
-        handles: [[handle, address, status, expires_at, renewal_until], ...]}
+        handles: [[handle, address, status, expires_at, renewal_until, owner], ...]}
 
 It is a snapshot of the chain's `Query/Handles` (`/earth/personhood/v1/handles`)
 read whole at one height (`height`, block time `time`), in handle order, and
@@ -517,13 +517,25 @@ pages, start over (the snapshot was replaced). `status` is the chain's at
 `expires_at` has passed by your clock as not resolving. Served with
 `max-age=2`.
 
+`owner` (the sixth element; chain `HandleEntry.owner`, field 6, since audit
+round 6) is the handle-scope nullifier that holds the handle, as 64
+lowercase hex characters, or `""` for a handle never claimed. A wallet knows
+a handle is its own when `owner` equals its own handle-scope nullifier
+(`H(TAG_SN, id_secret, Scope("handle"))`), never because the entry names its
+address: anyone can bind a handle to any address. It is already public (the
+claiming bind's membership nullifier, a move's `new_owner`; the handle
+events carry it). The column was appended to the row, so a reader of the
+first five elements is unaffected and the stream has no format number;
+`fields` names all six.
+
 The indexer re-reads it (every page at the last applied height) once caught
 up: after a block with a `handle_bound` / `handle_moved` / `handle_released`
 event, once block time reaches the snapshot's earliest `expires_at` (live) or
 `renewal_until` (renewal), and at least every `HANDLES_MAX_AGE_SECONDS`
 (3600) of block time. Each answer is checked against the chain's rules
 (handle format, strict order across pages, `next` = the page's last handle,
-known status, `erthz1` address, `renewal_until >= expires_at >= 0`, at most
+known status, `erthz1` address, `renewal_until >= expires_at >= 0`, an
+`owner` of 64 lowercase hex characters or empty, at most
 `HANDLES_MAX_ENTRIES`, 200,000); a failed or malformed read keeps the
 previous snapshot and the trees go on. A re-read is at most every
 `HANDLES_MIN_REFRESH_BLOCKS` (10) blocks, since anyone can put a handle

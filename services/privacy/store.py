@@ -148,7 +148,8 @@ CREATE TABLE IF NOT EXISTS handles (
     address       TEXT NOT NULL,
     status        TEXT NOT NULL,
     expires_at    INTEGER NOT NULL,
-    renewal_until INTEGER NOT NULL
+    renewal_until INTEGER NOT NULL,
+    owner         TEXT NOT NULL      -- 64 lowercase hex, "" for a handle never claimed
 );
 -- A directory being read (services/privacy/indexer), page by page; swapped
 -- into handles whole once every page has arrived.
@@ -158,7 +159,8 @@ CREATE TABLE IF NOT EXISTS handles_staging (
     address       TEXT NOT NULL,
     status        TEXT NOT NULL,
     expires_at    INTEGER NOT NULL,
-    renewal_until INTEGER NOT NULL
+    renewal_until INTEGER NOT NULL,
+    owner         TEXT NOT NULL      -- 64 lowercase hex, "" for a handle never claimed
 );
 CREATE INDEX IF NOT EXISTS rates_by_epoch ON rates (epoch, validator);
 CREATE INDEX IF NOT EXISTS rates_by_validator ON rates (validator, height);
@@ -184,6 +186,16 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
         conn.close()
         raise RuntimeError(f"{path} predates open notes (note rows without owner_pk/rho/rcm, from a chain "
                            f"before audit round 5): wipe INDEX_DB and index again")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(handles)")]
+    if cols and "owner" not in cols:
+        # A handle directory from before HandleEntry.owner (chain audit
+        # round 6). It is a snapshot, not history: drop it and the indexer
+        # reads the chain's whole again (handles_due: never taken).
+        with conn:
+            conn.execute("DROP TABLE IF EXISTS handles")
+            conn.execute("DROP TABLE IF EXISTS handles_staging")
+            conn.execute("DELETE FROM meta WHERE key IN ('handles_height', 'handles_time', 'handles_size',"
+                         " 'handles_next_change', 'handles_pending_height')")
     # Readers create the schema too, so an API started before the indexer
     # serves empty streams rather than errors.
     conn.executescript(SCHEMA)
@@ -448,9 +460,9 @@ class Store:
         with self._tx() as c:
             if fresh:
                 c.execute("DELETE FROM handles_staging")
-            c.executemany("INSERT INTO handles_staging (idx, handle, address, status, expires_at, renewal_until)"
-                          " VALUES (?, ?, ?, ?, ?, ?)",
-                          [(offset + i, e.handle, e.address, e.status, e.expires_at, e.renewal_until)
+            c.executemany("INSERT INTO handles_staging (idx, handle, address, status, expires_at, renewal_until, owner)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          [(offset + i, e.handle, e.address, e.status, e.expires_at, e.renewal_until, e.owner)
                            for i, e in enumerate(entries)])
 
     def commit_handles(self, height: int, time: int, next_change: int | None) -> None:

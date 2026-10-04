@@ -36,7 +36,7 @@ def recorded(block: dict) -> list[handles.Entry]:
 
 
 def as_rows(entries) -> list[list]:
-    return [[e.handle, e.address, e.status, e.expires_at, e.renewal_until] for e in entries]
+    return [[e.handle, e.address, e.status, e.expires_at, e.renewal_until, e.owner] for e in entries]
 
 
 # --- wire shape, against the chain's own types ------------------------------
@@ -169,8 +169,8 @@ def _follow(path: str, upto: int | None = None, rpc: FakeRPC | None = None, **kw
                 break
             rpc.tip = b["height"]
             await idx.step()
-            rows = store.conn.execute("SELECT handle, address, status, expires_at, renewal_until FROM handles"
-                                      " ORDER BY idx").fetchall()
+            rows = store.conn.execute("SELECT handle, address, status, expires_at, renewal_until, owner"
+                                      " FROM handles ORDER BY idx").fetchall()
             snaps.append((b, store.meta("handles_height"), [list(r) for r in rows]))
 
     asyncio.run(go())
@@ -286,7 +286,7 @@ def test_stream_serves_the_whole_directory_in_aligned_pages(api):
         assert r.status_code == 200
         assert r.headers["cache-control"] == privacy.TIP
         body = r.json()
-        assert body["fields"] == ["handle", "address", "status", "expires_at", "renewal_until"]
+        assert body["fields"] == ["handle", "address", "status", "expires_at", "renewal_until", "owner"]
         assert body["size"] == len(want)
         assert body["height"] <= body["synced_height"] == sc["blocks"][-1]["height"]
         got += body["handles"]
@@ -338,3 +338,31 @@ def test_empty_before_the_first_snapshot(tmp_path, monkeypatch):
     c = ChainClient(TestClient(app))
     body = c.get("/privacy/handles").json()
     assert (body["height"], body["size"], body["handles"], body["last_page"]) == (None, 0, [], True)
+
+
+def test_a_directory_from_before_owner_is_read_again(tmp_path):
+    """An index whose handles table predates HandleEntry.owner (chain audit
+    round 6) drops the snapshot (not history) and takes a new one."""
+    import sqlite3
+
+    path = str(tmp_path / "i.db")
+    c = sqlite3.connect(path)
+    c.executescript("""
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE handles (idx INTEGER PRIMARY KEY, handle TEXT NOT NULL UNIQUE, address TEXT NOT NULL,
+                              status TEXT NOT NULL, expires_at INTEGER NOT NULL, renewal_until INTEGER NOT NULL);
+        CREATE TABLE handles_staging (idx INTEGER PRIMARY KEY, handle TEXT NOT NULL UNIQUE, address TEXT NOT NULL,
+                              status TEXT NOT NULL, expires_at INTEGER NOT NULL, renewal_until INTEGER NOT NULL);
+        INSERT INTO handles VALUES (0, 'amy', 'erthz1x', 'live', 1, 2);
+        INSERT INTO meta VALUES ('handles_height', '7'), ('handles_time', '9'), ('handles_size', '1'),
+                                ('last_height', '7'), ('chain_id', 'earth-test');
+    """)
+    c.commit()
+    c.close()
+    store = Store(path)
+    assert "owner" in [r[1] for r in store.conn.execute("PRAGMA table_info(handles)")]
+    assert store.conn.execute("SELECT COUNT(*) FROM handles").fetchone() == (0,)
+    assert store.meta("handles_height") is None and store.meta("handles_size") is None
+    assert store.meta("last_height") == "7" and store.meta("chain_id") == "earth-test"
+    assert store.handles_due(3600)
+    store.close()

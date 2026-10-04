@@ -24,7 +24,7 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nf, height]
     GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=   [height, proposal_id, root, tree_size, nf_root, nf_size]
-    GET {base}/handles?from_index=&limit=            [handle, address, status, expires_at, renewal_until]
+    GET {base}/handles?from_index=&limit=            [handle, address, status, expires_at, renewal_until, owner]
 
 genesis is the first 16 hex digits (lowercase) of the hash of the chain's
 first block. earth-1 has been relaunched under the same chain id, so the chain
@@ -66,7 +66,12 @@ snapshot is replaced whole when the directory changes, so a wallet reads
 pages 0 .. size-1 and starts over if `height` differs between its pages.
 status is the chain's at `time`: "live" resolves (pay it, name it as a
 referrer), "renewal" and "free" do not; a wallet also treats a "live" entry
-whose expires_at has passed by its own clock as not resolving. `stale`
+whose expires_at has passed by its own clock as not resolving. owner (the
+sixth element, chain audit round 6) is the handle-scope nullifier holding
+the handle, 64 lowercase hex, "" for a handle never claimed: a wallet knows
+a handle is its own by owner equal to its own handle-scope nullifier, never
+by the address alone. The column was appended, so a reader of the first
+five is unaffected and there is no handle format number. `stale`
 (here and handles_stale in status) is true while the snapshot is
 HANDLES_STALE_BLOCKS or more behind the first handle event the index has
 applied since it (audit-6 L2):
@@ -578,7 +583,7 @@ def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX
     n, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
         rows = c.execute(
-            "SELECT idx, handle, address, status, expires_at, renewal_until FROM handles"
+            "SELECT idx, handle, address, status, expires_at, renewal_until, owner FROM handles"
             " WHERE idx BETWEEN ? AND ? ORDER BY idx",
             (from_index, last),
         ).fetchall()
@@ -586,7 +591,7 @@ def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX
         height, when = _meta(c, "handles_height"), _meta(c, "handles_time")
         response.headers["Cache-Control"] = TIP
         return {
-            "fields": ["handle", "address", "status", "expires_at", "renewal_until"],
+            "fields": ["handle", "address", "status", "expires_at", "renewal_until", "owner"],
             "synced_height": _synced(c),
             "height": int(height) if height else None,
             "time": int(when) if when else None,
