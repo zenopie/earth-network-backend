@@ -30,9 +30,12 @@ x/shieldedstaking/keeper/stake_tree.go):
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
     identity_root        root (hex), tree_size, height        EndBlock
     handle_bound / handle_moved / handle_released
-                         a handle directory record changed (attributes
-                         not read: the directory is re-read whole from the
-                         Handles query, services/privacy/handles)
+                         a handle directory record changed; each carries
+                         owner (the handle-scope nullifier, hex) and
+                         handle_moved also previous_owner. Attributes not
+                         read: the directory, owner included, is re-read
+                         whole from the Handles query
+                         (services/privacy/handles), which is checked there
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
