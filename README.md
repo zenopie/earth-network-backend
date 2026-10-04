@@ -1,272 +1,62 @@
 # earth network backend
 
-Two jobs: gas grants that let a new human make their first transaction, and the
-privacy indexer that serves the shielded pool's public data to wallets (see
-[Privacy indexer](#privacy-indexer)).
+One FastAPI service with two jobs:
 
-## Gas grants: why they exist
+- **Gas grants.** A new human has no ERTH, and on the shielded chain a
+  registration is an unsigned private tx that pays its fee from a shielded
+  note. `POST /gas/register` funds that first note, once per passport in any
+  30 days, for a registration the chain itself would accept. The registration
+  mints a shielded reward that pays every later fee.
+- **The privacy indexer.** Wallets never ask anyone about their own notes.
+  They download every note commitment and ciphertext, every nullifier, every
+  identity leaf and the stake, handle and slash-debt data, rebuild the trees
+  locally and trial-decrypt. The indexer follows the chain into SQLite and
+  serves that data as full-range streams under `/privacy`. There is no
+  endpoint keyed by anything a wallet derives from its keys.
 
-A new user has no ERTH. On the shielded chain a registration is an unsigned
-private tx that pays its fee from a shielded note, so what they need is a note
-— and they cannot make one without ERTH. The backend funds that first note.
+Either runs without the other (`GAS_ENABLED`, `INDEXER_ENABLED`).
 
-Registration mints a shielded ERTH reward that pays every later fee, so this
-subsidises exactly one transaction per new human.
+How the design got here (audit rounds, findings, accepted risks) is in
+[AUDIT_HISTORY.md](AUDIT_HISTORY.md). Finding ids such as `audit-5 M3` in
+code comments refer to it.
 
-The Sybil defence is the passport: a grant needs a registration the chain
-itself would accept, and is paid once per passport in any 30 days. `/gas/register`
-is the only grant. The device-attestation grants (`/gas/challenge`,
-`/gas/ios`, `/gas/android`), `/gas/transparent` and `/gas/human` are gone.
+## Layout
 
-## Endpoints
-
-    POST /gas/register    {proof, public_signals, signature_algorithm, dsc_der,
-                           idc, pc_anml, pc_erth, ciphertext_anml, ciphertext_erth,
-                           affiliate_handle?,
-                           pc_gas, ciphertext_gas, pow?}
-    GET  /gas/pow         the proof of work /gas/register needs now
-    GET  /health          hot wallet balance and how many grants are left in it
-
-`/gas/register` takes the MsgRegister the app is about to broadcast
-(bytes as standard base64, its fee bundle left out; `earthd gas-check`
-ignores the bundle, so it may be absent or empty) and, if the chain would
-accept it, shields `DUST_UERTH` from the hot wallet into a note to `pc_gas` (a
-`MsgShield` carrying `ciphertext_gas`, which the chain emits for the app's own
-trial decryption). Every ciphertext is required and is a note's amount-blind
-v2 ciphertext (`zk/privacy.EncryptBlindNote`), exactly 177 bytes:
-`ciphertext_anml`/`ciphertext_erth` are MsgRegister's own (the proof's binding
-covers them), `ciphertext_gas` is the gas note's.
-The app then broadcasts MsgRegister paying its fee from that note. Once per
-passport in any 30 days (a sliding window over every id of that passport),
-keyed `passport:<nullifier>:<YYYY-MM-DD>`; the replay table stores that key
-and nothing else — no address, no pc. Ids from before the window (`:<YYYY-MM>`)
-share the passport's prefix and count the same. The check is the
-chain's own, through `earthd gas-check registration` (installed in the image
-from the chain release; see the Dockerfile). Proofs are verified here, never by
-the node.
-
-Answers are `{status, message, tx_hash?}` with 200 (sent), 202 (broadcast,
-unresolved), 4xx (cannot succeed as sent; 409 already granted, 413 body over
-64 KiB, 428 proof of work needed, 429 rate or daily limit) or 5xx (retry).
-
-### Once per passport in 30 days — a switch included (by design)
-
-Grants are once per passport in a sliding 30-day window (keyed by calendar
-month, a grant on the 31st and another on the 1st were two, a day apart),
-and gas-check accepts a *switch* (a passport already registered moving to a
-new identity) as readily as a first registration. So a holder can draw one
-grant every 30 days by switching. That is accepted: it costs `DUST_UERTH` per passport per 30 days at
-most, and a switch is a real registration tx the chain charges a fee for (paid
-from that very note). Keying the grant on the nullifier alone would strand a
-holder whose first gas note was lost.
-
-**Cap pressure (audit-4 B4).** Every registered passport can re-draw a
-grant every 30 days by switching, so the registered population is a
-standing claim on the daily cap: N holders cycling switches spend N/30
-grants a day without a single new human. Under one shared cap that crowded
-out first registrations, the grants the service exists for. Switches are
-therefore capped apart: gas-check's verdict says `switched`, and a switch
-grant counts only against `REGISTER_SWITCH_GRANT_MAX_PER_DAY` (100), a first
-registration only against `REGISTER_GRANT_MAX_PER_DAY` (500); the replay
-table records each grant's kind (`''` or `switch`, nothing else). The two
-together bound the hot wallet's daily spend. The before-check 429 fires only
-when both caps are spent (whether a request is a switch is gas-check's
-answer), so while only one is spent a request of that kind costs a check and
-is then refused 429.
-
-### When the shield's outcome is unknown
-
-The shield tx is signed before it is posted, so its hash is known up front.
-A failure while looking up the hot wallet's account or simulating moved
-nothing: the passport is released (502, try again). If the post itself fails
-in a way the node may already have accepted it (a read timeout, a dropped
-connection), the chain is asked for the tx by that hash: landed is a 200,
-included-and-failed releases (502), and not seen within the wait is 202
-`pending` with the `tx_hash` — the claim is kept, since that tx may still
-land, and the app watches the hash. An unresolved send without a hash (none
-exists before signing) releases the claim. The backend logs neither the hash
-nor the passport for a grant (only "registration gas note sent"): a log line
-naming the shield tx at the moment a passport checked out would tie the
-public registration to its gas note by timing.
-
-### What runs before gas-check
-
-A proof verification is the expensive part (one at a time, ~120 MB), so
-everything that can refuse a request without one runs first, in this order:
-
-0. **Body size**: over `MAX_BODY_BYTES` (64 KiB; the largest real request is
-   ~56 KiB) → 413, before anything is read or parsed (`services/bodylimit`,
-   streamed bodies cut off as they arrive). Each field also has a loose
-   length cap → 422.
-1. **Per-client window**: `REGISTER_IP_MAX_PER_WINDOW` requests per
-   `REGISTER_IP_WINDOW_SECONDS` (default 10 an hour), junk included → 429.
-   A client is an IPv4 address or an IPv6 /`REGISTER_IPV6_PREFIX` (48 by
-   default: VPS hosts hand one customer a /48, and keyed by /64 that was
-   65536 clients' budgets; 56 or 64 are looser, for an ingress where many
-   real users share a /48). Its address is
-   `CF-Connecting-IP` when `TRUST_CF_CONNECTING_IP=true` (right only where
-   Cloudflare is the sole ingress — the Akash lease is tunnel-only and sets
-   it), otherwise the TCP peer (the default). Each client is one fixed-size
-   sliding-window counter; at most `REGISTER_IP_MAX_TRACKED` (20000, ~2.5 MiB)
-   are kept, least recently seen evicted first.
-2. **Shape**, as `MsgRegister.ValidateBasic`: base64, idc/pcs canonical
-   32-byte field elements, proof 1..32 KiB, dsc_der 1..8 KiB, all three
-   ciphertexts exactly 177 bytes (a missing one is 422), 1..16 public signals that are canonical decimals; a
-   referral is `affiliate_handle` alone (a handle: a-z, 0-9, -, 3..32, no leading or trailing dash) → 400.
-   `affiliate_pc` / `affiliate_ciphertext` (MsgRegister 11 and 12, removed in chain audit round 5: the
-   chain mints the referral note itself) in the body, even empty, → 400 naming them.
-3. **Binding**: `public_signals[address_index]` must equal
-   `RegistrationBinding = H(TAG_REG, Bytes(chain_id), idc, pc_anml,
-   Bytes(ciphertext_anml), pc_erth, Bytes(ciphertext_erth), affiliate)`,
-   chain_id `EARTH_CHAIN_ID` (since chain audit round 6), affiliate 0 or
-   `H(TAG_AFFILIATE, Bytes(affiliate_handle))` (Python Poseidon2, pinned to
-   the chain's Go vectors) → 400. Someone else's proof with notes or
-   ciphertexts of one's own, or a proof made for another chain, stops here.
-4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
-   `current_date_max_skew_seconds` of now (+10 min) → 400. A `dsc_der`
-   outside its own validity by more than 10 min (the chain's
-   `certificate not valid at current time`, its first check of the
-   certificate) → 400: an expired document signer is the registrant's
-   circumstance, answered without a gas-check and counted against no one
-   (audit-6 M1).
-5. **Replay**: any `passport:<public_signals[nullifier_index] as 32-byte hex>:…`
-   claimed in the last 30 days → 409.
-6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` first-registration grants
-   and `REGISTER_SWITCH_GRANT_MAX_PER_DAY` switch grants in the last 24 h,
-   counted apart (see "Cap pressure" above) → 429; refused here only when
-   both are spent, otherwise after gas-check names the kind.
-7. **Refusal budgets and proof of work**: junk with a forged binding passes
-   every check above, and only gas-check refuses it. Only a refusal that
-   cost a proof verification (the chain's `invalid registration proof`)
-   spends a budget: everything else gas-check refuses on — the DSC does not
-   chain, a signer or country at its daily cap, a used binding — is decided
-   before the verifier runs, and a real registrant meeting a cap must not
-   shed anyone. Those refusals are counted per minute against three
-   budgets: the DSC commitment's (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`, 3),
-   the issuing country's (`REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE`, 4;
-   the DSC certificate's issuer `C=`, which for a DSC that chains is the
-   CSCA's country the chain caps by) and the network's
-   (`REGISTER_REFUSALS_PER_MINUTE`, 5: at most what the 0.1-CPU lease can
-   verify, about six a minute, so verified junk trips it). A request whose signer,
-   country or the network has spent its budget is *shed*: it is queued only
-   with a proof of work at the shedding difficulty, and answered **428**
-   (with `pow.bits`) before the queue without one. Junk naming one signer
-   sheds that signer's registrants — who can still pay the work — and no
-   one else. Every refusal, cheap ones included and in either lane, also
-   counts against the client that sent it
-   (`REGISTER_CLIENT_REFUSALS_PER_WINDOW`, 3 in
-   `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS`, 3600, sliding; audit-5 M3),
-   except a signer's or country's daily cap, which is the registrant's
-   circumstance. Here a client is an IPv4 address or an IPv6
-   /`REGISTER_CLIENT_REFUSAL_IPV6_PREFIX` (64: one subscriber, where a
-   carrier's /48 holds many). A client past it is shed like a spent
-   budget: **428** before the queue without a proof of work at the
-   shedding difficulty, queued with one. It used to be a hard 429 per /48
-   (audit-6 M1): three junk requests an hour from one subscriber, or from
-   anyone behind a CGNAT address, locked out everyone sharing it.
-8. **One check per client**: a client with a gas-check already queued or
-   running gets 429 at once rather than a second place in the queue; the queue
-   as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
-
-**The reserved lane.** `GAS_CHECK_RESERVED_WAITING` (5) of the queue's places
-are kept for a passport not yet granted in 30 days whose DSC commitment
-(`public_signals[PASSPORT_DSC_KEY_INDEX]`, 3) is one the chain already holds
-registrations from, **with a proof of work** at `POW_RESERVED_BITS`, and
-such a check takes the slot ahead of ordinary ones. Without the work the
-same request takes the ordinary lane. The known-DSC set is x/personhood's
-`regs_by_dsc` keys, read whole with one store subspace query
-(`/store/personhood/subspace` over `EARTH_RPC_URL`) at startup and every
-`KNOWN_DSC_REFRESH_SECONDS` (600); a failed refresh keeps the last set. The
-request's `dsc_der` must also be that signer: the backend recomputes the
-chain's DSC commitment from the certificate (`services/dsccommit`, the
-port of `x/pki/certs.DscCommitmentOf`, Brainpool and explicit-parameter
-curves included, pinned to the chain's output) and a mismatch is refused
-400 before the queue, since the chain refuses it for certain (audit-4 B1,
-audit-5 M1). The hash runs in a worker thread, one at a time, cached by
-key, and only over a key of at most 512 bytes (RSA 4096, the largest real
-DSC): a larger key, which the chain accepts up to 2048 bytes, takes the
-ordinary lane unhashed. Both the commitment and the certificate are
-public (every registration publishes them), so junk can still copy a real
-pair, at a proof of work a request. So at most **one** priority check per
-DSC commitment waits or runs at a time; a second request naming that
-signer meanwhile takes the ordinary lane. No refusal demotes a signer
-(audit-5 M3: audit 4's cooldown, five refusals naming a DSC in an hour,
-was anyone's to trigger with the signer's public certificate, and evicted
-its real registrants from the lane). Junk naming one signer holds one place,
-only while its check runs, and its clients lose their places to the client
-refusal budget. A signer's first passport is not in
-the set and takes the ordinary lane, which only fills under a flood.
-
-### Proof of work (wallets implement this)
-
-Hashcash over the registration, checked here with one SHA-256
-(`services/pow`):
-
-    input  = "earth-gas-pow/v1:" + ts + ":" + binding + ":" + nullifier + ":" + nonce   (ASCII)
-    valid  = SHA-256(input) has at least `bits` leading zero bits
-
-- `ts`: unix seconds when the stamp was made; accepted within
-  `POW_MAX_AGE_SECONDS` (600) of the server's clock, either way.
-- `binding`, `nullifier`: `public_signals[1]` and `public_signals[2]`
-  (`PASSPORT_ADDRESS_INDEX`, `PASSPORT_NULLIFIER_INDEX`) exactly as the
-  request sends them, decimal strings. The binding covers idc, both pcs and
-  both note ciphertexts, so a stamp is good for that one registration.
-- `nonce`: 1–64 characters of `[0-9A-Za-z]` (a hex counter is fine).
-- Sent in the body: `"pow": {"ts": 1759363200, "nonce": "1f3a"}`.
-
-`GET /gas/pow` answers `{version, algorithm, input, bits, reserved_bits,
-shedding_bits, shedding, max_age_seconds}`; `bits` admits a request on every
-path right now. `shedding` is true while the network's refusal budget is
-spent or the asking client's own is (step 7). Difficulty is adaptive: `POW_RESERVED_BITS` (16) for the
-reserved lane, `POW_SHED_BITS` (20) while shedding, plus up to
-`POW_LOAD_EXTRA_BITS` (2) as the gas-check queue fills, capped at
-`POW_MAX_BITS` (22). 2^20 hashes is about a second natively on a phone, a
-few seconds in a browser. The wallet flow:
-
-1. `GET /gas/pow`, make a stamp at `bits`, `POST /gas/register` with it.
-2. On **428**, read `pow.bits` from the answer, make a new stamp (fresh
-   `ts`) at that difficulty and post again. A 428 also answers a stamp that
-   was already used, or whose `ts` is too far from now.
-3. A stamp that is relied on (reserved lane or shedding) is accepted
-   once; a request answered 503, or 429 for a check already in flight,
-   gives its stamp back. Retry a 403 (a refusal) with a new one.
-
-A stamp that is not needed (ordinary lane, nothing shed) is ignored and not
-consumed. Under the shared ingress (`TRUST_CF_CONNECTING_IP`) the per-client
-limits still apply to every request, worked or not.
-
-### The gas note can be claimed from the mempool (accepted)
-
-A MsgRegister in the mempool carries everything `/gas/register` asks for
-except `pc_gas`/`ciphertext_gas`, which are the requester's own. Someone who
-copies it from the mempool before the registrant has drawn a grant gets the
-passport's grant (a `DUST_UERTH` note) paid to a pc of theirs, and the
-registrant's own request is then 409 for 30 days. That only happens when a
-registrant broadcasts before asking for gas — the app asks first, since it
-pays MsgRegister's fee from that very note — so the copier takes one dust
-note from a registration that did not need it; the registration itself is
-unaffected (the proof binds idc and the reward notes, not pc_gas), and the
-rolling daily cap bounds the total. Binding pc_gas into the request would
-need a signature by a key the registrant does not have before registering
-(the idc is a commitment, not a key), so this is documented as an accepted
-low risk rather than closed.
-
-The indexes are personhood params, mirrored in config:
-`PASSPORT_NULLIFIER_INDEX=2`, `PASSPORT_ADDRESS_INDEX=1`,
-`PASSPORT_CURRENT_DATE_INDEX=0`, `PASSPORT_DSC_KEY_INDEX=3`,
-`PASSPORT_DATE_MAX_SKEW_SECONDS=172800` (earth-1 genesis `nullifier_index`,
-`address_index`, `current_date_index`, `dsc_key_index`,
-`current_date_max_skew_seconds`). If gas-check returns a nullifier other than
-ours the request is 503 and nothing is claimed: the index is misconfigured.
-Whether the DSC is a trusted signer is not checked here (it needs the
-chain's PKI state); gas-check does that before verifying the proof. The
-known-DSC set only picks the queue lane.
+    main.py                 the app: middleware, routers, background tasks, GET /health
+    config.py               every setting, from the environment (see example.env)
+    entrypoint.py           container entrypoint: chown the state volume, drop root, exec uvicorn
+    routers/gas.py          POST /gas/register, GET /gas/pow
+    routers/privacy.py      the /privacy streams
+    services/
+      bodylimit.py          request body cap (413 before parsing)
+      chain.py              the hot wallet: MsgShield of the dust, broadcast resolved by tx hash
+      shielded_msg.py       earth.shielded.v1.MsgShield, built without the chain's protos
+      gascheck.py           `earthd gas-check registration`, one at a time, two queue lanes
+      ratelimit.py          per-client windows, refusal budgets, one check per client, signer lanes
+      pow.py                the proof of work stamp
+      dsccommit.py          a DSC certificate's chain commitment (x/pki/certs.DscCommitmentOf)
+      knowndsc.py           the DSC commitments the chain holds registrations from
+      replay.py             grant ids and the daily caps (SQLite, STATE_DB)
+      health.py             the hot wallet balance, read in the background
+      privacygate.py        /privacy admission: canonical URLs, CORS, rate, in-flight cap
+      privacy/              the indexer: rpc, events (block parsing), store (SQLite),
+                            handles (the Handles query), indexer (the loop), verify
+      zk/                   Poseidon2, the Merkle, indexed and debt trees, zk/privacy derivations
+    bin/                    deploy tools, tree verification, fixture and vector recorders
+    deploy/akash/           the SDL and the Cloudflare setup
+    tests/                  pytest, by feature (gas_*, privacy_*, handles, debt_rows, ...)
 
 ## Running
 
     pip install -r requirements.txt
-    cp example.env .env      # fill in GAS_WALLET_MNEMONIC, or GAS_ENABLED=false
+    cp example.env .env      # fill in GAS_WALLET_MNEMONIC, or set GAS_ENABLED=false
     uvicorn main:app --host 0.0.0.0 --port 8000
+
+`/gas/register` needs `earthd` (the chain release's binary, `EARTHD_BIN`) and
+a node to read state from (`EARTH_RPC_URL`); the image installs it. The
+indexer runs inside the API process with `INDEXER_ENABLED=true`, or alone:
+
+    python -m services.privacy.indexer
 
 Tests need no chain: gas-check's verdict is stood in for, and recorded chain
 blocks are replayed for the indexer.
@@ -274,549 +64,678 @@ blocks are replayed for the indexer.
     pip install -r requirements-dev.txt
     python -m pytest
 
-## Watch the wallet
+One test (`test_gascheck_live`) runs the real command and is skipped unless
+`EARTHD_BIN` and `GAS_CHECK_LIVE_MSG` (a MsgRegister JSON file) are set.
 
-`/health` reports `grants_remaining`. When the hot wallet runs dry every grant
-fails after the registration checks out. Alert on it. The balance is read
-in the background every `HEALTH_REFRESH_SECONDS` (30) and served from
-memory with `Cache-Control: public, max-age=30` (`read_at` says when), so a
-request never reaches the LCD (audit-5 L3); `"status": "degraded"` means
-the last read failed.
+The image (`Dockerfile`) installs `requirements.lock` (the whole tree, hashed,
+wheels only; regenerate with `bin/lock-requirements.py`) on a digest-pinned
+`python:3.11-slim`, plus `earthd` at `EARTHD_VERSION`, checked against its
+release sha256. It runs as an unprivileged user with the state volume at
+`/app/state` (`STATE_DB`, `INDEX_DB`), uvicorn without access log or proxy
+headers.
 
-## Privacy indexer
+## Configuration
 
-Wallets on the shielded chain never ask anyone about their own notes. They
-download every note commitment and ciphertext, every nullifier and every
-identity leaf, rebuild both trees locally and trial-decrypt. This serves that
-data, and nothing narrower: there is no endpoint keyed by anything a wallet
-derives from its keys.
+Everything comes from the environment; `example.env` lists every setting with
+its default. The only secret the service reads is `GAS_WALLET_MNEMONIC`.
 
-    GET /privacy/status          chain_id, genesis, base, synced height, counts, halted reason
+| group | settings |
+|---|---|
+| HTTP | `MAX_BODY_BYTES` (65536) |
+| chain | `EARTH_NODE_URL` (cosmpy URL, `rest+https://...`), `EARTH_CHAIN_ID` (`earth-1`), `EARTH_PREFIX`, `EARTH_DENOM` (`uerth`), `EARTH_GAS_PRICE`, `CHAIN_HTTP_TIMEOUT` (15 s) |
+| hot wallet | `GAS_WALLET_MNEMONIC` (required when `GAS_ENABLED`), `DUST_UERTH` (100000), `HEALTH_REFRESH_SECONDS` (30) |
+| gas-check | `EARTHD_BIN`, `EARTHD_HOME`, `EARTH_RPC_URL` (CometBFT RPC), `GAS_CHECK_TIMEOUT` (60 s), `GAS_CHECK_MAX_WAITING` (20), `GAS_CHECK_RESERVED_WAITING` (5), `KNOWN_DSC_REFRESH_SECONDS` (600) |
+| personhood params | `PASSPORT_NULLIFIER_INDEX` (2), `PASSPORT_ADDRESS_INDEX` (1), `PASSPORT_CURRENT_DATE_INDEX` (0), `PASSPORT_DSC_KEY_INDEX` (3), `PASSPORT_DATE_MAX_SKEW_SECONDS` (172800); the chain's genesis values, mirrored |
+| per-client limits | `TRUST_CF_CONNECTING_IP` (false), `REGISTER_IP_MAX_PER_WINDOW` (10), `REGISTER_IP_WINDOW_SECONDS` (3600), `REGISTER_IPV6_PREFIX` (48), `REGISTER_IP_MAX_TRACKED` (20000) |
+| refusal budgets | `REGISTER_REFUSALS_PER_DSC_PER_MINUTE` (3), `REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE` (4), `REGISTER_REFUSALS_PER_MINUTE` (5), `REGISTER_REFUSAL_KEYS_TRACKED` (10000), `REGISTER_CLIENT_REFUSALS_PER_WINDOW` (3), `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS` (3600), `REGISTER_CLIENT_REFUSAL_IPV6_PREFIX` (64) |
+| proof of work | `POW_RESERVED_BITS` (16), `POW_SHED_BITS` (20), `POW_LOAD_EXTRA_BITS` (2), `POW_MAX_BITS` (22), `POW_MAX_AGE_SECONDS` (600), `POW_MAX_TRACKED` (100000) |
+| daily caps | `REGISTER_GRANT_MAX_PER_DAY` (500), `REGISTER_SWITCH_GRANT_MAX_PER_DAY` (100) |
+| storage | `STATE_DB` (`ads_for_gas.db`), `INDEX_DB` (`privacy_index.db`) |
+| indexer | `GAS_ENABLED` (true), `INDEXER_ENABLED` (false), `INDEXER_RPC_URL`, `INDEXER_RPC_TIMEOUT` (20), `INDEXER_START_HEIGHT` (0: the node's earliest), `INDEXER_BATCH` (20), `INDEXER_CONCURRENCY` (8), `INDEXER_POLL_SECONDS` (2) |
+| handle directory | `HANDLES_QUERY_LIMIT` (1000), `HANDLES_MAX_AGE_SECONDS` (3600), `HANDLES_MAX_ENTRIES` (200000), `HANDLES_MIN_REFRESH_BLOCKS` (10), `HANDLES_STALE_BLOCKS` (30) |
+| /privacy | `PRIVACY_PAGE_DEFAULT` (1000), `PRIVACY_PAGE_SIZES` (100,1000), `PRIVACY_PAGE_MAX` (1000), `PRIVACY_MAX_CONCURRENT` (4), `PRIVACY_IP_MAX_PER_WINDOW` (240), `PRIVACY_IP_WINDOW_SECONDS` (60), `PRIVACY_CORS_ORIGIN` (`https://erth.network`), `PRIVACY_CORS_LOCALHOST` (true) |
 
-and under `base` = `/privacy/<chain_id>/<genesis>`:
+`TRUST_CF_CONNECTING_IP=true` is right only where Cloudflare is the sole
+ingress (the Akash lease is tunnel-only and sets it); anywhere else the
+header is the client's to choose. `.env` also holds three values only the
+deploy tools read: `DSEQ`, `AKASH_API_KEY`, `TUNNEL_TOKEN`.
 
-    GET {base}/status
-    GET {base}/notes?from_pos=&limit=               [position, height, cm, ciphertext, amount, owner_pk, rho, rcm]  (format 2)
-    GET {base}/nullifiers?from_height=&limit=       [[height, [nf, ...]], ...]
-    GET {base}/identity?from_index=&limit=          [index, height, leaf, zeroed_height, time]
-    GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
-    GET {base}/roots/latest                         note, identity and stake roots, size, height, time
-    GET {base}/rates?epoch=                         [validator, rate, supply, epoch, height]
-    GET {base}/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext]  (format 2)
-    GET {base}/stake/nullifiers?from_height=&limit= [[height, [nf, ...]], ...]
-    GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nullifier, height]
-    GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
-    GET {base}/stake/snapshots?from_height=&limit=  [height, proposal_id, root, tree_size, nf_root, nf_size]
-    GET {base}/handles?from_index=&limit=           [handle, address, status, expires_at, renewal_until, owner]
-    GET {base}/debt_rows?from_index=&limit=         [index, key, retained, height, updated_height]  (+ size, root, clear_before)
+## Endpoints
 
-### URL scheme for wallets
+    POST /gas/register                     a fee note for a registration the chain would accept
+    GET  /gas/pow                          the proof of work /gas/register needs now
+    GET  /health                           hot wallet balance and grants remaining
+    GET  /privacy/status                   which chain the index holds, and its stream base
+    GET  /privacy/<chain_id>/<genesis>/... the streams (below)
+
+`/gas/*` exists only with `GAS_ENABLED=true`. FastAPI's `/docs` and
+`/openapi.json` describe the request schemas.
+
+### GET /health
+
+    {"status": "ok", "wallet": "earth1...", "balance_uerth": N, "dust_uerth": 100000,
+     "grants_remaining": N // dust_uerth, "read_at": unix}
+
+`"status": "starting"` before the first read, `"degraded"` (and nothing else)
+when the last read failed; `{"status": "ok", "gas": "disabled"}` without gas
+grants. The balance is read in the background every `HEALTH_REFRESH_SECONDS`
+and served from memory with `Cache-Control: public, max-age=30`; a request
+never reaches the node. Alert on `grants_remaining`: when the hot wallet runs
+dry every grant fails after the registration checks out.
+
+## Gas grants
+
+### POST /gas/register
+
+The MsgRegister the app is about to broadcast, without its fee bundle (bytes
+as standard base64, as proto JSON), plus where the gas goes:
+
+    {"proof", "public_signals": [decimal strings], "signature_algorithm", "dsc_der",
+     "idc", "pc_anml", "pc_erth", "ciphertext_anml", "ciphertext_erth",
+     "affiliate_handle"?,                     // a referral: a live handle, "" or absent for none
+     "pc_gas", "ciphertext_gas",              // the gas note's pc and its ciphertext
+     "pow"?: {"ts": unix, "nonce": "..."}}    // see Proof of work
+
+Every ciphertext is a note's amount-blind v2 ciphertext
+(`zk/privacy.EncryptBlindNote`), exactly 177 bytes. `ciphertext_anml` and
+`ciphertext_erth` are MsgRegister's own (the proof's binding covers them);
+`ciphertext_gas` is the gas note's, carried on the `MsgShield`.
+`affiliate_pc` / `affiliate_ciphertext` are not MsgRegister fields: a body
+with either, even empty, is refused 400 with a message naming them (the chain
+mints the referral note itself).
+
+If the chain would accept the registration (`earthd gas-check registration`,
+the chain's own code, proof verified here), the hot wallet shields
+`DUST_UERTH` into a note to `pc_gas` with `ciphertext_gas`. The app then
+broadcasts MsgRegister paying its fee from that note.
+
+Answers are `{"status", "message", "tx_hash"?}`:
+
+| code | when |
+|---|---|
+| 200 `success` | the gas note was shielded; `tx_hash` is the shield tx |
+| 202 `pending` | broadcast, not seen within the wait; the grant stays claimed; `tx_hash` to watch |
+| 400 | a check before gas-check failed (shape, binding, date, signer validity, `dsc_der` not the named signer, removed fields) |
+| 403 | gas-check refused it: `message` carries the chain's reason |
+| 409 | this passport was granted in the last 30 days |
+| 413 | body over `MAX_BODY_BYTES` (before anything is parsed) |
+| 422 | not a registration request (schema); `detail` lists the errors |
+| 428 | a proof of work is needed or was not accepted; `pow: {"version", "bits"}` |
+| 429 | per-client window, a check of this client already running, or the daily cap |
+| 502 | the shield failed and moved nothing; the grant is released, retry |
+| 503 | gas-check unavailable, the queue is full, or the node is misconfigured; retry |
+
+### Grant rules
+
+- **Once per passport in any 30 days**, sliding. A grant is recorded as
+  `passport:<nullifier hex>:<YYYY-MM-DD>` (the nullifier is
+  `public_signals[PASSPORT_NULLIFIER_INDEX]`, public on chain anyway) with its
+  kind and time, and nothing else: no address, no pc, no tx hash. Any id
+  under the passport's prefix in the last 30 days refuses another (409),
+  checked before gas-check and again atomically with the insert. Rows older
+  than 31 days are pruned.
+- **Daily caps, by kind.** A *switch* (a passport already registered moving
+  to a new identity; gas-check answers `switched`) counts only against
+  `REGISTER_SWITCH_GRANT_MAX_PER_DAY`, a first registration only against
+  `REGISTER_GRANT_MAX_PER_DAY`, each over the last 24 hours. Before gas-check
+  a request is refused 429 only when both are spent; otherwise the kind's cap
+  decides after the check. A switch can draw a grant every 30 days; capping
+  switches apart keeps them from spending the first-registration cap.
+- **Claim before sending.** The grant is claimed, then shielded. A failure
+  before the post, a connection never made, a CheckTx refusal, or a tx found
+  included-and-failed moved nothing: the claim is released (502). Any other
+  failure after the post (a read timeout, a dropped connection, a proxy's
+  non-200) is resolved by the tx hash, which is known before the post: found
+  and successful is 200, not seen within the wait is 202 and the claim is
+  kept, since the tx may still land.
+- **Nullifier agreement.** gas-check reads the nullifier from the chain's
+  own `nullifier_index`. If it differs from ours the request is 503 and
+  nothing is claimed: `PASSPORT_NULLIFIER_INDEX` is misconfigured.
+- **Logs** never tie a passport to its gas note: a grant logs only
+  "registration gas note sent", a refusal only its kind, and errors pass
+  through a filter that cuts hex and long decimal runs.
+- **Sends are serialised.** One lock over the hot key's account sequence;
+  one replica.
+
+Accepted risks (reasons in AUDIT_HISTORY.md): a MsgRegister copied from the
+mempool before its registrant asked for gas can claim that passport's grant
+to another pc; whether the DSC is a trusted signer is gas-check's to decide,
+not this service's.
+
+### What runs before gas-check, in order
+
+A proof verification is the expensive part (one at a time, ~120 MB), so
+everything that can refuse a request without one runs first:
+
+1. **Body size** over `MAX_BODY_BYTES` → 413 (`services/bodylimit`; a
+   streamed body is cut off as it arrives).
+2. **Per-client window**: `REGISTER_IP_MAX_PER_WINDOW` requests per
+   `REGISTER_IP_WINDOW_SECONDS`, sliding, malformed bodies included → 429. A
+   client is an IPv4 address or an IPv6 /`REGISTER_IPV6_PREFIX` (48); its
+   address is `CF-Connecting-IP` when trusted, else the TCP peer. At most
+   `REGISTER_IP_MAX_TRACKED` clients are tracked, least recently seen evicted.
+3. **Schema**: field types and loose length caps → 422.
+4. **Shape** (`MsgRegister.ValidateBasic`): base64; idc and pcs canonical
+   32-byte field elements; proof 1..32 KiB; `dsc_der` 1..8 KiB; every
+   ciphertext exactly 177 bytes; `signature_algorithm` 1..64 bytes; 1..16
+   public signals, each a canonical decimal field element; a handle `a-z`,
+   `0-9`, `-`, 3..32 characters, no leading or trailing dash → 400.
+5. **Binding**: `public_signals[PASSPORT_ADDRESS_INDEX]` must equal
+   `H(TAG_REG, Bytes(EARTH_CHAIN_ID), idc, pc_anml, Bytes(ciphertext_anml),
+   pc_erth, Bytes(ciphertext_erth), affiliate)`, affiliate 0 or
+   `H(TAG_AFFILIATE, Bytes(affiliate_handle))` (`services/zk/privacy`, pinned
+   to the chain's Go vectors) → 400. Someone else's proof with notes of one's
+   own, or a proof for another chain, stops here.
+6. **Date**: `public_signals[PASSPORT_CURRENT_DATE_INDEX]` (YYMMDD, a real
+   calendar date) within `PASSPORT_DATE_MAX_SKEW_SECONDS` + 10 min of now →
+   400.
+7. **Document signer validity**: a `dsc_der` outside its validity by more
+   than 10 min → 400 (the chain's first check of the certificate; an expired
+   signer is the registrant's circumstance and counts against no one).
+8. **Replay** (409) and **both daily caps spent** (429), as above.
+9. **Shedding and proof of work** (below) → 428.
+10. **Reserved lane**: for a candidate with a proof of work, `dsc_der`'s DSC
+    commitment must be the one `public_signals[PASSPORT_DSC_KEY_INDEX]` names
+    → 400 otherwise.
+11. **One check per client**: a client with a gas-check queued or running →
+    429. The queue holds `GAS_CHECK_MAX_WAITING` → 503 past it.
+
+### Refusal budgets and shedding
+
+Junk with a forged binding passes every check above; only gas-check refuses
+it. What a refusal costs:
+
+- **Verification failures** (the chain's `invalid registration proof`, the
+  only refusal that cost a proof verification) count per minute against the
+  DSC commitment's budget (`REGISTER_REFUSALS_PER_DSC_PER_MINUTE`), the
+  issuing country's (`REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE`; the
+  certificate issuer's `C=`) and the network's (`REGISTER_REFUSALS_PER_MINUTE`,
+  at most what the 0.1-CPU lease can verify). Every other refusal is decided
+  before the verifier runs and spends none of them.
+- **Every refusal** except a signer's or country's daily cap also counts
+  against its client: `REGISTER_CLIENT_REFUSALS_PER_WINDOW` in
+  `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS`, sliding, the client keyed as an
+  IPv4 address or an IPv6 /`REGISTER_CLIENT_REFUSAL_IPV6_PREFIX` (64, one
+  subscriber; the request window stays per /48).
+
+A request whose signer, country, network or client budget is spent is
+**shed**: it is queued only with a proof of work at the shedding difficulty,
+and answered 428 (with `pow.bits`) before the queue without one. Junk naming
+one signer sheds that signer's registrants, who can still pay the work, and
+no one else; junk from a shared network (CGNAT, a carrier /48) costs everyone
+on it a proof of work for a while, never their registration. Setting a
+budget to 0 turns it off.
+
+### The reserved lane
+
+`GAS_CHECK_RESERVED_WAITING` of the queue's places are kept for a passport
+not granted in 30 days whose DSC commitment is one the chain already holds
+registrations from, **with a proof of work** at `POW_RESERVED_BITS`; such a
+check takes the slot ahead of ordinary ones. The known set is
+x/personhood's `regs_by_dsc` keys, read whole with one store subspace query
+over `EARTH_RPC_URL` at start and every `KNOWN_DSC_REFRESH_SECONDS` (a
+failed refresh keeps the last set).
+
+The lane also needs `dsc_der` to be that signer: the backend recomputes the
+chain's DSC commitment from the certificate (`services/dsccommit`, the port
+of `x/pki/certs.DscCommitmentOf`, Brainpool and explicit-parameter curves
+included, pinned to the chain for seven certificates) in a worker thread,
+one at a time, cached by key, for keys of at most 512 bytes (RSA 4096); a
+larger or unparseable key takes the ordinary lane unhashed. A mismatch is
+400. At most one priority check per DSC commitment waits or runs at a time;
+another request naming that signer meanwhile takes the ordinary lane.
+Refusals never demote a signer. A signer's first passport is not in the
+set and takes the ordinary lane, which only fills under a flood.
+
+### Proof of work (wallets implement this)
+
+Hashcash over the registration, checked with one SHA-256 (`services/pow`):
+
+    input = "earth-gas-pow/v1:" + ts + ":" + binding + ":" + nullifier + ":" + nonce   (ASCII)
+    valid = SHA-256(input) has at least `bits` leading zero bits
+
+- `ts`: unix seconds when the stamp was made; accepted within
+  `POW_MAX_AGE_SECONDS` (600) of the server's clock, either way.
+- `binding`, `nullifier`: `public_signals[1]` and `public_signals[2]`
+  (`PASSPORT_ADDRESS_INDEX`, `PASSPORT_NULLIFIER_INDEX`) exactly as sent. The
+  binding covers idc, both pcs and both ciphertexts, so a stamp is good for
+  one registration.
+- `nonce`: 1..64 characters of `[0-9A-Za-z]`.
+- Sent as `"pow": {"ts": 1759363200, "nonce": "1f3a"}`.
+
+`GET /gas/pow` answers
+
+    {"version": "earth-gas-pow/v1", "algorithm": "sha256",
+     "input": "earth-gas-pow/v1:<ts>:<public_signals[1]>:<public_signals[2]>:<nonce>",
+     "bits", "reserved_bits", "shedding_bits", "shedding", "max_age_seconds"}
+
+`bits` admits a request on every path right now: the reserved lane's, or the
+shedding difficulty while the network's budget or the asking client's own is
+spent (`shedding: true`). Difficulty is `POW_RESERVED_BITS` (16) or
+`POW_SHED_BITS` (20), plus up to `POW_LOAD_EXTRA_BITS` (2) as the gas-check
+queue fills, capped at `POW_MAX_BITS` (22). 2^20 hashes is about a second
+natively on a phone.
+
+The wallet flow: `GET /gas/pow`, make a stamp at `bits`, post. On 428 read
+`pow.bits`, make a new stamp (fresh `ts`) and post again; a 428 also answers
+a stamp already used or too far from now. A stamp that is relied on (the
+reserved lane or shedding) is used once, and given back when the check it
+paid for never ran (503, or 429 for a check already in flight). A stamp
+that is not needed is ignored and not consumed.
+
+## Privacy streams
+
+### URL scheme
 
 `genesis` is the first 16 hex digits (lowercase) of the hash of the chain's
-first block; `/privacy/status` also gives the full `genesis_hash`. earth-1
-has been relaunched under the same chain id, and full pages are served
-`immutable`, so a CDN could otherwise hand a wallet the previous chain's
-notes after a relaunch. Keyed paths make that impossible:
+first block. A relaunch keeps the chain id, and full pages are cached
+`immutable`, so every stream lives under a base that names both:
 
-1. `GET /privacy/status` (unkeyed, `max-age=2`). Read `base`, `chain_id`
-   and `genesis`. `base` is null until the indexer has met its chain.
-2. If `(chain_id, genesis)` differs from what the wallet's local sync was
-   built from, discard the local trees and resync from zero.
-3. Fetch every stream under `base`. A path naming any other chain is
-   `404` with `Cache-Control: no-store`; on a 404, go back to 1.
+1. `GET /privacy/status` (`max-age=2`): read `base`, `chain_id`, `genesis`
+   (and `genesis_hash`, the full hash). `base` is null until the indexer has
+   met its chain.
+2. If `(chain_id, genesis)` differs from what the local sync was built from,
+   discard the local trees and resync from zero.
+3. Fetch every stream under `base` = `/privacy/<chain_id>/<genesis>`. A path
+   naming any other chain is 404 `no-store`; on a 404 go back to 1.
 
-A wallet that wants to pin the chain independently can compare
-`genesis_hash` with its own node's hash for the chain's first block.
-The old unkeyed stream paths (`/privacy/notes`, ...) are gone.
+### Common rules
 
-Compact JSON (rows as arrays, field order in `fields`), gzip'd.
+- Compact JSON, gzip'd: rows are arrays, their column names in `fields`. 32-byte
+  values are lowercase hex, ciphertexts standard base64.
+- **Paging.** `limit` is one of `PRIVACY_PAGE_SIZES` (100 or 1000; default
+  1000), anything else 400 `no-store`. Position- and index-paged streams
+  (`notes`, `identity`, `stake/notes`, `stake/nullifier-tree`, `handles`,
+  `debt_rows`) take only a page-aligned cursor: `from_pos` / `from_index` a
+  multiple of `limit` (else 400 `no-store`), and page k is exactly positions
+  `[k*limit, (k+1)*limit)`. A short page (`complete: false`) reaches the tip;
+  its `next_*` is one past the last row, and to continue later ask for the page
+  that contains it (`next - next % limit`) and drop the rows already held. For
+  the two indexed trees the first page is `from_index=0` and holds leaves
+  1..limit-1 (leaf 0, the sentinel, is never a row). Height-paged streams
+  (`nullifiers`, `identity/zeroed`, `stake/nullifiers`, `stake/roots`,
+  `stake/snapshots`) take any `from_height`; a page never splits a block, so
+  `next_height` is always a clean cursor (one block larger than `limit` comes
+  whole).
+- **Consistency.** Each response's rows and its `synced_height` /
+  `next_height` come from one SQLite snapshot.
+- **Caching.** A page that filled its limit covers a closed range and is
+  `public, max-age=31536000, immutable`, once every height in it has passed
+  the indexer's tree-size check; otherwise `max-age=2`. Identity leaves
+  (zeroable later) are `max-age=10` when full, `debt_rows` and `handles`
+  always `max-age=2`, rates 30 s (86400 for a closed epoch).
+- **Halted index.** Every `{base}/*` answer is 503 `no-store`
+  (`Retry-After: 60`); `/privacy/status` says why in `halted`.
+- **Admission** (`services/privacygate`, before any handler): only the
+  canonical spelling of a URL (known parameters, each once, in alphabetical
+  order, plain decimals without leading zeros, nothing percent-encoded;
+  else 400 `no-store`); an unknown path is 404 `no-store`; at most
+  `PRIVACY_MAX_CONCURRENT` responses in flight (503, `Retry-After: 1`);
+  `PRIVACY_IP_MAX_PER_WINDOW` requests per client per window (429). Only CDN
+  misses reach the origin; the Cloudflare rules are in
+  deploy/akash/README.md.
+- **CORS.** Every `/privacy` response, refusals included, carries
+  `Access-Control-Allow-Origin: PRIVACY_CORS_ORIGIN` whatever the Origin
+  (fixed, so a CDN copy is right for everyone); a local dev origin
+  (`http://localhost[:port]`, `http://127.0.0.1[:port]`) gets its own back
+  with `no-store`. GET and HEAD, no credentials; OPTIONS is 204.
+- Integer parameters above 2^63-1 are 422.
 
-**Paging rule (wallets implement this; audit-4 B3).** `limit` is one of
-`PRIVACY_PAGE_SIZES` — 100 or 1000; default 1000; anything else is 400. A
-position- or index-paged stream (`notes`, `identity`, `stake/notes`,
-`stake/nullifier-tree`, `debt_rows`, `handles`) takes only a page-aligned cursor: `from_pos` /
-`from_index` must be a multiple of `limit` (else 400, `no-store`), and page
-`k` is exactly positions `[k*limit, (k+1)*limit)`. A full page's
-`next_pos`/`next_index` is the next aligned cursor. A page that reaches the
-tip is short (`complete: false`) and its `next_*` is one past the last row;
-to continue later, ask for the page that contains it,
-`from = next - next % limit`, and drop the rows already held. The stake
-nullifier tree's and the debt tree's first page is `from_index=0` (leaf 0,
-the sentinel, is never a row, so it holds leaves 1..limit-1). Every wallet thus asks for the same
-URLs, a CDN keeps one copy of each, and an uncached page is no longer a URL
-anyone can mint (every distinct `from_pos` used to be a distinct cache key,
-and a 5000-row page cost ~8 MiB of heap and ~0.3 s on a laptop, seconds on
-the lease; a 1000-row page is ~1.6 MiB). Height-paged streams keep a free
-`from_height` (a page ends at a block boundary, so `next_height` cannot be
-aligned); their rows are 32-byte values and the fixed sizes apply. All of
-/privacy is behind an in-flight cap (`PRIVACY_MAX_CONCURRENT`, 4: 503 with
-`Retry-After: 1`) and a per-client rate (`PRIVACY_IP_MAX_PER_WINDOW`, 240 per
-`PRIVACY_IP_WINDOW_SECONDS`, 60: 429), counting only what misses the CDN; the
-Cloudflare cache and rate-limit rules are in deploy/akash/README.md.
+### Status
 
-Height-paged streams never
-split a block, so `next_height` is always a clean cursor; a response's rows
-and its `synced_height`/`next_height` are read in one SQLite snapshot, so a
-block committed mid-request is never skipped by following `next_height`.
-Integer parameters are bounded to int64 (larger: 422). A page that filled
-its limit covers a closed range and is served `immutable`; the tip page,
-identity leaves (zeroable later), roots, rates and status get short max-ages.
-`amount` is set only for notes whose value is already public (a shield or a
-module mint). Every note row has a `ciphertext`; a shielded or minted note's
-is the required 177-byte amount-blind v2 ciphertext (`EncryptBlindNote`: no
-asset or value inside — the wallet decrypts it, recomputes `pc` and checks
-`cm = H(TAG_CM, AssetID(denom), amount, pc)` against the row's `amount`). A wallet that has synced identity leaves follows
-`/identity/zeroed` rather than re-reading them. An identity row's `time` is
-the block time (unix seconds) of its `height`.
+    GET /privacy/status        (also {base}/status)
 
-`/stake/*` is x/shieldedstaking's stake note tree (owner-locked
-`derth/<valoper>` notes; its own nullifiers and roots), served the same way.
-Since chain dff3a9b every stake note is a stake proof output with its
-201-byte wallet stake ciphertext (stake row format 2, below); the chain
-mints none.
+    {"chain_id", "genesis", "genesis_hash", "base", "synced_height", "synced_time",
+     "start_height", "notes", "note_format": 2, "identity_leaves", "nullifiers",
+     "stake_notes", "stake_nullifiers", "stake_nf_tree_size", "stake_note_format": 2,
+     "debt_tree_size", "handles", "handles_height", "handles_stale", "halted"}
 
-### Stream row changes for wallets (chain fced976)
+`notes`, `identity_leaves`, `stake_notes` are tree sizes; `stake_nf_tree_size`
+and `debt_tree_size` count the sentinel (0 when empty). `halted` is null or
+the reason the indexer stopped.
 
-(The `/stake/notes` part is superseded by stake row format 2, chain dff3a9b,
-below: no stake note is minted any more.)
+### Notes (format 2)
 
-One note-discovery rule: a wallet finds every note it owns by trial
-decryption alone.
-
-- `/notes`: unchanged columns. Minted and shielded rows (`amount` set) now
-  always carry a 177-byte v2 ciphertext; before, it could be empty. Decrypt
-  with `DecryptBlindNote`, then match `cm` using the row's public `amount`.
-- `/stake/notes`: unchanged columns. Minted rows (`denom`/`amount`/`spc`
-  set) now carry a `ciphertext` (was `null`): the blind stake ciphertext.
-  Decrypt, recompute `spc = H(TAG_SPC, owner_pk, rho, rcm)`, compare with the
-  row's `spc`. Created rows are as before.
-- Nullifier, identity, root and rate streams are unchanged. MsgSend and the
-  private fee emit the same events as before.
-- An index built before this format has null stake ciphertexts; the chain
-  change is consensus-breaking, so a fresh index (new `INDEX_DB`) goes with
-  the new chain. `/stake/roots` is every
-root the chain recorded (one per block that moved the tree), so a wallet can
-pick any anchor still in the window or a proposal's snapshot root.
-
-### Note stream format 2 (chain 203d3b2, audit round 5)
-
-The chain now mints the referral note itself (chain ORCHARD_DESIGN.md
-section 16): to the referrer handle's address, with an opening it derives
-and publishes, and **no ciphertext**. Trial decryption cannot find it, so
-the notes stream carries the opening. Every notes page has `"format": 2`
-and `/privacy/status` (and `{base}/status`) has `"note_format": 2`.
-
-    GET {base}/notes?from_pos=0&limit=1000
+    GET {base}/notes?from_pos=&limit=
 
     {"format": 2,
      "fields": ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"],
-     "synced_height": H, "from_pos": 0, "next_pos": N, "complete": true|false,
+     "synced_height", "from_pos", "next_pos", "complete",
      "notes": [[position, height, cm, ciphertext, amount, owner_pk, rho, rcm], ...]}
 
-| column | type | value |
-|---|---|---|
-| `position` | int | leaf position in the note tree |
-| `height` | int | block height that appended it |
-| `cm` | hex, 64 chars | note commitment |
-| `ciphertext` | base64 string, or `null` | the note's ciphertext; `null` exactly for an open note |
-| `amount` | string `"<n><denom>"`, or `null` | public value (shield, chain mint, open note); `null` for a bundle output |
-| `owner_pk` | hex, 64 chars, or `null` | an open note's owner_pk; `null` on every other row |
-| `rho` | hex, 64 chars, or `null` | an open note's rho |
-| `rcm` | hex, 64 chars, or `null` | an open note's rcm |
+| column | value |
+|---|---|
+| `position` | leaf position in the note tree |
+| `height` | block that appended it |
+| `cm` | note commitment, hex |
+| `ciphertext` | base64; `null` exactly for an open note |
+| `amount` | `"<n><denom>"` when the value is public (shield, chain mint, open note), else `null` |
+| `owner_pk`, `rho`, `rcm` | an open note's public opening, hex; all three `null` on every other row |
 
-`owner_pk`, `rho`, `rcm` are all set or all `null`. Three kinds of row:
+Three kinds of row:
 
-1. **Bundle output** (`amount` null, `ciphertext` set, opening null):
-   trial-decrypt as before.
-2. **Minted or shielded note** (`amount` and `ciphertext` set, opening
-   null): `DecryptBlindNote`, recompute `pc`, check
-   `cm = H(TAG_CM, AssetID(denom), amount, pc)` with the row's amount.
-3. **Open note** (`ciphertext` null, `amount` and the opening set): today
-   only the referral note. A wallet takes every row whose `owner_pk`
-   equals its own, computes `pc = H(TAG_PC, owner_pk, rho, rcm)` and checks
-   `cm = H(TAG_CM, AssetID(denom), amount, pc)`; the note is then its own at
-   `position`, spendable with its nk (rho is the row's). Matching is local:
-   there is no per-owner lookup, the wallet scans the rows it downloads
-   anyway. The opening is `rho = H(TAG_REFERRAL, passport nullifier,
-   leaf_index, 0)`, `rcm = H(..., 1)` (TAG_REFERRAL = "earth.referral"),
-   which the wallet need not recompute (the cm check suffices).
+1. **Bundle output** (`amount` null, `ciphertext` set): trial-decrypt.
+2. **Shielded or chain-minted note** (`amount` and a 177-byte `ciphertext`
+   set): decrypt with `DecryptBlindNote` (no asset or value inside),
+   recompute `pc` and check `cm = H(TAG_CM, AssetID(denom), amount, pc)`
+   with the row's amount. Undelegation payouts are such rows (`"<n>uerth"`,
+   the undelegate msg's ciphertext), minted in a later block's EndBlock.
+3. **Open note** (`ciphertext` null, `amount` and the opening set): the
+   referral note the chain mints to a referrer handle's address. A wallet
+   takes rows whose `owner_pk` is its own, computes
+   `pc = H(TAG_PC, owner_pk, rho, rcm)` and checks
+   `cm = H(TAG_CM, AssetID(denom), amount, pc)`; the note is then its own,
+   spendable with its nk. Matching is local over rows it downloads anyway.
 
-**Split payouts.** An LP payout leg (or an undelegation payout, below)
-above 2^63-1 is minted as several notes (`MintNoteSplit`; up to 128 for an
-LP leg): consecutive kind-2 rows with the **same** `ciphertext` and each its
-own `position` and `amount` (2^63-1 each, the last the remainder). Decrypt once, then check each row's `cm` with that
-row's amount; every row is a separate note the wallet owns. A wallet that
-stops at the first row a ciphertext decrypts to, or dedupes by ciphertext,
-loses the rest.
+**Split payouts.** A payout above 2^63-1 (an LP leg, up to 128 notes, or an
+undelegation) is minted as several consecutive kind-2 rows with the same
+ciphertext, each its own position and amount (2^63-1 each, the last the
+remainder). Decrypt once and check every row's `cm` with that row's amount:
+each is a separate note. Read columns by name and refuse a page whose
+`format` is not 2.
 
-Migration: format 1 rows had five columns and `ciphertext` never null.
-Read columns by name from `fields`, and refuse a notes page whose `format`
-is not 2 (an old backend). The chain change is a fresh genesis, so the
-`base` changes and no format-1 page exists under the new one; an index
-built by an earlier backend refuses to open ("predates open notes": wipe
-`INDEX_DB`).
+### Nullifiers
 
-### Undelegation payouts and four-note votes (chain 48b631c)
+    GET {base}/nullifiers?from_height=&limit=
 
-Chain ORCHARD_DESIGN.md section 18. **No stream format change**: notes stay
-format 2 (same `fields`), `/stake/*` keeps its columns.
+    {"fields": ["height", "nullifiers"], "synced_height", "from_height", "next_height",
+     "complete", "blocks": [[height, [nf, ...]], ...]}
 
-- **An undelegation pays out by itself.** MsgUndelegate names a pool pc and
-  ciphertext; once the unbonding matures the chain mints the payout (uerth)
-  to that pc with that ciphertext, in a later block's EndBlock. The payout
-  notes are ordinary kind-2 rows of `/notes` (`amount` `"<n>uerth"`,
-  `ciphertext` the msg's 177-byte blind one, opening null): the wallet finds
-  them by trial decryption like any chain-minted note. A payout above
-  2^63-1 is split as above (same ciphertext at several positions, each row
-  its own note). `shieldedstaking_unbond_payout` (`payout_id`, `validator`,
-  `epoch`, `value`, `amount`, `notes`, `positions`) follows the mints; the
-  indexer checks its positions are this block's x/shieldedstaking uerth
-  mints with one ciphertext summing to `amount` (else it halts) and stores
-  nothing else. A failed payout (`shieldedstaking_unbond_payout_failed`)
-  mints nothing and is retried by the chain.
-- **Gone:** MsgClaimUnbonding, the `unbond/<valoper>/<epoch>` claim notes
-  (no `/stake/notes` row has an `unbond/` denom; wallets drop claim-note
-  scanning and the claim flow).
-- **Stake votes:** `shieldedstaking_stake_vote` carries `vote_nullifiers`
-  (comma-separated hex) instead of `vote_nullifier`. The event lists the
-  used slots only (1..4 entries; the msg itself always has four, zeros
-  after the used ones). Vote nullifiers spend nothing and are in no tree:
-  the stake nullifier tree is unchanged. The index does not read votes.
-- The chain change is a fresh genesis, so `base` changes; an older index is
-  not reused.
+Every nullifier the pool spent, in spend order within a block.
 
-### Stake row format 2 and the slash debt tree (chain dff3a9b)
+### Identity
 
-Chain ORCHARD_DESIGN.md section 20: one stake note per validator, the chain
-mints no stake note, and a private redelegation's credit carries a slash
-label that the slash debt tree settles. Two stream changes and one new
-stream; every other stream is unchanged (`/notes` stays format 2).
+    GET {base}/identity?from_index=&limit=
 
-**`/stake/notes` is format 2.** Every page has `"format": 2`;
-`/privacy/status` (and `{base}/status`) has `"stake_note_format": 2`.
+    {"fields": ["index", "height", "leaf", "zeroed_height", "time"], "synced_height",
+     "size", "from_index", "next_index",
+     "leaves": [[index, height, leaf, zeroed_height, time], ...]}
 
-    GET {base}/stake/notes?from_pos=0&limit=1000
+    GET {base}/identity/zeroed?from_height=&limit=
 
-    {"format": 2,
-     "fields": ["position", "height", "cm", "ciphertext"],
-     "synced_height": H, "from_pos": 0, "next_pos": N, "complete": true|false,
+    {"fields": ["height", "indexes"], "synced_height", "from_height", "next_height",
+     "complete", "blocks": [[height, [index, ...]], ...]}
+
+The identity tree's leaves in index order; `time` is the block time (unix
+seconds) of `height`, `zeroed_height` the block that zeroed the leaf (a zeroed
+leaf is 0 in the tree) or null. A wallet that holds a range follows
+`/identity/zeroed` rather than re-reading leaves.
+
+### Roots and rates
+
+    GET {base}/roots/latest
+
+    {"synced_height", "note": R, "identity": R, "stake": R}
+    R = {"root", "tree_size", "height", "time"} or null
+
+    GET {base}/rates?epoch=
+
+    {"fields": ["validator", "rate", "supply", "epoch", "height"], "synced_height",
+     "epoch", "latest_epoch", "rates": [[validator, rate, supply, epoch, height], ...]}
+
+Rates are each validator's derth rate at the end of `epoch`, or each
+validator's latest without it. An epoch sweeps 200 validators a block; the
+rest come in following blocks and are labelled with the epoch the sweep
+belongs to.
+
+### Stake notes (format 2)
+
+x/shieldedstaking's stake note tree (owner-locked `derth/<valoper>` notes,
+one per validator a wallet stakes with), served like the pool's.
+
+    GET {base}/stake/notes?from_pos=&limit=
+
+    {"format": 2, "fields": ["position", "height", "cm", "ciphertext"],
+     "synced_height", "from_pos", "next_pos", "complete",
      "notes": [[position, height, cm, ciphertext], ...]}
 
-| column | type | value |
-|---|---|---|
-| `position` | int | leaf position in the stake note tree |
-| `height` | int | block height that appended it |
-| `cm` | hex, 64 chars | `H(TAG_STAKE, AssetID(derth/<valoper>), amount, spc, label)`, label 0 or `H(TAG_SLABEL, move_key, move_time, exposed)` (`TAG_SLABEL = "earth.slabel"`) |
-| `ciphertext` | base64, never null | the wallet stake ciphertext, exactly **201 bytes**: `epk \|\| AEAD(0x04 \|\| asset \|\| amount \|\| rho \|\| rcm \|\| move_key \|\| move_time \|\| exposed) \|\| tag` (label fields zero when unlabelled) |
+| column | value |
+|---|---|
+| `position` | leaf position in the stake note tree |
+| `height` | block that appended it |
+| `cm` | `H(TAG_STAKE, AssetID(derth/<valoper>), amount, spc, label)`, label 0 or `H(TAG_SLABEL, move_key, move_time, exposed)` |
+| `ciphertext` | base64, never null: the wallet stake ciphertext, exactly 201 bytes, `epk \|\| AEAD(0x04 \|\| asset \|\| amount \|\| rho \|\| rcm \|\| move_key \|\| move_time \|\| exposed) \|\| tag` (label fields zero when unlabelled) |
 
-Format 1 had `denom`, `amount`, `spc` (public for a chain-minted note) and
-177-byte blind stake ciphertexts; both are gone. Read columns by name and
-refuse a stake page whose `format` is not 2. A wallet finds its stake notes
-by trial decryption only: every row is a proof output (lane A's
-`commitment`, then the credit lane's `credit_commitment`, in append order),
-the zero note a full exit creates included. The indexer refuses (halts on) a
-stake note event with `denom`/`amount`/`spc` or a ciphertext that is not 201
-bytes.
+The chain mints no stake note: every row is a stake proof output (lane A's
+`commitment`, then the credit lane's `credit_commitment`), the zero note of
+a full exit included. A wallet finds its stake notes by trial decryption
+only. Read columns by name and refuse a page whose `format` is not 2.
 
-**Stake nullifiers.** Every non-zero nullifier of a stake proof is inserted
-and streamed (`/stake/nullifiers`, `/stake/nullifier-tree`), padding ones
-included: a first delegation spends a padding nullifier in its first slot
-(one nullifier, one note); a redelegation spends lane A's note and the
-credit lane's note or padding (two nullifiers, two notes: the change, and
-the labelled credit). A redelegation's `move_key` is its credit nullifier
-(the second of the two). The chain cannot tell padding from a real spend
-and neither can the index. The stake tree's empty root is recorded at the
-first block (`/stake/roots` has a row with `tree_size` 0), so a first
-delegation's padding input proves against it.
+### Stake nullifiers, the stake nullifier tree, roots and snapshots
 
-**New: `{base}/debt_rows`**, the slash debt tree (zk/debt): one row per
-slashed private redelegation, keyed by its move key, holding what its
-credited exposure is still worth. Wallets need every row, the root and
-`clear_before` to clear a label (any lane-A stake proof after the window)
-or vote a labelled note, both against the CURRENT `debt_root`. Served whole
-by leaf index; there is no lookup by move key.
+    GET {base}/stake/nullifiers?from_height=&limit=      {"fields": ["height", "nullifiers"], ..., "blocks"}
+    GET {base}/stake/nullifier-tree?from_index=&limit=   {"fields": ["index", "nullifier", "height"],
+                                                          "synced_height", "size", "from_index",
+                                                          "next_index", "complete", "nullifiers"}
+    GET {base}/stake/roots?from_height=&limit=           {"fields": ["height", "root", "tree_size", "time"], ..., "roots"}
+    GET {base}/stake/snapshots?from_height=&limit=       {"fields": ["height", "proposal_id", "root",
+                                                          "tree_size", "nf_root", "nf_size"], ..., "snapshots"}
 
-    GET {base}/debt_rows?from_index=0&limit=1000
+Every non-zero nullifier of a stake proof is inserted, padding ones
+included: a first delegation spends a padding nullifier (one nullifier, one
+note), a redelegation two (the change and the labelled credit; its
+`move_key` is the second). The stake nullifier tree is an indexed (sorted)
+depth-32 Poseidon2 tree whose leaf positions are insertion order (leaf 0
+the sentinel), so `/stake/nullifier-tree` serves it by leaf index; `size`
+counts the sentinel, 0 when empty.
+
+`/stake/roots` is every root the chain recorded (one per block that moved
+the tree, the empty tree's at the first block with `tree_size` 0), so a
+wallet can pick any anchor still in the window. `/stake/snapshots` is every
+proposal snapshot (`root` `""` when the note tree had none yet; `nf_size`
+counts the sentinel).
+
+To vote: take the proposal's snapshot, insert leaves `1 .. nf_size - 1` in
+index order into an indexed tree (`leaf = H(TAG_SNFL, value, next_value,
+next_index)`; `services/zk/indexed.py` is a reference), check the root equals
+`nf_root`, and prove the low leaf of the note's nullifier.
+
+### Handles (owner)
+
+    GET {base}/handles?from_index=&limit=
+
+    {"fields": ["handle", "address", "status", "expires_at", "renewal_until", "owner"],
+     "synced_height", "height", "time", "size", "stale", "from_index", "next_index",
+     "last_page", "handles": [[handle, address, status, expires_at, renewal_until, owner], ...]}
+
+The whole handle directory, so a wallet paying a handle does not tell this
+server which: a snapshot of the chain's `Query/Handles` read at one height
+(`height`, block time `time`), in handle order, paged by place in it. Read
+pages until `last_page`; if `height` changes between pages, start over.
+
+- `status` is the chain's at `time`: `live` resolves (pay it, or name it as
+  a registration's `affiliate_handle`); `renewal` (owner-only, until
+  `renewal_until`) and `free` do not. Treat a `live` entry whose `expires_at`
+  has passed by your clock as not resolving.
+- `owner` is the handle-scope nullifier holding the handle, 64 lowercase hex,
+  or `""` for a handle never claimed. A wallet knows a handle is its own when
+  `owner` equals its own handle-scope nullifier
+  (`H(TAG_SN, id_secret, Scope("handle"))`), never because the entry names
+  its address. It is already public (the handle events carry it).
+- `stale` (`handles_stale` in status) is true once the first handle event
+  the snapshot has not caught up with is `HANDLES_STALE_BLOCKS` or more
+  blocks old. Do not pay a handle from a stale directory.
+
+The indexer re-reads the directory once caught up: after a block with a
+`handle_bound` / `handle_moved` / `handle_released` event, once block time
+reaches the snapshot's earliest `expires_at` (live) or `renewal_until`
+(renewal), and at least every `HANDLES_MAX_AGE_SECONDS` of block time; at
+most every `HANDLES_MIN_REFRESH_BLOCKS` blocks. Each page is checked against
+the chain's rules (handle format, strict order, known status, `erthz1`
+address, `renewal_until >= expires_at >= 0`, owner shape, at most
+`HANDLES_MAX_ENTRIES`), parsed in a worker thread, staged in SQLite and
+swapped in whole; a failed or malformed read keeps the previous snapshot.
+
+### Debt rows (the slash debt tree)
+
+One row per slashed private redelegation, keyed by its move key (the
+redelegation's credit nullifier), holding what its credited exposure is
+still worth. A wallet needs every row, the root and `clear_before` to clear
+a label or vote a labelled note against the current `debt_root`.
+
+    GET {base}/debt_rows?from_index=&limit=
 
     {"format": 1,
      "fields": ["index", "key", "retained", "height", "updated_height"],
-     "synced_height": H,
-     "size": S,                    // leaf count, sentinel included; 0 before the first row
-     "root": "<hex32>",            // the debt root at synced_height (the empty root
-                                   // 0cea3d3e...6903 when there is no row)
-     "root_height": h | null,      // the block that last wrote a row
-     "window_seconds": W | null,   // Query/DebtTree at clear_before_height
-     "clear_before": C | null,     //   (block time - window): null until the indexer checked
-     "clear_before_height": h | null,
-     "from_index": 0, "next_index": N, "complete": true|false,
-     "rows": [[1, "<hex32 key>", retained, height, updated_height], ...]}
+     "synced_height",
+     "size",                  // leaf count, sentinel included; 0 before the first row
+     "root",                  // the debt root at synced_height (the empty root when there is no row)
+     "root_height",           // the block that last wrote a row, or null
+     "window_seconds",        // the chain's Query/DebtTree at clear_before_height,
+     "clear_before",          //   null until the indexer has checked
+     "clear_before_height",
+     "from_index", "next_index", "complete",
+     "rows": [[index, key, retained, height, updated_height], ...]}
 
-| column | type | value |
-|---|---|---|
-| `index` | int | the row's leaf (1, 2, ... in insertion order; leaf 0 is the sentinel, never a row) |
-| `key` | hex, 64 chars | the move key: the redelegation's credit nullifier (`shieldedstaking_redelegate` `move_key`) |
-| `retained` | int | derth the move's exposure is still worth (latest; it only falls) |
-| `height` | int | block that wrote the row first |
-| `updated_height` | int | block that wrote it last (a later slash of the same move rewrites it in place) |
+`index` is the row's leaf (1, 2, ... in insertion order); `retained` only
+falls, and a later slash of the same move rewrites the row in place
+(`updated_height`), so no page is immutable. To use it: read every page,
+insert the rows in `index` order into an indexed tree
+(`leaf = H(TAG_DEBTL, key, next_key, next_index, retained)`, sentinel leaf
+`H(TAG_DEBTL, 0, 0, 0, 0)` at index 0; `services/zk/debt.py` is a reference)
+and check the root equals `root` (if not, a row changed between pages: read
+them all again). A move's witness is its own leaf when its key is listed,
+else its low leaf (absent: worth the whole exposure). `clear_before` only
+grows, so the one served is always safe to name; the label clears when
+`move_time < clear_before`. The chain refuses a `debt_root` that is not the
+current one. The chain's own `Query/DebtTree`
+(`/earth/shieldedstaking/v1/debt_tree`) answers the same.
 
-Paging as every index stream: `limit` 100 or 1000, `from_index` a
-multiple of it; page 0 holds leaves 1..limit-1, page k leaves
-`[k*limit, (k+1)*limit)`; follow `next_index` while `complete`. Every
-response is `max-age=2` (a row can be rewritten, so no page is immutable),
-and each page's rows, `size` and `root` come from one snapshot.
+## The indexer
 
-To use it: read every page; insert the rows in `index` order into an
-indexed tree, `leaf = H(TAG_DEBTL, key, next_key, next_index, retained)`
-(`TAG_DEBTL = "earth.debtl"`; sentinel leaf `H(TAG_DEBTL, 0, 0, 0, 0)` at
-index 0; a new key appends and repoints its low leaf; `next_key` 0 for the
-largest key; `services/zk/debt.py` is a reference, pinned to the chain's
-vectors); check the root equals `root` (if not, a row changed between your
-pages: read them all again). Your move's witness is its own leaf when
-`key` is listed (worth `retained`), else its low leaf (absent: worth the
-whole exposure). A clearing proof names `debt_root = root` and
-`clear_before` at most the chain's at its block: `clear_before` here is the
-chain's at `clear_before_height`, always safe to use (it only grows; the
-label clears if `move_time < clear_before`). The chain refuses a
-`debt_root` that is not the current one (a slash since: re-read and re-prove). The chain's own
-`Query/DebtTree` (`/earth/shieldedstaking/v1/debt_tree`) answers the same.
+`services/privacy/indexer.py` reads `block_results` over CometBFT RPC
+(`INDEXER_RPC_URL`) from `INDEXER_START_HEIGHT` (default the node's earliest
+block) in batches, and applies each block to SQLite (`INDEX_DB`) in one
+transaction with the height it reaches: it resumes exactly where it stopped,
+and re-applying a block is a no-op. CometBFT blocks are final, so it only
+moves forward. The node must keep block results from the start height on
+(`discard_abci_responses = false`, no pruning below it); earth-1's node is a
+full-history node.
 
-The indexer stores each `shieldedstaking_debt_row` (`move_key`, `retained`,
-`index`, `root`): a new key must take exactly the next leaf, a known key
-its own, `retained` never rises, and `shieldedstaking_move_slashed` (key,
-retained) must follow its row; `shieldedstaking_slash_debt` must name its
-moves' validators and at most their summed debt. At every batch it compares
-the chain's `Query/DebtTree` size and root with the index (else it halts)
-and keeps `window_seconds` / `clear_before`. `bin/verify-trees.py` replays
-the tree from every write and checks each emitted root, and the chain's
-rows. `/privacy/status` has `debt_tree_size`.
+**Events read.** `shielded_note`, `shielded_nullifier` (every bundle
+action, MsgSend's included), `shielded_root`, `shielded_shield` /
+`shielded_mint` (public amounts; their ciphertext must equal the note's; a
+mint with `owner_pk`/`rho`/`rcm` and no ciphertext is an open note),
+`register` (a paid referral must name an open-note mint of the same block
+with that amount; nothing stored), `identity_leaf` (append, or zero when the
+leaf is all zeros), `identity_root`, `shieldedstaking_epoch_validator`,
+`shieldedstaking_epoch`, `shieldedstaking_stake_note` (201-byte ciphertext;
+`denom`/`amount`/`spc` refused), `shieldedstaking_stake_nullifier`
+(`nullifier`, `index`), `shieldedstaking_stake_root`,
+`shieldedstaking_snapshot`, `shieldedstaking_unbond_payout` (its positions
+must be this block's x/shieldedstaking uerth mints, distinct, one ciphertext,
+summing to `amount`; nothing stored), `shieldedstaking_debt_row` (a new key
+at exactly the next leaf, a known key at its own, `retained` never rising),
+`shieldedstaking_move_slashed` (must follow its row), `shieldedstaking_slash_debt`
+(must name its moves' validators and at most their summed debt),
+`shieldedstaking_redelegate` (`move_key` must be a stake nullifier of the
+block; `minted` refused; nothing stored), and the handle events (only as a
+signal to re-read the directory).
 
-**`shieldedstaking_redelegate`** carries `credited` (was `minted`),
-`move_key` and `move_time`: the indexer checks `move_key` is a stake
-nullifier of the block, refuses `minted`, and stores nothing of it (the
-wallet knows its own moves). **`Query/Redelegation` is gone** (the backend
-never used it). Stake votes list one or two `vote_nullifiers` (two slots).
+**Not read**, because they change no tree and no rate: dex LP events,
+`shielded_unshield` and the other per-msg pool events,
+`shieldedstaking_self_bond_compounded`, `shieldedstaking_unbond_payout_failed`
+(nothing minted; the chain retries), `shieldedstaking_stake_vote` (vote
+nullifiers spend nothing and are in no tree) and the other per-msg staking
+events.
 
-The chain change is a fresh genesis, so `base` changes; an index built
-before it (stake rows with `denom`/`amount`/`spc`) refuses to open: wipe
-`INDEX_DB`.
+**Order.** PreBlock and BeginBlock events, then the txs, then EndBlock (the
+SDK's `mode` attribute), which is the order notes are appended in.
 
-### Stake nullifier tree (stake votes, chain ORCHARD_DESIGN.md section 15)
+**Failed txs are read too; never filter on `code`.** A private tx's notes
+and nullifiers are written in the ante. SDK v0.53 commits the ante's writes
+before running the msgs and, when a msg fails, still returns the ante's
+events (only those) in the failed tx's result; a tx whose ante fails writes
+nothing and returns no events. So every event in every tx result is state
+that persisted (`bin/sdkcheck` confirms it in the SDK's baseapp harness;
+`test_failed_tx_ante_events_are_indexed` guards it).
 
-Stake votes no longer spend the note. A vote proves the note's spend
-nullifier was absent at the proposal's snapshot, by non-membership in the
-stake nullifier tree: an indexed (sorted) depth-32 Poseidon2 tree whose leaf
-positions are insertion order (leaf 0 the sentinel, the first nullifier leaf
-1). A wallet must rebuild it in exactly the chain's order, so the backend
-serves it by leaf index:
-
-    GET {base}/stake/nullifier-tree?from_index=0&limit=1000
-
-    {"fields": ["index", "nullifier", "height"],
-     "synced_height": H, "size": S,           // leaf count, sentinel included; 0 when empty
-     "from_index": 0, "next_index": N, "complete": true|false,
-     "nullifiers": [[1, "<hex32>", 9], [2, "<hex32>", 16], ...]}
-
-`from_index` defaults to 0 and, like every index cursor, must be a multiple
-of `limit` (the first page holds leaves 1..limit-1; no row has index 0).
-Follow `next_index` while `complete` is true; full pages are `immutable`. Rows are
-gap-free and every nullifier appears once: the indexer halts on an `index`
-attribute that is not exactly the next one or a repeated nullifier.
-
-To vote on a proposal: read its snapshot (chain `Query/Snapshot`, or
-`/stake/snapshots`: `root`, `tree_size`, `nf_root`, `nf_size`); take leaves
-`1 .. nf_size - 1` (none when `nf_size` is 0), insert them in index order
-into an indexed tree (`leaf = H(TAG_SNFL, value, next_value, next_index)`,
-`TAG_SNFL = "earth.snfl"`; `services/zk/indexed.py` is a reference), check
-the root equals `nf_root`, and prove the low leaf of your note's nullifier.
-`/stake/snapshots` is every snapshot the chain emitted (empty `root` when
-the stake note tree had none yet). `/stake/nullifiers` (by height) is
-unchanged and lists the same values, in leaf order within a height.
-`/status` adds `stake_nf_tree_size`. Vote events' `vote_nullifiers` are not
-indexed (a wallet remembers its own votes).
-
-An index built before this chain change has no leaf indexes: the API and the
-indexer refuse to open it; wipe `INDEX_DB` (the chain change is
-consensus-breaking, so the new index goes with the new chain).
-
-### Handle directory (chain 4a663d5)
-
-A handle (`a-z`, `0-9`, `-`; 3..32; no leading or trailing dash) names a
-registered human's shielded address (`erthz1...`). Paying a handle is
-wallet-side: look it up, pay its address privately. A lookup of one handle
-on a server would say who is paying whom, so there is no per-handle
-endpoint: `{base}/handles` is the whole directory, like every other stream.
-
-    GET {base}/handles?from_index=0&limit=1000
-    -> {fields, synced_height, height, time, size, from_index, next_index, last_page,
-        handles: [[handle, address, status, expires_at, renewal_until, owner], ...]}
-
-It is a snapshot of the chain's `Query/Handles` (`/earth/personhood/v1/handles`)
-read whole at one height (`height`, block time `time`), in handle order, and
-paged by place in it under the usual rule (limit 100 or 1000, `from_index` a
-multiple of limit). Read pages until `last_page`; if `height` changes between
-pages, start over (the snapshot was replaced). `status` is the chain's at
-`time`: `live` resolves (pay it, or name it as a registration's
-`affiliate_handle`), `renewal` (owner-only renewal period, until
-`renewal_until`) and `free` do not; also treat a `live` entry whose
-`expires_at` has passed by your clock as not resolving. Served with
-`max-age=2`.
-
-`owner` (the sixth element; chain `HandleEntry.owner`, field 6, since audit
-round 6) is the handle-scope nullifier that holds the handle, as 64
-lowercase hex characters, or `""` for a handle never claimed. A wallet knows
-a handle is its own when `owner` equals its own handle-scope nullifier
-(`H(TAG_SN, id_secret, Scope("handle"))`), never because the entry names its
-address: anyone can bind a handle to any address. It is already public (the
-claiming bind's membership nullifier, a move's `new_owner`; the handle
-events carry it). The column was appended to the row, so a reader of the
-first five elements is unaffected and the stream has no format number;
-`fields` names all six.
-
-The indexer re-reads it (every page at the last applied height) once caught
-up: after a block with a `handle_bound` / `handle_moved` / `handle_released`
-event, once block time reaches the snapshot's earliest `expires_at` (live) or
-`renewal_until` (renewal), and at least every `HANDLES_MAX_AGE_SECONDS`
-(3600) of block time. Each answer is checked against the chain's rules
-(handle format, strict order across pages, `next` = the page's last handle,
-known status, `erthz1` address, `renewal_until >= expires_at >= 0`, an
-`owner` of 64 lowercase hex characters or empty, at most
-`HANDLES_MAX_ENTRIES`, 200,000); a failed or malformed read keeps the
-previous snapshot and the trees go on. A re-read is at most every
-`HANDLES_MIN_REFRESH_BLOCKS` (10) blocks, since anyone can put a handle
-event in every block; its pages are parsed in a worker thread and staged
-in SQLite one at a time, then swapped in whole (audit-5 L4). `/status` adds
-`handles`, `handles_height` and `handles_stale`; the stream's `stale` is
-the same flag: true once the first handle event the snapshot has not caught
-up with is `HANDLES_STALE_BLOCKS` (30) or more blocks old (audit-5 L5;
-measured from the first such event, not the latest, since audit-6 L2: a
-handle event every block kept it down while refreshes failed). Do not pay a handle
-from a stale directory: it may name another address by now.
-
-### How it follows the chain
-
-`services/privacy/indexer.py` reads `block_results` over CometBFT RPC from
-`INDEXER_START_HEIGHT` (default: the node's earliest block), in batches, and
-applies each block to SQLite (`INDEX_DB`) in one transaction with the height
-it reaches — so it resumes exactly where it stopped and re-applying a block is
-a no-op. CometBFT blocks are final, so it only moves forward. Run it inside
-the API process (`INDEXER_ENABLED=true`) or alone:
-
-    python -m services.privacy.indexer
-
-Events it reads (privacy/orchard): `shielded_note`, `shielded_nullifier`
-(every bundle action, MsgSend's included), `shielded_root`,
-`shielded_shield`/`shielded_mint` (public amounts; their `ciphertext` must
-equal the note's; a `shielded_mint` with `owner_pk`/`rho`/`rcm` is an open
-note: all three 32-byte hex, ciphertext empty), `register` (`handle`,
-`referral`, `referral_position`: a paid referral must name an open-note mint
-of the same block with that amount, else the block is refused; nothing of it
-is stored), `identity_leaf` (append,
-or zero when the leaf is all zeros), `identity_root`,
-`shieldedstaking_epoch_validator`, `shieldedstaking_epoch`, and the stake
-tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,
-`ciphertext`: 201 bytes), `shieldedstaking_stake_nullifier`
-(`nullifier`, `index`: its leaf in the stake nullifier tree),
-`shieldedstaking_stake_root` and `shieldedstaking_snapshot` (`proposal_id`,
-`root`, `tree_size`, `nf_root`, `nf_size`), and `shieldedstaking_unbond_payout`
-(`payout_id`, `amount`, `notes`, `positions`: checked to name this block's
-x/shieldedstaking uerth mints, one ciphertext, summing to `amount`; nothing
-of it is stored), the slash debt tree's `shieldedstaking_debt_row`,
-`shieldedstaking_move_slashed`, `shieldedstaking_slash_debt` and
-`shieldedstaking_redelegate` (above). Stake notes and nullifiers are written by the msg, so a
-failed staking msg leaves none. Ignored: dex LP
-events (private LP shares are ordinary notes), `shielded_unshield`,
-`shieldedstaking_self_bond_compounded`, `shieldedstaking_unbond_payout_failed`,
-`shieldedstaking_stake_vote` and the other per-msg staking events. Block events are ordered PreBlock/BeginBlock, txs,
-EndBlock (the SDK's `mode` attribute), which is the order notes are appended.
-
-**Failed txs are read too — never filter on `code`.** A private tx's notes and nullifiers are written in
-the ante. SDK v0.53 commits the ante's writes before running the msgs and,
-when a msg fails, still returns the ante's events (only those) in the failed
-tx's result; a tx whose ante fails writes nothing and returns no events. So
-every event in every tx result is state that persisted, whatever the code.
-(`bin/sdkcheck`, run in the SDK v0.53.6 baseapp test harness, confirms it.)
-Skipping `code != 0` results would drop notes the chain appended and put
-every later position and root out of step; `test_failed_tx_ante_events_are_indexed`
-and `test_failed_tx_with_only_failure_code_still_counts_every_event` guard it.
-
-It refuses, and halts until an operator steps in, rather than serve trees that
-cannot match the chain: a note position out of sequence, a nullifier twice,
-a stake nullifier whose leaf `index` is not exactly the next one, a debt row
-out of leaf order or rising, a proposal
-snapshot naming a tree size past the index, a
-root event whose size differs from the index, a different chain id or block
-hash behind the RPC than the one indexed (the chain's first-block hash is
-recorded once, and is the `genesis` in the URLs; on every prepare — every
-start, and again after any RPC error — the block at the genesis height must
-still have it, and the last indexed block's hash must match), an RPC whose
-tip is below the indexed height and which is not catching up (a relaunch
-under the same chain id restarts low; before, that was retried forever with
-`halted` null), a block whose parent (`header.last_block_id`)
-is not the block indexed before it (checked on every block, so an RPC
-swapped mid-run halts at the first block of the other chain), or tree sizes that differ from the
-chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree`,
-`Query/StakeNullifierTree`, `Query/DebtTree` (size and root) at each batch's last height —
-this is what catches notes imported at genesis, which emit no events, or a
-start height past the first private tx; when the node cannot answer that
-query — state pruned at old heights — the skip is logged at WARNING). The
-reason is in `/privacy/status` `halted`; clear it by wiping `INDEX_DB`.
+**It halts rather than diverge**, with the reason in `/privacy/status`
+`halted` (clear it by wiping `INDEX_DB`): a note, stake note or stake
+nullifier leaf out of sequence; a nullifier spent twice; a debt row out of
+leaf order or rising; a snapshot past the indexed trees; a root event whose
+size differs from the index; a malformed event; a different chain id or
+genesis block hash behind the RPC (checked on every start and after every
+RPC error); an RPC tip below the indexed height when the node is not
+catching up; a block whose parent is not the block indexed before it
+(checked every block); or tree sizes (and the debt root) that differ from
+the chain's own `Query/Tree`, `Query/IdentityTree`, `Query/StakeTree`,
+`Query/StakeNullifierTree` and `Query/DebtTree` at each batch's last height.
+That last check catches history the events cannot show (genesis-imported
+notes, a start height past the first private tx); when the node cannot
+answer it (state pruned) it is skipped with a WARNING, and pages stay
+short-lived until it passes (`verified_height`). Each batch also stores the
+chain's debt `window_seconds` / `clear_before`.
 
 **The RPC is trusted for `block_results`.** The next header's
 `last_results_hash` would not authenticate them: CometBFT v0.38 hashes only
-each tx result's deterministic fields (code, data, gas), no events, and not
-`finalize_block_events` at all — which is where mints, roots and rates are.
-The tree-size check and `bin/verify-trees.py` (below) bound a lying RPC;
-point `INDEXER_RPC_URL` at a node you run or trust.
+each tx result's deterministic fields and not `finalize_block_events`, where
+mints, roots and rates are. The tree-size check and `bin/verify-trees.py`
+bound a lying RPC; point `INDEXER_RPC_URL` at a node you run or trust.
 
-**Rates past 200 validators.** x/shieldedstaking sweeps 200 validator books
-a block (`EpochValidatorLimit`); with more, an epoch's later validators come
-in following blocks without an epoch event. They are stored under the epoch
-the sweep belongs to (the last `shieldedstaking_epoch` seen), so
-`/rates?epoch=` lists every validator.
-
-The node behind `INDEXER_RPC_URL` (CometBFT RPC, default
-`https://rpc.erth.network:443`) must keep block results from the start height
-on: `storage.discard_abci_responses = false` (the default) and no block
-pruning below it. earth-1 runs one node, the validator, and it is a
-full-history node (`pruning = "nothing"`, never state synced), so
-rpc.erth.network serves every height from 1.
+An index file written for an earlier chain format is refused at open (wipe
+`INDEX_DB`); the handle directory, a snapshot, is simply read again.
 
 ### Verifying the trees
 
     bin/verify-trees.py --db privacy_index.db [--all-roots] [--no-chain]
 
-rebuilds the note, identity, stake, stake nullifier and slash debt trees
-from the index with Python Poseidon2 (`services/zk`, a port of the chain's
-`zk/poseidon2`, `zk/merkle`, `zk/indexed`, `zk/debt` and `zk/privacy`),
-checks every debt row write's leaf and the root the chain emitted after it,
-checks the latest
-root of each (every recorded root with `--all-roots`) against the root
-events the chain emitted, checks the stake nullifier tree's root at every
-proposal snapshot's `nf_size` against its `nf_root` (the chain emits no
-per-block nullifier root), and compares the rebuilt trees with the chain's
-own (including `Query/StakeNullifierTree` size and root, and
-`Query/DebtTree` rows, size and root) at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
-asked.
+Rebuilds the note, identity, stake, stake nullifier and slash debt trees from
+the index with Python Poseidon2 (`services/zk`, a port of the chain's
+`zk/poseidon2`, `zk/merkle`, `zk/indexed`, `zk/debt` and `zk/privacy`, pinned
+to Go vectors) and checks: the latest root of each tree (every recorded root
+with `--all-roots`) against the root events; every debt row write's leaf and
+the root emitted after it; the stake nullifier tree at every snapshot's
+`nf_size` against its `nf_root`; every open note's commitment from its
+opening; and, unless `--no-chain`, the rebuilt trees against the chain's own
+queries (the debt tree row by row) at the synced height. Exit 0 all match, 1
+mismatch, 2 the chain could not be asked.
 
-### Fixtures
+## Deploy
+
+The service runs on Akash behind a Cloudflare tunnel (`api.erth.network`);
+`deploy/akash/deploy.yaml` is the SDL, documented inline, and
+`deploy/akash/README.md` has the operational detail (the mnemonic, the
+Cloudflare cache and rate-limit rules /privacy needs, the ADX host
+requirement, sizing).
+
+1. Tag a release (`vX.Y.Z`); CI (`.github/workflows/docker-build.yml`)
+   builds and pushes the image on tags only.
+2. `bin/digest.sh <tag>` resolves the tag to the digest to pin (read from
+   the registry; CI writes it nowhere).
+3. `bin/deploy.sh <tag>` updates the lease in `.env`'s `DSEQ` in place (the
+   state volume survives); `--print` shows the SDL without submitting.
+   `bin/create.py <tag> --provider <akash1...>` makes a new lease instead (a
+   new, empty state volume) and points `DSEQ` at it.
+
+Both submit what `bin/build-sdl.py` builds: `deploy.yaml` with the digest
+and the two secrets from `.env` (`GAS_WALLET_MNEMONIC`, `TUNNEL_TOKEN`). It
+refuses a provider hostname for `EARTH_NODE_URL`, a globally published app
+port while `TRUST_CF_CONNECTING_IP` is on, and cloudflared metrics off
+loopback. API errors are printed with secrets redacted.
+
+The state volume holds the replay database (losing it lets each passport of
+the last 30 days be paid again and resets the caps) and the privacy index
+(rebuilt from the chain; after a chain relaunch, wipe it). `EARTHD_VERSION`
+in the Dockerfile must be the release of the chain the service grants on.
+
+## Fixtures
 
 `tests/fixtures/privacy/Test*.json.gz` are real blocks: the chain's own app
 scenario tests (real proofs, the launch genesis path) recorded as RPC
-`block_results` with the keepers' note, identity and stake tree sizes and
-roots after each block, the stake nullifier tree's, and the chain's
-`Query/Handles` answer at each block in pages of one (personhood, shielded
-pool, staking lifecycle, owner-locked stake notes, self-bond compounding,
-private dex LP, stake votes on concurrent proposals), with the slash debt
-tree's size, root and `Query/DebtTree` answer. The chain's redelegation
-tests fund and move outside blocks (no node serves such state), so the
-recorder adds its own scenario, `TestRecordRedelegateSlashDebt`
-(`bin/chainrec/zz_record_scenarios_test.go`: two redelegations, a slash
-reaching both, a labelled top-up, the label cleared), its proofs in
+`block_results`, with the keepers' note, identity, stake and stake
+nullifier tree sizes and roots after each block, the slash debt tree's size,
+root and `Query/DebtTree` answer, and the chain's `Query/Handles` answer in
+pages of one. The chain's redelegation tests move funds outside blocks, so
+the recorder adds its own scenario, `TestRecordRedelegateSlashDebt`
+(`bin/chainrec/zz_record_scenarios_test.go`), with its proofs in
 `bin/chainrec/proofs`. `zk_vectors.json` comes from the chain's Go zk
 packages. Both regenerate from a chain checkout without touching it:
 
     bin/record-chain-fixtures.sh ../earth-network-chain [ref] [../earth-network-mobile/circuits]
-    bin/zk-vectors.sh ../earth-network-chain
+    bin/zk-vectors.sh ../earth-network-chain [ref]
 
-(the circuits argument, with nargo and bb on PATH, proves the recorder
-scenario's missing proofs after a circuit change).
+The circuits argument (nargo and bb on PATH) proves the recorder scenario's
+missing proofs after a circuit change. `tests/fixtures/dsc` holds the
+certificates the DSC commitment is pinned with (`x/pki/certs` test data and
+generated DSCs).
