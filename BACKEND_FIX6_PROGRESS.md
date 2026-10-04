@@ -109,3 +109,47 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
   must be in alphabetical order (the web and mobile wallets already are).
 
 pytest: 393 passed, 1 skipped (live-earthd test); full suite run 4x clean.
+
+---
+
+# Chain audit round 6 format adoption (backend)
+
+Chain: wt/chain-orch privacy/orchard f4a217c (CHANGELOG [Unreleased] audit
+round 6; FIX_ROUND6_PROGRESS.md; personhood protos). Feature freeze: format
+adoption only. Baseline (ac9fa11): 393 passed, 1 skipped.
+
+## Steps
+- [x] Registration binding H(TAG_REG, Bytes(chain_id), idc, pc_anml,
+      Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate), chain id
+      EARTH_CHAIN_ID, in the /gas/register precheck; zk_vectors from f4a217c
+      (reg pinned 148b3513...4159, other_chain vector); README (7471e53,
+      30f9483)
+- [x] HandleEntry.owner (6) parsed; 64 lowercase hex or "" else Malformed
+      (the snapshot is kept) (7471e53)
+- [x] /handles rows [handle, address, status, expires_at, renewal_until,
+      owner]; "fields" names six; README; an index whose handles table has
+      no owner column drops the snapshot (not history) and re-reads it
+      (2f5542e)
+- [x] 1127 ErrSwitchSignerMismatch: refusal kind "switch signer", counted
+      against the client (checked before the proof, mintable from public
+      data) (cbfbd68)
+- [x] handle_bound / handle_released / handle_moved owner, previous_owner:
+      documented; not parsed (the Handles query is the source) (1f29fb6)
+- [x] Fixtures re-recorded from f4a217c; test that each directory owner is
+      its latest handle event's owner (1cfa85d)
+
+## Notes
+- No handle stream format number: owner is appended, a reader of the first
+  five is unaffected, and the wallets (mobile-orch d8780ce, Android and iOS)
+  read row[5] only when present. Owner "" means never claimed (or, from an
+  old backend, unknown); the wallets adopt nothing on it.
+- MsgClaimUnbonding is still documented as before (staking redesign not
+  anticipated).
+
+## Left
+- Dockerfile EARTHD_VERSION (v1.0.0) bumped at release: gas-check from the
+  pinned binary computes the old binding and does not know 1127.
+- Web wallet (app-orch src/chain/handles.js) reads stream objects by name
+  and does not take owner yet.
+
+pytest: 405 passed, 1 skipped (live-earthd test); full suite run 3x clean.
