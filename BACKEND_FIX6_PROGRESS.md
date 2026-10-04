@@ -61,13 +61,19 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
       the request window stays /48; a daily cap ("rate cap") does not count;
       an expired dsc_der is refused 400 in the precheck (no gas-check, not
       counted); GET /gas/pow reports shedding for a shed client;
-      tests/test_audit6.py (auditor's /48 and CGNAT scenarios)
+      tests/test_audit6.py (auditor's /48 and CGNAT scenarios) (ce6f0dd)
 - [x] L1 PoW stamp consumed right after check (before the lane_commitment
       await) and given back only by the request that consumed it, when not
-      relied on (ordinary lane, dsc_der mismatch 400)
-- [ ] L2 handles_stale measured from the first pending handle event
+      relied on (ordinary lane, dsc_der mismatch 400) (47565f6)
+- [x] L2 handles_stale measured from the first pending handle event
+      (meta handles_pending_height, set by apply when unset, cleared by
+      commit_handles when the snapshot covers it; old index falls back to
+      handles_changed_height)
 - [ ] L3 cloudflared metrics bound to 127.0.0.1
 - [ ] L5 .dockerignore `**/` patterns
 - [ ] L6 AKASH_API_KEY out of curl's argv
 - [ ] L4 canonical /privacy parameter order (if simple)
-- [ ] I1 dead SendUnresolved branch; I2 _coarse; I3 replay pruning; I4 action SHAs
+- [x] I1 dead SendUnresolved-without-hash branch removed (46113bc)
+- [x] I2 _coarse: the hex pattern already cuts 16+ digit decimal runs;
+      documented and tested, no code change (0c14094)
+- [ ] I3 replay pruning; I4 action SHAs

@@ -24,7 +24,9 @@ size past what is indexed.
 The handle directory is not built from events: it is a snapshot of the
 chain's Handles query at one height (services/privacy/handles), replaced
 whole by replace_handles. A block with a handle event records its height
-(meta handles_changed_height) so the indexer knows the snapshot is behind.
+(meta handles_changed_height) so the indexer knows the snapshot is behind,
+and the first such height since the snapshot (handles_pending_height) so
+/privacy can say how long it has been behind.
 
 Readers (the API) use their own connections; WAL keeps them from blocking the
 writer.
@@ -405,6 +407,11 @@ class Store:
 
             if d.handles_changed:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('handles_changed_height', ?)", (str(d.height),))
+                # The first handle event the snapshot has not caught up
+                # with: staleness is measured from it (audit-6 L2), kept
+                # until a snapshot at or past it is committed.
+                c.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('handles_pending_height', ?)",
+                          (str(d.height),))
 
             if not last:
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('start_height', ?)", (str(d.height),))
@@ -455,6 +462,16 @@ class Store:
             c.execute("DELETE FROM handles_staging")
             for k, v in (("handles_height", height), ("handles_time", time), ("handles_size", size)):
                 c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (k, str(v)))
+            # A snapshot at height covers every handle event up to it. One
+            # after it (none today: the snapshot is read at the last applied
+            # height and committed before the next block) stays pending, as
+            # the height right after the snapshot.
+            row = c.execute("SELECT value FROM meta WHERE key = 'handles_changed_height'").fetchone()
+            if row and int(row[0]) > height:
+                c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('handles_pending_height', ?)",
+                          (str(height + 1),))
+            else:
+                c.execute("DELETE FROM meta WHERE key = 'handles_pending_height'")
             if next_change is None:
                 c.execute("DELETE FROM meta WHERE key = 'handles_next_change'")
             else:
@@ -468,11 +485,18 @@ class Store:
 
 def handles_stale(c: sqlite3.Connection, stale_blocks: int) -> bool:
     """Whether the served handle directory is known to be behind (audit-5 L5):
-    a handle event at least stale_blocks ago that no snapshot has caught up
-    with. A payer resolving a handle from it may pay an address the handle
-    no longer names."""
+    the first handle event no snapshot has caught up with is at least
+    stale_blocks old. A payer resolving a handle from it may pay an address
+    the handle no longer names.
+
+    Measured from the first pending event, not the latest (audit-6 L2):
+    from the latest, a handle event every block kept the flag down however
+    old the snapshot was, while refreshes failed. An index from before
+    handles_pending_height falls back to the latest event."""
     def meta(key):
         row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return int(row[0]) if row else 0
     changed, taken, last = meta("handles_changed_height"), meta("handles_height"), meta("last_height")
-    return changed > taken and last - changed >= stale_blocks
+    pending = meta("handles_pending_height")
+    since = pending if taken < pending <= changed else changed
+    return changed > taken and last - since >= stale_blocks

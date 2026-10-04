@@ -178,3 +178,45 @@ def test_coarse_cuts_decimal_signals():
     out = gas._coarse(f"nullifier {nf} refused; 1121 at height 52000")
     assert nf[:16] not in out and "<hex>" in out and "1121" in out and "52000" in out
 
+
+
+# --- L2: staleness from the first pending handle event --------------------------
+
+def test_handle_events_every_block_do_not_hide_a_stale_directory(tmp_path):
+    """A handle event in every block kept `last - changed` under the
+    threshold, so a snapshot whose refreshes kept failing never read
+    stale. Now staleness counts from the first event it has not caught up
+    with."""
+    from services.privacy import handles as handles_mod
+    from services.privacy.events import BlockDelta
+    from services.privacy.store import Store, handles_stale
+
+    store = Store(str(tmp_path / "i.db"))
+    store.apply(BlockDelta(height=1, hash="h1", time=1000))
+    store.replace_handles(1, 1000, [handles_mod.Entry("amy", "earth1x", "live", 10**9, 10**9 + 1)], None)
+    n = 5
+    for h in range(2, 2 + 3 * n):
+        store.apply(BlockDelta(height=h, hash=f"h{h}", time=1000 + h, handles_changed=True))
+    assert store.meta("handles_pending_height") == "2"
+    assert handles_stale(store.conn, n), "behind since height 2, not since the latest event"
+    assert not handles_stale(store.conn, 3 * n + 1)
+    # A snapshot at the last height catches up and clears it.
+    last = 1 + 3 * n
+    store.replace_handles(last, 2000, [], None)
+    assert store.meta("handles_pending_height") is None
+    assert not handles_stale(store.conn, 1)
+    # The next event starts a new pending height.
+    store.apply(BlockDelta(height=last + 1, hash="x", time=3000, handles_changed=True))
+    assert store.meta("handles_pending_height") == str(last + 1)
+    store.close()
+
+
+def test_an_index_without_a_pending_height_falls_back_to_the_latest_event(tmp_path):
+    from services.privacy.store import Store, handles_stale
+
+    store = Store(str(tmp_path / "i.db"))
+    for k, v in (("handles_height", "5"), ("handles_changed_height", "6"), ("last_height", "10")):
+        store.set_meta(k, v)
+    assert not handles_stale(store.conn, 5)
+    assert handles_stale(store.conn, 4)
+    store.close()

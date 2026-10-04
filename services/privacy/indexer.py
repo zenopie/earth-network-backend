@@ -278,8 +278,9 @@ class Indexer:
         """Logs (an alert) while the served directory is behind a handle event (audit-5 L5)."""
         stale = await asyncio.to_thread(store_mod.handles_stale, self.store.conn, self.handles_stale_blocks)
         if stale and self._handles_stale_steps % 100 == 0:
-            logger.warning("handle directory is stale: a handle event at height %s is not in the snapshot "
-                           "at %s; /privacy marks it stale", self.store.meta("handles_changed_height"),
+            logger.warning("handle directory is stale: handle events since height %s are not in the snapshot "
+                           "at %s; /privacy marks it stale",
+                           self.store.meta("handles_pending_height") or self.store.meta("handles_changed_height"),
                            self.store.meta("handles_height"))
         self._handles_stale_steps = self._handles_stale_steps + 1 if stale else 0
 

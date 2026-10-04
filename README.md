@@ -530,8 +530,10 @@ previous snapshot and the trees go on. A re-read is at most every
 event in every block; its pages are parsed in a worker thread and staged
 in SQLite one at a time, then swapped in whole (audit-5 L4). `/status` adds
 `handles`, `handles_height` and `handles_stale`; the stream's `stale` is
-the same flag: true once the snapshot is `HANDLES_STALE_BLOCKS` (30) or more
-behind a handle event the index applied (audit-5 L5). Do not pay a handle
+the same flag: true once the first handle event the snapshot has not caught
+up with is `HANDLES_STALE_BLOCKS` (30) or more blocks old (audit-5 L5;
+measured from the first such event, not the latest, since audit-6 L2: a
+handle event every block kept it down while refreshes failed). Do not pay a handle
 from a stale directory: it may name another address by now.
 
 ### How it follows the chain

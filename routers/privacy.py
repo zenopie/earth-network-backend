@@ -68,7 +68,8 @@ status is the chain's at `time`: "live" resolves (pay it, name it as a
 referrer), "renewal" and "free" do not; a wallet also treats a "live" entry
 whose expires_at has passed by its own clock as not resolving. `stale`
 (here and handles_stale in status) is true while the snapshot is
-HANDLES_STALE_BLOCKS or more behind a handle event the index has applied:
+HANDLES_STALE_BLOCKS or more behind the first handle event the index has
+applied since it (audit-6 L2):
 a handle may name another address by now, so a wallet should not pay a
 handle from it (audit-5 L5).
 
