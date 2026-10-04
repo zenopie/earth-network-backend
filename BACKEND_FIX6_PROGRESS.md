@@ -149,7 +149,7 @@ adoption only. Baseline (ac9fa11): 393 passed, 1 skipped.
 ## Left
 - Dockerfile EARTHD_VERSION (v1.0.0) bumped at release: gas-check from the
   pinned binary computes the old binding and does not know 1127.
-- Web wallet (app-orch src/chain/handles.js) reads stream objects by name
-  and does not take owner yet.
+- Web wallet (app-orch src/chain/handles.js) does not read owner yet (its
+  LCD Query/Handles path maps five fields).
 
 pytest: 405 passed, 1 skipped (live-earthd test); full suite run 3x clean.
