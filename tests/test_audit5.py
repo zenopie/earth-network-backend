@@ -270,9 +270,26 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def test_secrets_and_state_stay_out_of_the_build_context():
     import fnmatch
 
-    patterns = [l.strip() for l in open(os.path.join(_ROOT, ".dockerignore")) if l.strip() and not l.startswith("#")]
-    for name in (".env", ".env.local", "ads_for_gas.db", "privacy_index.db", ".venv", ".git"):
-        assert any(fnmatch.fnmatch(name, p) for p in patterns), name
+    patterns = [l.strip().rstrip("/") for l in open(os.path.join(_ROOT, ".dockerignore"))
+                if l.strip() and not l.startswith("#")]
+
+    def match(parts: list[str], pat: list[str]) -> bool:
+        # Docker's `*` stays within one path element, unlike fnmatch's.
+        return len(parts) == len(pat) and all(fnmatch.fnmatchcase(a, b) for a, b in zip(parts, pat))
+
+    def ignored(path: str, pattern: str) -> bool:
+        # Docker's `**/` matches any number of directories, none included;
+        # a match on a directory takes everything under it.
+        parts, pat = path.split("/"), pattern.split("/")
+        starts = range(len(parts)) if pat[0] == "**" else [0]
+        pat = pat[1:] if pat[0] == "**" else pat
+        return any(match(parts[i:j], pat) for i in starts for j in range(i + 1, len(parts) + 1))
+
+    # Nested ones too (audit-6 L5): a bare `*.db` matched only at the root.
+    for name in (".env", ".env.local", "ads_for_gas.db", "privacy_index.db", ".venv", ".git",
+                 "deploy/akash/.env", "state/x.db", "tests/fixtures/idx.db", "bin/.env.prod"):
+        assert any(ignored(name, p) for p in patterns), name
+    assert not any(ignored("example.env", p) for p in patterns)
 
 
 def test_entrypoint_chowns_no_symlink_target_and_logs_no_client():
