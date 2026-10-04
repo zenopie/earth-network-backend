@@ -101,6 +101,15 @@ if a.get("TRUST_CF_CONNECTING_IP", "true").lower() == "true":
         assert not any(t.get("global") for t in e.get("to") or []), (
             "TRUST_CF_CONNECTING_IP=true with app port %s published globally" % e.get("port"))
 
+# cloudflared's metrics server also serves /debug/pprof, /config and /diag/*;
+# it stays on loopback (audit-6 L3).
+cmd = svcs["cloudflared"].get("command") or []
+for i, arg in enumerate(cmd):
+    if arg == "--metrics" or arg.startswith("--metrics="):
+        addr = arg.split("=", 1)[1] if "=" in arg else (cmd[i + 1] if i + 1 < len(cmd) else "")
+        assert addr.startswith("127.0.0.1:") or addr.startswith("localhost:"), (
+            "cloudflared --metrics %s is not loopback: it serves pprof and /config" % addr)
+
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
 

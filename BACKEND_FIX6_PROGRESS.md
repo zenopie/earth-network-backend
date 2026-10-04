@@ -68,8 +68,10 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
 - [x] L2 handles_stale measured from the first pending handle event
       (meta handles_pending_height, set by apply when unset, cleared by
       commit_handles when the snapshot covers it; old index falls back to
-      handles_changed_height)
-- [ ] L3 cloudflared metrics bound to 127.0.0.1
+      handles_changed_height) (9b0c8f6)
+- [x] L3 cloudflared --metrics 127.0.0.1:2000 (port 2000 stays the
+      required global service, answering nothing); bin/build-sdl.py refuses
+      a non-loopback --metrics
 - [ ] L5 .dockerignore `**/` patterns
 - [ ] L6 AKASH_API_KEY out of curl's argv
 - [ ] L4 canonical /privacy parameter order (if simple)

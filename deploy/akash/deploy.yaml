@@ -146,16 +146,19 @@ services:
       - cloudflared
       - tunnel
       - --no-autoupdate
-      # Akash rejects a manifest with "zero global services", so something must
-      # be published. Publishing cloudflared's own metrics rather than the
-      # application keeps the chain and the service reachable only through the
-      # tunnel, and /ready gives a way to check connector health without the
-      # Cloudflare dashboard — which matters here because the Console API has no
-      # logs endpoint, and a connector that fails to start is otherwise silent.
+      # Metrics on loopback only (audit-6 L3). The metrics server also mounts
+      # Go's /debug/pprof (heap and goroutine profiles, CPU profiles and
+      # traces, a forced GC), /config (the ingress) and /diag/*; published on
+      # 0.0.0.0, anyone could read them or slow the one 0.1-CPU connector every
+      # request goes through. Check connector health in the lease logs.
       - --metrics
-      - 0.0.0.0:2000
+      - 127.0.0.1:2000
       - run
 
+    # Akash rejects a manifest with "zero global services", so something must
+    # be published. This port is: nothing listens on it outside the
+    # container's loopback, so it answers nothing, and the application stays
+    # reachable only through the tunnel.
     expose:
       - port: 2000
         as: 2000
