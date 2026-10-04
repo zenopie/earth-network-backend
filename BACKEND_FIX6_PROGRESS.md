@@ -153,3 +153,54 @@ adoption only. Baseline (ac9fa11): 393 passed, 1 skipped.
   LCD Query/Handles path maps five fields).
 
 pytest: 405 passed, 1 skipped (live-earthd test); full suite run 3x clean.
+
+---
+
+# Chain staking wave format adoption (backend)
+
+Chain: wt/chain-orch privacy/orchard 48b631c (ORCHARD_DESIGN.md section 18;
+CHANGELOG [Unreleased]; STAKING_WAVE_PROGRESS.md; shieldedstaking protos).
+Feature freeze: format adoption only. Baseline (831008d): 405 passed, 1
+skipped.
+
+## Steps
+- [x] Fixtures re-recorded from 48b631c (bin/record-chain-fixtures.sh); the
+      recorder hooks after the block helper's Commit (the staking env's
+      helper changed) and adds TestStakeVoteManyNotesOneWeight. Stake notes
+      are derth/ only; the failed-claim test removed; the repeated-index
+      test moved to the vote scenario (the lifecycle now spends one stake
+      nullifier) (f9a15a1)
+- [x] shieldedstaking_unbond_payout parsed and checked: its positions are
+      this block's shieldedstaking uerth mints, distinct, not another
+      payout's, one ciphertext, summing to amount; notes = len(positions);
+      amount 0 iff no positions. Nothing stored: the payout notes are
+      ordinary kind-2 rows of notes format 2. Tests: the recorded lifecycle
+      payout row in /notes, synthetic split payouts (parse and stream),
+      nine refusals, payout_failed ignored, vote_nullifiers not in the stake
+      nullifier tree (tests/test_unbond_payouts.py) (5cc8202)
+- [x] Docs: events.py, routers/privacy.py, services/zk/privacy.py, README
+      "Undelegation payouts and four-note votes (chain 48b631c)": no stream
+      format change; claim notes, the unbond/ denom, ante-claim nullifiers
+      removed; split payouts are 2^63-1 a note (80322f6)
+- [x] zk_vectors regenerated from 48b631c: unchanged
+
+## Notes
+- No stream format change (notes stay format 2, stake rows unchanged).
+- The stake_vote event's vote_nullifiers lists the used slots only (1..4
+  entries), not four with zeros (the msg has four; the chain stores and
+  emits the used ones). Votes are not indexed.
+- Undelegate (epoch, payout_id), matured (validator, epoch) and
+  payout_failed are not read; they change no tree.
+- No recorded scenario has a split unbond payout (a payout is at most the
+  undelegation's value, refused above 2^63-1 at start, so a split needs
+  payout > requested) or a failed one (TestUnbondPayoutsSweepRetryNeverDrop
+  drives msgs outside blocks, so it is not recordable); both are synthetic
+  tests in the chain's event shape.
+
+## Left
+- Dockerfile EARTHD_VERSION bumped at release (unchanged reason).
+- Wallets: drop claim flow and unbond/ note scanning; find payouts by trial
+  decryption of /notes (split ones: every row with the ciphertext); vote
+  with four slots.
+
+pytest: 423 passed, 1 skipped (live-earthd test); full suite run 3x clean.
