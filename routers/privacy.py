@@ -326,7 +326,7 @@ def status(response: Response):
 
 @chain.get("/notes")
 def notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
-    n, last = _aligned(from_pos, limit, "from_pos")
+    _, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
         rows = c.execute(
             "SELECT position, height, cm, ciphertext, amount, owner_pk, rho, rcm FROM notes"
@@ -366,7 +366,7 @@ def nullifiers(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT)
 
 @chain.get("/identity")
 def identity(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
-    n, last = _aligned(from_index, limit, "from_index")
+    _, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
         rows = c.execute(
             # time: the block time (unix seconds) of the leaf's height; every
@@ -462,7 +462,7 @@ def _hex_or_none(v: bytes | None) -> str | None:
 
 @chain.get("/stake/notes")
 def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), limit: int | None = Query(None, ge=1, le=MAX_INT)):
-    n, last = _aligned(from_pos, limit, "from_pos")
+    _, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
         rows = c.execute(
             "SELECT position, height, cm, ciphertext FROM stake_notes"
@@ -510,7 +510,7 @@ def stake_nullifier_tree(response: Response, from_index: int = Query(0, ge=0, le
     takes leaves 1 .. nf_size - 1 and rebuilds the indexed tree in that
     order.
     """
-    n, last = _aligned(from_index, limit, "from_index")
+    _, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
         rows = c.execute(
             "SELECT idx, nf, height FROM stake_nullifiers WHERE idx BETWEEN ? AND ? ORDER BY idx",
@@ -599,7 +599,7 @@ def debt_rows(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
     debt_root = root. Every response is short-lived: a later slash rewrites
     a row in place.
     """
-    n, last = _aligned(from_index, limit, "from_index")
+    _, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
         rows = c.execute(
             "SELECT idx, key, retained, height, updated_height FROM debt_rows WHERE idx BETWEEN ? AND ? ORDER BY idx",
@@ -635,7 +635,7 @@ def handle_directory(response: Response, from_index: int = Query(0, ge=0, le=MAX
     before the first); a client paging across a change sees height move and
     starts over.
     """
-    n, last = _aligned(from_index, limit, "from_index")
+    _, last = _aligned(from_index, limit, "from_index")
     with _read() as c:
         rows = c.execute(
             "SELECT idx, handle, address, status, expires_at, renewal_until, owner FROM handles"
