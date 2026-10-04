@@ -61,7 +61,8 @@ the tunnel. In the erth.network zone:
    "/privacy/")` → *Eligible for cache*, *Edge TTL: use cache-control header
    if present*, *Cache key: include the query string* (all of it). The origin
    answers only the canonical spelling of a page (audit-5 M2): an unknown
-   or repeated parameter, a non-page limit or cursor, or an integer with a
+   or repeated parameter, parameters out of alphabetical order (audit-6
+   L4), a non-page limit or cursor, or an integer with a
    leading zero, a sign or percent-encoding is 400 no-store from the gate,
    before any handler or in-flight slot. So the cacheable key space is the
    page set, and junk spellings cost the origin a regex, not a page.

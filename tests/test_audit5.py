@@ -176,7 +176,7 @@ def test_only_the_canonical_spelling_of_a_page_reaches_a_handler(notes_index, qu
 
 def test_the_canonical_page_is_served(notes_index):
     rows = set()
-    for query in ("from_pos=1000&limit=1000", "limit=1000&from_pos=1000", "from_pos=1000", "from_pos=0"):
+    for query in ("from_pos=1000&limit=1000", "from_pos=1000", "from_pos=0"):
         r = notes_index.get(f"{BASE}/notes?{query}")
         assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
         rows.add(r.json()["notes"][0][0])

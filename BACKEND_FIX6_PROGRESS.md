@@ -76,11 +76,14 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
       its test made Docker-faithful in 651ebb5)
 - [x] L6 AKASH_API_KEY to curl as `-H @file` (umask 077, the 700 work
       dir), not argv (345eab2)
-- [ ] L4 canonical /privacy parameter order (if simple)
+- [x] L4 /privacy parameters in alphabetical order (from_* before limit,
+      which the web and mobile wallets already send); an omitted default vs
+      the explicit default is left (needs per-endpoint defaults in the gate;
+      bounded at two keys per page)
 - [x] I1 dead SendUnresolved-without-hash branch removed (46113bc)
 - [x] I2 _coarse: the hex pattern already cuts 16+ digit decimal runs;
       documented and tested, no code change (0c14094)
 - [x] I3 replay rows older than 31 days pruned in claim(), at most once an
       hour (_paid_today already used the granted_at index, not a scan) (e272182)
 - [x] I4 actions/checkout pinned to 11d5960a (v4.4.0, the commit v4 points
-      at); the only third-party action
+      at); the only third-party action (2004b10)

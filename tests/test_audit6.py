@@ -245,3 +245,16 @@ def test_replay_rows_past_every_window_are_pruned(client, monkeypatch):
     db.commit()
     assert replay.claim("passport:ee:2026-10-03", prefix="passport:", max_per_day=10)
     assert db.execute("SELECT 1 FROM used_transactions WHERE transaction_id = 'passport:dd:x'").fetchone()
+
+
+# --- L4: one parameter order ----------------------------------------------------
+
+def test_privacy_parameters_have_one_order():
+    from services.privacygate import query_problem
+
+    assert query_problem("notes", b"from_pos=0&limit=1000") is None
+    assert query_problem("notes", b"from_pos=0") is None
+    assert query_problem("notes", b"limit=1000") is None
+    assert "alphabetical" in query_problem("notes", b"limit=1000&from_pos=0")
+    assert "alphabetical" in query_problem("handles", b"limit=1000&from_index=0")
+    assert "twice" in query_problem("notes", b"from_pos=0&from_pos=0")

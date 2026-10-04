@@ -25,8 +25,10 @@ spelled any other way than its plain decimal (0001000, %2B1000, +1000).
 FastAPI took all of those as the same page, so one client could keep every
 origin slot busy with misses. The gate answers each with 400, no-store,
 before any handler runs: a query is name=value pairs joined by &, each name
-one the endpoint takes, at most once, each value 0 or a decimal without a
-leading zero, nothing percent-encoded. A path that is not one of the
+one the endpoint takes, at most once and in alphabetical order (from_*
+before limit; audit-6 L4), each value 0 or a decimal without a leading
+zero, nothing percent-encoded. (An omitted parameter and its explicit
+default are still two spellings; that is bounded, two per page.) A path that is not one of the
 streams is 404, no-store. ENDPOINTS must list every /privacy route
 (tests/test_audit5 checks it against the router).
 
@@ -109,6 +111,10 @@ def query_problem(name: str, query: bytes) -> str | None:
             return f"unknown parameter {key}; this stream takes {sorted(allowed) or 'none'}"
         if key in seen:
             return f"parameter {key} given twice"
+        # One order (audit-6 L4): limit=..&from_pos=.. and from_pos=..&limit=..
+        # were two cache keys for one page.
+        if seen and key < max(seen):
+            return f"parameters must be in alphabetical order ({' before '.join(sorted(allowed))})"
         seen.add(key)
     return None
 
