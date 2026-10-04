@@ -3,7 +3,7 @@
 // hooks it into the app test envs' block helpers; each recorded test then
 // writes every FinalizeBlock response, as CometBFT RPC block_results JSON,
 // with the trees' sizes and roots after the block (note, identity, stake,
-// stake nullifier) and the x/personhood Handles query's answer at the block
+// stake nullifier, slash debt) and the x/personhood Handles query's answer at the block
 // (QueryHandlesResponse, protobuf, hex: the handle directory as the chain
 // serves it, statuses at the block's time), to $RECORD_DIR.
 
@@ -27,6 +27,8 @@ import (
 
 	personhoodkeeper "github.com/earth-network/earth/x/personhood/keeper"
 	personhoodtypes "github.com/earth-network/earth/x/personhood/types"
+	sskeeper "github.com/earth-network/earth/x/shieldedstaking/keeper"
+	sstypes "github.com/earth-network/earth/x/shieldedstaking/types"
 
 )
 
@@ -47,6 +49,9 @@ type recBlock struct {
 	NfRoot       string          `json:"stake_nf_current_root"`
 	NfAnchor     string          `json:"stake_nf_latest_root"`
 	Handles      []string        `json:"handles"`
+	DebtSize     uint64          `json:"debt_tree_size"`
+	DebtRoot     string          `json:"debt_current_root"`
+	DebtTree     string          `json:"debt_tree"`
 }
 
 type cmtjsonRaw []byte
@@ -93,6 +98,21 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 		}
 		start = page.Next
 	}
+	// The slash debt tree (chain dff3a9b): size and root, and the whole
+	// Query/DebtTree answer at the block (rows, window_seconds, clear_before
+	// at the block's time), protobuf, hex.
+	droot, dsize, err := app.ShieldedStakingKeeper.DebtRoot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dq, err := sskeeper.NewQueryServerImpl(app.ShieldedStakingKeeper).DebtTree(ctx, &sstypes.QueryDebtTreeRequest{Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbz, err := dq.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
 	br := &coretypes.ResultBlockResults{
 		Height: height, TxsResults: res.TxResults, FinalizeBlockEvents: res.Events,
 		ValidatorUpdates: res.ValidatorUpdates, ConsensusParamUpdates: res.ConsensusParamUpdates, AppHash: res.AppHash,
@@ -109,6 +129,7 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 		StakeSize: ssize, StakeAnchor: hex.EncodeToString(sanchor),
 		NfSize: nfsize, NfRoot: hex.EncodeToString(nfroot), NfAnchor: hex.EncodeToString(nfanchor),
 		Handles: handles,
+		DebtSize: dsize, DebtRoot: hex.EncodeToString(droot), DebtTree: hex.EncodeToString(dbz),
 	}
 	recMu.Lock()
 	defer recMu.Unlock()
