@@ -183,3 +183,13 @@ Accepted:
 Test counts: 266 after round 3, 321 after handles, 363 after round 5
 fixes, 379 after round 5 formats, 393 after round 6 fixes, 405 after round
 6 formats, 423 after unbond payouts, 470 after the slash debt tree.
+
+## Passport signature coverage (2026-10-04)
+
+- dsccommit mirrors the chain's new commitments: P-224 (tag 8),
+  brainpoolP224r1 (9), RSA as Poseidon2(10, e, modulus); explicit curve
+  parameters name a curve only when all of them match (93e3f5b).
+- `GET /circuits/<variant>.json.gz`: the 17 register circuits the wallets do
+  not bundle, served byte for byte; the wallets pin their hashes (02367e4).
+
+The precheck and the reserved lane do not depend on the variant.
