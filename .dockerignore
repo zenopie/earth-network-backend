@@ -2,15 +2,19 @@
 # config.py load_dotenv()s /app/.env at runtime: a local build would bake
 # the hot wallet mnemonic, TUNNEL_TOKEN and AKASH_API_KEY into a layer, and
 # the replay DB (passport nullifiers) with them.
-.env*
-*.db
-*.db-wal
-*.db-shm
-.venv
+# `**/` matches at any depth, the root included (audit-6 L5): a bare `*.db`
+# or `.env*` matched only at the context root, so deploy/akash/.env or a
+# nested *.db would have been copied in.
+**/.env*
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+**/.venv
 .git
 .github
-.pytest_cache
-__pycache__
-*.pyc
-.DS_Store
-state/
+**/.pytest_cache
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+**/state/

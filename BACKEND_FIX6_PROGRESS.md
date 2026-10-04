@@ -72,7 +72,7 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
 - [x] L3 cloudflared --metrics 127.0.0.1:2000 (port 2000 stays the
       required global service, answering nothing); bin/build-sdl.py refuses
       a non-loopback --metrics
-- [ ] L5 .dockerignore `**/` patterns
+- [x] L5 .dockerignore patterns `**/` (any depth, root included)
 - [ ] L6 AKASH_API_KEY out of curl's argv
 - [ ] L4 canonical /privacy parameter order (if simple)
 - [x] I1 dead SendUnresolved-without-hash branch removed (46113bc)
