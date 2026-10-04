@@ -27,10 +27,15 @@ _DSC = os.path.join(os.path.dirname(__file__), "fixtures", "dsc")
     ("csca_brainpoolP256r1.der", "268948bb8e64736bdc99290b15d54e82cc588b2cf5d4fe89c7aa2f4c70d51a56"),
     ("csca_brainpoolP512r1.der", "09832cfbab77ee97dbfabee18ea29b8bf65854c92bc94b9f17f62bed01bbfcae"),
     ("csca_p521_explicit.der", "2f266d7247853a1d5b98df816ed33aa115d36a7cf087a6093b036ce2fb7c85a1"),
-    ("csca_rsa.der", "09152b8589dabb5428ae48775a3fb60bbe46f597d01a635cb4298b2ba47b6929"),
+    ("csca_rsa.der", "2ecda8196bac5e9a080b923ca19342ce73a89e5427e7ec6e5cba35df8e365086"),
     ("dsc_p256.der", "304606d727af8b6715f57c615779a33f1b00c00a1c5f50b7dd704b57a62ace59"),
     ("dsc_p384.der", "25f951db441d4b3dec429c70838a5d682a20426fb81f7e03df5aed44b1332584"),
-    ("dsc_rsa2048.der", "2ba8a977d31f882307f980ec68766aaca880f9e0249e8bd8543b8fe8e19bd7bf"),
+    ("dsc_rsa2048.der", "24da980d2a1a8871a26637ced0ad8ecf0fc8191612bd12f7896b6441c0964f9c"),
+    # From the mobile repo's synthetic passports (circuits/fixtures): P-224,
+    # brainpoolP224r1 with explicit parameters, RSA-4096 with e = 3.
+    ("dsc_p224.der", "19cbc3f8c4673334df0437153fe53e9fbb44d9b84b295fc6f07ab1a92954febf"),
+    ("dsc_bp224_explicit.der", "0c012738256f4f69f517d0fb1edc9010560dc75dd4a0c6eab747189e1395c8c9"),
+    ("dsc_rsa4096_e3.der", "2a91118ff73976a04c903bad487d26904ed28796062c14444e57cd1690b84e1b"),
 ])
 def test_dsc_commitment_matches_the_chain(name, want):
     with open(os.path.join(_DSC, name), "rb") as f:
@@ -41,7 +46,7 @@ def test_dsc_commitment_matches_the_circuit():
     """zk/ultrahonk/testdata/lean_poa: dsc_pubkey -> expected_dsc_key (P-256, tag 1)."""
     key = bytes.fromhex("75c72e3b24013b813e7ee78da1fcf7cd1ac902030ea119b86df9822eddcaac49"
                         "a8a3b10d8765588476ed35eb6141681534bb7164a2fa9d6c7dd82140776c471d")
-    assert int.from_bytes(dsccommit.commitment_of_key(dsccommit.TAG_P256, key), "big") == \
+    assert int.from_bytes(dsccommit.commitment_of_key((dsccommit.TAG_P256,), key), "big") == \
         17137993880610033746992863696376072247659308979702652622358731864446692122039
 
 
@@ -55,9 +60,11 @@ def test_curve_constants_match_ecdsa():
 
     for c, oid in [(ecdsa.NIST256p, "1.2.840.10045.3.1.7"), (ecdsa.NIST384p, "1.3.132.0.34"),
                    (ecdsa.NIST521p, "1.3.132.0.35"), (ecdsa.BRAINPOOLP256r1, "1.3.36.3.3.2.8.1.1.7"),
-                   (ecdsa.BRAINPOOLP384r1, "1.3.36.3.3.2.8.1.1.11"), (ecdsa.BRAINPOOLP512r1, "1.3.36.3.3.2.8.1.1.13")]:
-        _, p, n = dsccommit._CURVES[oid]
-        assert (p, n) == (c.curve.p(), c.order), c.name
+                   (ecdsa.BRAINPOOLP384r1, "1.3.36.3.3.2.8.1.1.11"), (ecdsa.BRAINPOOLP512r1, "1.3.36.3.3.2.8.1.1.13"),
+                   (ecdsa.NIST224p, "1.3.132.0.33"), (ecdsa.BRAINPOOLP224r1, "1.3.36.3.3.2.8.1.1.5")]:
+        _, p, a, b, gx, gy, n = dsccommit._CURVES[oid]
+        g = c.generator
+        assert (p, a % p, b, gx, gy, n) == (c.curve.p(), c.curve.a() % p, c.curve.b(), g.x(), g.y(), c.order), c.name
 
 
 def test_known_dsc_set_parses_the_store_subspace():
