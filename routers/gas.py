@@ -474,23 +474,31 @@ async def register(request: Request):
                                      f"attach a proof of work of {need} bits (GET /gas/pow)")
         return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
                                  f"attach a proof of work of {need} bits (GET /gas/pow)")
+    if bits >= need and digest is not None:
+        # Consumed at once, before the await below (audit-6 L1): checked
+        # and consumed across lane_commitment, concurrent copies of one
+        # request each passed check(), and one stamp admitted several
+        # shed or priority checks. Given back below if it is not relied on.
+        pow.consume(digest)
+    else:
+        digest = None  # not relied on: still the wallet's to use
     priority = False
-    if candidate and bits >= need:
+    if candidate and digest is not None:
         # Off the event loop, one at a time, a key of at most RSA 4096
         # (audit-5 M1). A certificate that is not the signer it names is
         # refused here: the chain refuses it for certain ("proof is not
         # bound to the supplied DSC"), so it is never queued.
         lane = await dsccommit.lane_commitment(dsc_der)
         if lane is not None and lane != dsc:
+            pow.forget(digest)
             return _reply(400, "error", "dsc_der is not the Document Signer public_signals names")
         # At most one priority check per signer waits or runs (audit-5
         # M3); a second one naming it takes the ordinary lane. Taken here
         # and given back in the finally below, with no await between.
         priority = lane == dsc and ratelimit.take_signer_lane(dsc)
-    if (shed or priority) and digest is not None:
-        pow.consume(digest)
-    else:
-        digest = None  # not relied on: still the wallet's to use
+    if digest is not None and not (shed or priority):
+        pow.forget(digest)  # this request's own consume: the ordinary lane does not rely on it
+        digest = None
 
     # MsgRegister in proto JSON, without its fee bundle (gas-check does not
     # look at it): bytes fields are standard base64, exactly as the app holds

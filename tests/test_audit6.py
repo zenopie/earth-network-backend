@@ -17,7 +17,9 @@ from cryptography.x509.oid import NameOID
 
 import config
 from routers import gas
-from services import ratelimit
+from services import dsccommit, knowndsc, pow, ratelimit
+from services.zk import privacy
+from tests.test_proof_grants import DSC_KEY
 from tests.test_queue import with_pow
 from tests.test_register_dos import NOT_CHAINED, body, chain  # noqa: F401
 
@@ -121,4 +123,50 @@ def test_refusals_are_keyed_per_64_and_requests_per_48():
     assert ratelimit.refusal_key("2001:db8:1:0::1") == ratelimit.refusal_key("2001:db8:1:0:ffff::2")
     assert ratelimit.refusal_key("::ffff:100.64.0.1") == ratelimit.refusal_key("100.64.0.1") == \
         ratelimit.client_key("100.64.0.1")
+
+
+# --- L1: a stamp is consumed before the lane's await ---------------------------
+
+def test_a_stamp_is_consumed_before_the_lane_commitment_await(client, chain, monkeypatch):
+    """Concurrent copies of one request each passed pow.check() while the
+    first awaited lane_commitment, so one stamp admitted several priority
+    checks. Now it is consumed before the await."""
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    req = with_pow(body(7600), config.POW_RESERVED_BITS)
+    stamp = req["pow"]
+    signals = req["public_signals"]
+    seen_during_await = []
+    real = dsccommit.lane_commitment
+
+    async def lane(der):
+        try:
+            pow.check(stamp["ts"], stamp["nonce"], signals[config.PASSPORT_ADDRESS_INDEX],
+                      signals[config.PASSPORT_NULLIFIER_INDEX])
+            seen_during_await.append(False)
+        except pow.Rejected:
+            seen_during_await.append(True)
+        return await real(der)
+
+    monkeypatch.setattr(dsccommit, "lane_commitment", lane)
+    assert _post(client, req, "198.51.100.60").status_code == 200
+    assert seen_during_await == [True]
+    assert chain["priority"][-1] is True
+
+
+def test_a_stamp_not_relied_on_is_given_back(client, chain, monkeypatch):
+    """A candidate whose signer lane is taken goes to the ordinary lane; the
+    stamp it consumed early is given back for the wallet to use again."""
+    dsc = privacy.field_bytes(DSC_KEY)
+    knowndsc.set_known({dsc})
+    assert ratelimit.take_signer_lane(dsc)
+    try:
+        req = with_pow(body(7700), config.POW_RESERVED_BITS)
+        assert _post(client, req, "198.51.100.61").status_code == 200
+        assert chain["priority"][-1] is False
+    finally:
+        ratelimit.release_signer_lane(dsc)
+    s = req["pow"]
+    pow.check(s["ts"], s["nonce"], req["public_signals"][config.PASSPORT_ADDRESS_INDEX],
+              req["public_signals"][config.PASSPORT_NULLIFIER_INDEX])  # not Rejected
 

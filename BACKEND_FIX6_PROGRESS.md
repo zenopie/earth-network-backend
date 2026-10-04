@@ -62,7 +62,9 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
       an expired dsc_der is refused 400 in the precheck (no gas-check, not
       counted); GET /gas/pow reports shedding for a shed client;
       tests/test_audit6.py (auditor's /48 and CGNAT scenarios)
-- [ ] L1 PoW stamp consumed before the lane_commitment await
+- [x] L1 PoW stamp consumed right after check (before the lane_commitment
+      await) and given back only by the request that consumed it, when not
+      relied on (ordinary lane, dsc_der mismatch 400)
 - [ ] L2 handles_stale measured from the first pending handle event
 - [ ] L3 cloudflared metrics bound to 127.0.0.1
 - [ ] L5 .dockerignore `**/` patterns
