@@ -54,7 +54,9 @@ def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
         assert base64.b64encode(row[2]).decode() == a["ciphertext"]
         if "spc" in a:
             assert (row[3], row[4], row[5].hex()) == (a["denom"], a["amount"], a["spc"])
-            assert row[3].startswith(("derth/", "unbond/"))
+            # Only derth/<valoper> notes since 48b631c (the unbond/ claim
+            # notes are gone: an undelegation pays out as pool notes).
+            assert row[3].startswith("derth/")
         else:
             assert row[3:] == (None, None, None)
     nfs = store.conn.execute("SELECT idx, nf, height FROM stake_nullifiers ORDER BY idx").fetchall()
@@ -139,7 +141,7 @@ def test_a_stake_nullifier_index_out_of_sequence_halts(tmp_path, shift, match):
 
 
 def test_a_repeated_stake_nullifier_index_halts(tmp_path):
-    sc = copy.deepcopy(scenario())
+    sc = copy.deepcopy(scenario(VOTE_SCENARIO))
     evs = list(_stake_events(sc, "shieldedstaking_stake_nullifier"))
     assert len(evs) >= 2
     next(a for a in evs[1]["attributes"] if a["key"] == "index")["value"] = "1"
@@ -161,28 +163,6 @@ def test_stake_nullifiers_missing_from_the_index_halt(tmp_path):
         b["stake_nf_tree_size"] = b["stake_nf_tree_size"] + 1 if b["stake_nf_tree_size"] else 2
     with pytest.raises(Halted, match="stake nullifier tree of"):
         sync(Indexer(Store(str(tmp_path / "i.db")), FakeRPC(sc)))
-
-
-def test_a_failed_claims_stake_nullifiers_are_indexed(tmp_path):
-    """A claim spends in the private ante: its stake nullifier and change note
-    persist when the tx fails, and their events are in the failed result."""
-    sc = copy.deepcopy(scenario())
-    marked = 0
-    for b in sc["blocks"]:
-        for tx in b["block_results"].get("txs_results") or []:
-            types_ = {e["type"] for e in tx.get("events") or []}
-            if "shieldedstaking_claim" in types_ and "shieldedstaking_stake_nullifier" in types_:
-                tx["code"], tx["log"] = 5, "a later msg failed"
-                marked += 1
-    assert marked, "the lifecycle scenario claims"
-    want = Store(str(tmp_path / "ok.db"))
-    sync(Indexer(want, FakeRPC(scenario())))
-    got, rpc = _index(str(tmp_path / "i.db"), sc)
-    q = "SELECT idx, nf, height FROM stake_nullifiers ORDER BY idx"
-    assert got.conn.execute(q).fetchall() == want.conn.execute(q).fetchall()
-    rep = verify.rebuild(got.conn, all_roots=True)
-    asyncio.run(verify.check_chain(rep, rpc))
-    assert rep.ok, rep.errors
 
 
 # --- the stake nullifier tree at proposal snapshots ----------------------------
