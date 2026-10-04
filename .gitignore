@@ -1,10 +1,16 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.DS_Store
 # .env* — not bare `.env`. A pattern of `.env` matches that exact filename and
 # nothing else, so `.env.local` was tracked and reached a public repo with a
-# wallet mnemonic and a Monero seed in it.
+# wallet mnemonic and a Monero seed in it (still in history before 4b8ae7c).
 .env*
-# Replay-protection state; local to each deployment.
+# Replay-protection state and the privacy index, with SQLite's side files;
+# local to each deployment.
 *.db
-.DS_Store
+*.db-wal
+*.db-shm
+*.db-journal
+state/
