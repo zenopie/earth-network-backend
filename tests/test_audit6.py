@@ -170,3 +170,11 @@ def test_a_stamp_not_relied_on_is_given_back(client, chain, monkeypatch):
     pow.check(s["ts"], s["nonce"], req["public_signals"][config.PASSPORT_ADDRESS_INDEX],
               req["public_signals"][config.PASSPORT_NULLIFIER_INDEX])  # not Rejected
 
+
+# --- I2: decimal public signals are cut from logged errors ----------------------
+
+def test_coarse_cuts_decimal_signals():
+    nf = "20721221850428050168833700122818390286788073887706614806955557958870761234"
+    out = gas._coarse(f"nullifier {nf} refused; 1121 at height 52000")
+    assert nf[:16] not in out and "<hex>" in out and "1121" in out and "52000" in out
+

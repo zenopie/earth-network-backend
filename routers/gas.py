@@ -124,11 +124,14 @@ class RegisterGrant(BaseModel):
     pow: PowStamp | None = None
 
 
+# Digits are hex digits, so this also cuts a public signal in decimal (a
+# nullifier or binding, up to 77 digits; audit-6 I2, tested).
 _HEX_RUN = re.compile(r"(0x)?[0-9a-fA-F]{16,}")
 
 
 def _coarse(reason) -> str:
-    """A refusal reason for the log: hex runs (nullifiers, keys, hashes) cut out, length bounded."""
+    """A refusal reason for the log: hex runs (nullifiers, keys, hashes) and
+    decimal runs of 16 digits or more (public signals) cut out, length bounded."""
     return _HEX_RUN.sub("<hex>", str(reason))[:120]
 
 
