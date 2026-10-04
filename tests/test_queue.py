@@ -39,7 +39,11 @@ def slow_gas_check(monkeypatch):
                 msg = json.loads(stdin)
                 nf = int(msg["public_signals"][2])
                 ran.append(nf)
-                await asyncio.sleep(0.05)
+                # The first check runs longer: requests sent after it (the
+                # real registrant, 20 ms into a flood) must be queued before
+                # it ends, or the next ordinary waiter takes the slot and
+                # the order under test is a race (it was, ~1 run in 20).
+                await asyncio.sleep(0.3 if len(ran) == 1 else 0.05)
                 if nf == 999:
                     return json.dumps({"ok": True, "nullifier": privacy.field_bytes(nf).hex()}).encode(), b""
                 return b'{"ok": false, "error": "invalid registration proof"}', b""
