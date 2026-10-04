@@ -46,3 +46,26 @@ fixes and format adoption only. Baseline (5ef87bc): 363 passed, 1 skipped.
   row of a split payout as its own note.
 
 pytest: 379 passed, 1 skipped (live-earthd test).
+
+---
+
+# Audit round 6 fixes (backend)
+
+Report: audit6-backend.md (privacy/orchard @ 45dfae3). Feature freeze:
+fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
+
+## Steps
+- [x] M1 shared-network lockout: a client over its refusal budget is shed
+      (428, proof of work at POW_SHED_BITS) instead of a hard 429; client
+      refusals counted per IPv6 /64 (REGISTER_CLIENT_REFUSAL_IPV6_PREFIX),
+      the request window stays /48; a daily cap ("rate cap") does not count;
+      an expired dsc_der is refused 400 in the precheck (no gas-check, not
+      counted); GET /gas/pow reports shedding for a shed client;
+      tests/test_audit6.py (auditor's /48 and CGNAT scenarios)
+- [ ] L1 PoW stamp consumed before the lane_commitment await
+- [ ] L2 handles_stale measured from the first pending handle event
+- [ ] L3 cloudflared metrics bound to 127.0.0.1
+- [ ] L5 .dockerignore `**/` patterns
+- [ ] L6 AKASH_API_KEY out of curl's argv
+- [ ] L4 canonical /privacy parameter order (if simple)
+- [ ] I1 dead SendUnresolved branch; I2 _coarse; I3 replay pruning; I4 action SHAs

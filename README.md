@@ -122,7 +122,12 @@ everything that can refuse a request without one runs first, in this order:
    the chain's Go vectors) → 400. Someone else's proof with notes or
    ciphertexts of one's own stops here.
 4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
-   `current_date_max_skew_seconds` of now (+10 min) → 400.
+   `current_date_max_skew_seconds` of now (+10 min) → 400. A `dsc_der`
+   outside its own validity by more than 10 min (the chain's
+   `certificate not valid at current time`, its first check of the
+   certificate) → 400: an expired document signer is the registrant's
+   circumstance, answered without a gas-check and counted against no one
+   (audit-6 M1).
 5. **Replay**: any `passport:<public_signals[nullifier_index] as 32-byte hex>:…`
    claimed in the last 30 days → 409.
 6. **Daily cap**: `REGISTER_GRANT_MAX_PER_DAY` first-registration grants
@@ -149,9 +154,15 @@ everything that can refuse a request without one runs first, in this order:
    one else. Every refusal, cheap ones included and in either lane, also
    counts against the client that sent it
    (`REGISTER_CLIENT_REFUSALS_PER_WINDOW`, 3 in
-   `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS`, 3600, sliding): past it the
-   client is answered **429** before the queue until they age out
-   (audit-5 M3).
+   `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS`, 3600, sliding; audit-5 M3),
+   except a signer's or country's daily cap, which is the registrant's
+   circumstance. Here a client is an IPv4 address or an IPv6
+   /`REGISTER_CLIENT_REFUSAL_IPV6_PREFIX` (64: one subscriber, where a
+   carrier's /48 holds many). A client past it is shed like a spent
+   budget: **428** before the queue without a proof of work at the
+   shedding difficulty, queued with one. It used to be a hard 429 per /48
+   (audit-6 M1): three junk requests an hour from one subscriber, or from
+   anyone behind a CGNAT address, locked out everyone sharing it.
 8. **One check per client**: a client with a gas-check already queued or
    running gets 429 at once rather than a second place in the queue; the queue
    as a whole is bounded by `GAS_CHECK_MAX_WAITING` (503).
@@ -204,7 +215,8 @@ Hashcash over the registration, checked here with one SHA-256
 
 `GET /gas/pow` answers `{version, algorithm, input, bits, reserved_bits,
 shedding_bits, shedding, max_age_seconds}`; `bits` admits a request on every
-path right now. Difficulty is adaptive: `POW_RESERVED_BITS` (16) for the
+path right now. `shedding` is true while the network's refusal budget is
+spent or the asking client's own is (step 7). Difficulty is adaptive: `POW_RESERVED_BITS` (16) for the
 reserved lane, `POW_SHED_BITS` (20) while shedding, plus up to
 `POW_LOAD_EXTRA_BITS` (2) as the gas-check queue fills, capped at
 `POW_MAX_BITS` (22). 2^20 hashes is about a second natively on a phone, a

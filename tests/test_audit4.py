@@ -210,9 +210,15 @@ def test_every_refusal_in_the_reserved_lane_counts(client, chain, monkeypatch):
         assert r.status_code == 403, r.text
         assert chain["priority"][-1] is True
     asked = len(chain["priority"])
+    # Past its refusal budget the client is shed (audit-6 M1: no longer a
+    # hard 429): the reserved lane's work is not enough, the shedding
+    # difficulty's is.
     r = client.post("/gas/register", json=with_pow(body(71010), config.POW_RESERVED_BITS), headers=ip)
-    assert r.status_code == 429 and "refused" in r.json()["message"]
-    assert len(chain["priority"]) == asked, "the client lost its place, before the queue"
+    assert r.status_code == 428 and "refused" in r.json()["message"]
+    assert r.json()["pow"]["bits"] == config.POW_SHED_BITS
+    assert len(chain["priority"]) == asked, "turned away before the queue"
+    r = client.post("/gas/register", json=with_pow(body(71011), config.POW_SHED_BITS), headers=ip)
+    assert r.status_code == 200, r.text
     # Counted against the client only: the network budget (3) is untouched.
     assert ratelimit.shedding(None, None) is None
     # And the signer's real registrants keep the lane.
@@ -239,7 +245,7 @@ def test_ordinary_lane_cheap_refusals_count_against_the_client(client, chain):
         chain["refuse"][73000 + i] = CHEAP_REFUSALS[i % len(CHEAP_REFUSALS)]
         codes.append(client.post("/gas/register", json=body(73000 + i), headers=ip).status_code)  # no work: ordinary lane
     n = config.REGISTER_CLIENT_REFUSALS_PER_WINDOW
-    assert codes == [403] * n + [429] * (5 - n)
+    assert codes == [403] * n + [428] * (5 - n)
     assert ratelimit.shedding(dsc, None) is None, "no other budget"
 
 

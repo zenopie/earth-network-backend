@@ -262,11 +262,36 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None
     if abs(time.time() - proof_unix) > config.PASSPORT_DATE_MAX_SKEW_SECONDS + _DATE_SLACK_SECONDS:
         raise _Refuse(400, "current_date is too far from today; prove again")
 
+    # The document signer's own validity, as the chain checks it first of
+    # everything about the certificate (x/pki VerifyDscIssuer,
+    # ErrCertExpired). An expired one is the registrant's circumstance, not
+    # junk, and must not count against their network (audit-6 M1); refused
+    # here it costs no gas-check either. Edges within _DATE_SLACK_SECONDS
+    # are the chain's call. A certificate `cryptography` cannot read
+    # (brainpool) is the chain's call too.
+    if _dsc_expired(dsc_der):
+        raise _Refuse(400, "the passport's document signer certificate is expired or not yet valid; "
+                           "this passport cannot register")
+
     nullifier = privacy.field_bytes(signals[config.PASSPORT_NULLIFIER_INDEX]).hex()
     day = time.strftime("%Y-%m-%d", time.gmtime())
     # Not refused when absent: whether a DSC is required is the chain's call.
     dsc = privacy.field_bytes(signals[config.PASSPORT_DSC_KEY_INDEX]) if config.PASSPORT_DSC_KEY_INDEX < n else None
     return nullifier, f"{_passport_key(nullifier)}{day}", pc_gas, ciphertext_gas, dsc, dsc_der
+
+
+def _dsc_expired(dsc_der: bytes, now: float | None = None) -> bool:
+    """Whether a DSC certificate is outside its validity, by more than
+    _DATE_SLACK_SECONDS of now. False when it cannot be read."""
+    from cryptography import x509
+
+    try:
+        cert = x509.load_der_x509_certificate(dsc_der)
+        before, after = cert.not_valid_before_utc.timestamp(), cert.not_valid_after_utc.timestamp()
+    except Exception:
+        return False
+    now = time.time() if now is None else now
+    return now < before - _DATE_SLACK_SECONDS or now > after + _DATE_SLACK_SECONDS
 
 
 def _dsc_country(dsc_der: bytes) -> str | None:
@@ -318,6 +343,16 @@ _REFUSAL_KINDS = (
 )
 
 
+# Refusals the registrant's own circumstances decide, which do not count
+# against their client (audit-6 M1): a signer or country at its daily cap.
+# The chain checks the cap only after the certificate has chained, so it is
+# not junk anyone mints with a made-up certificate. (An expired document
+# signer is the other such refusal; _precheck answers it 400 before the
+# queue, since the chain refuses it before anything else and a made-up
+# certificate would otherwise be a free refusal.)
+_USER_STATE_KINDS = frozenset({"rate cap"})
+
+
 def _refusal_kind(error) -> str:
     text = str(error or "").strip()
     for base, kind in _REFUSAL_KINDS:
@@ -331,15 +366,19 @@ def _pow_needed(bits: int, message: str) -> JSONResponse:
 
 
 @router.get("/pow", summary="The proof of work /gas/register needs right now")
-def pow_params():
-    shed = ratelimit.shedding() is not None
+def pow_params(request: Request):
+    # The network's state, or this client's when it is over its refusal
+    # budget (audit-6 M1): either way its requests need the shedding bits.
+    shed = ratelimit.shedding() is not None or \
+        ratelimit.client_refused_out(ratelimit.refusal_key(ratelimit.client_ip(request)))
     return {
         "version": pow.VERSION,
         "algorithm": "sha256",
         "input": pow.VERSION + ":<ts>:<public_signals[%d]>:<public_signals[%d]>:<nonce>"
                  % (config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_NULLIFIER_INDEX),
         # What admits a request on every path right now: the reserved lane's,
-        # or shedding's while the network budget is spent. A signer's or
+        # or shedding's while the network budget (or this client's refusal
+        # budget) is spent. A signer's or
         # country's own budget can ask more of its requests; a 428 says so.
         "bits": pow.required_bits(shedding=shed),
         "reserved_bits": pow.required_bits(shedding=False),
@@ -373,11 +412,13 @@ async def register(request: Request):
     # The body is validated here, after the request is counted (audit-5
     # L13): as a FastAPI parameter it was validated first, and a body that
     # failed the schema (422) never reached the per-client window.
-    client = ratelimit.client_key(ratelimit.client_ip(request))
+    ip = ratelimit.client_ip(request)
+    client = ratelimit.client_key(ip)
+    # Refusals count per subscriber (an IPv6 /64), the request window per
+    # /48 (audit-6 M1).
+    refuser = ratelimit.refusal_key(ip)
     if not ratelimit.allow(client):
         return _reply(429, "error", "too many requests; try again later")
-    if ratelimit.client_refused_out(client):
-        return _reply(429, "error", "too many refused registrations from this network lately; try again later")
     try:
         body = RegisterGrant.model_validate_json(await request.body())
     except ValidationError as exc:
@@ -400,10 +441,14 @@ async def register(request: Request):
         return _reply(429, "error", "free gas limit reached; try again tomorrow")
 
     # Shedding: the network's, this signer's or this country's budget of
-    # verification failures is spent. Such a request is queued only with a
-    # proof of work at the shedding difficulty.
+    # verification failures is spent, or this client's of refusals. Such a
+    # request is queued only with a proof of work at the shedding
+    # difficulty. A client over its refusal budget used to be refused 429
+    # outright (audit-6 M1): on a CGNAT address or a carrier's shared prefix
+    # three junk requests an hour locked everyone there out, with no way to
+    # pay through.
     country = _dsc_country(dsc_der)
-    shed = ratelimit.shedding(dsc, country)
+    shed = ratelimit.shedding(dsc, country) or ("client" if ratelimit.client_refused_out(refuser) else None)
     # The reserved lane: a passport not yet granted (peek, above) from a
     # Document Signer the chain already holds registrations from, with a
     # proof of work, whose
@@ -424,6 +469,9 @@ async def register(request: Request):
                 return _pow_needed(need, str(exc))
             bits = 0  # not needed: the ordinary lane
     if shed and bits < need:
+        if shed == "client":
+            return _pow_needed(need, f"too many refused registrations from this network lately; "
+                                     f"attach a proof of work of {need} bits (GET /gas/pow)")
         return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
                                  f"attach a proof of work of {need} bits (GET /gas/pow)")
     priority = False
@@ -483,12 +531,15 @@ async def register(request: Request):
             # shed anyone else.
             ratelimit.note_refusal(dsc, country)
         # Every refusal, cheap ones included and in either lane, counts
-        # against the client that sent it (audit-5 M3): a client that only
-        # produces refusals loses its place in the queue for a while. No
-        # refusal demotes the signer it named: that was anyone's to
-        # trigger with the signer's public certificate, and it evicted the
-        # signer's real registrants from the lane.
-        ratelimit.note_client_refusal(client)
+        # against the client (its /64) that sent it (audit-5 M3): a client
+        # that only produces refusals pays a proof of work for each request
+        # for a while. Not a daily cap: that is the registrant's
+        # circumstance, not junk (audit-6 M1). No refusal demotes the signer
+        # it named: that was anyone's to trigger with the signer's public
+        # certificate, and it evicted the signer's real registrants from the
+        # lane.
+        if kind not in _USER_STATE_KINDS:
+            ratelimit.note_client_refusal(refuser)
         # The chain's own reason — "passport expired", "daily cap reached" —
         # is what the user needs, and it says nothing they did not send. The
         # log keeps only its kind: no nullifier, handle or country.

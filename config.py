@@ -92,12 +92,15 @@ REGISTER_REFUSALS_PER_DSC_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_DSC_
 REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE", "4"))
 REGISTER_REFUSALS_PER_MINUTE = int(os.getenv("REGISTER_REFUSALS_PER_MINUTE", "5"))
 REGISTER_REFUSAL_KEYS_TRACKED = int(os.getenv("REGISTER_REFUSAL_KEYS_TRACKED", "10000"))
-# Every gas-check refusal (any kind, either lane, cheap ones included) also
-# counts against its client: this many in the window (sliding) and the
-# client is refused 429 before the queue until they age out (audit-5 M3).
-# 0 turns it off.
+# Every gas-check refusal (either lane, cheap ones included; not a signer's
+# or country's daily cap) also counts against its client: this many in the
+# window (sliding) and the client's requests are queued only with a proof of
+# work at POW_SHED_BITS (428 without) until they age out (audit-5 M3,
+# audit-6 M1). Counted per IPv4 address or IPv6 /REGISTER_CLIENT_REFUSAL_IPV6_PREFIX
+# (64: one subscriber, where a carrier's /48 holds many). 0 turns it off.
 REGISTER_CLIENT_REFUSALS_PER_WINDOW = int(os.getenv("REGISTER_CLIENT_REFUSALS_PER_WINDOW", "3"))
 REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS = float(os.getenv("REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS", "3600"))
+REGISTER_CLIENT_REFUSAL_IPV6_PREFIX = int(os.getenv("REGISTER_CLIENT_REFUSAL_IPV6_PREFIX", "64"))
 
 # Proof of work (services/pow; the spec wallets implement is in its module
 # doc and the README): SHA-256 leading zero bits. Required for the reserved

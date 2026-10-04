@@ -36,14 +36,22 @@ at the shedding difficulty (services/pow), and refused 428 without one.
 Junk that names one signer or country sheds that signer's or country's
 registrants (who can still pay the work), not everyone's.
 
-Client refusals (audit-5 M3): every gas-check refusal, of any kind and in
-either lane, also counts against the client that sent it
-(REGISTER_CLIENT_REFUSALS_PER_WINDOW in REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS,
-sliding). A client past it is refused 429 before the queue until its
-refusals age out: one that only produces refusals — cheap ones included,
-which spend no other budget — loses its place in the queue. A real
-registrant meets a refusal or two (an expired passport, a cap) and is not
-held up.
+Client refusals (audit-5 M3, audit-6 M1): every gas-check refusal in
+either lane, cheap ones included, also counts against the client that sent
+it (REGISTER_CLIENT_REFUSALS_PER_WINDOW in
+REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS, sliding), except one the
+registrant's own circumstances decide (a signer or country at its daily
+cap; an expired document signer is refused 400 before the queue and never
+reaches gas-check). A client past it is shed like a spent signer or country
+budget: queued only with a proof of work at the shedding difficulty (428
+without), never refused outright. The client a refusal counts against is
+an IPv4 /32 or an IPv6 /REGISTER_CLIENT_REFUSAL_IPV6_PREFIX (refusal_key,
+default /64: one subscriber), not the request window's /48. Before audit 6
+it was a hard 429 per /48: three junk requests an hour from one subscriber
+on a carrier /48, or behind a CGNAT address, locked every registrant there
+out, and three people with expired passports on one CGNAT address did the
+same by accident. Now junk from a shared network costs everyone on it a
+proof of work for a while, not their registration.
 
 The reserved lane, per signer (audit-5 M3): at most one priority check per
 DSC commitment waits or runs at a time (take_signer_lane). A second request
@@ -96,8 +104,9 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def client_key(ip: str) -> int | str:
-    """The network a request is limited as: an IPv4 /32 or an IPv6 /REGISTER_IPV6_PREFIX.
+def client_key(ip: str, prefix: int | None = None) -> int | str:
+    """The network a request is limited as: an IPv4 /32 or an IPv6 /prefix
+    (REGISTER_IPV6_PREFIX unless given).
 
     An IPv4-mapped IPv6 address is its IPv4 address. Anything unparseable is
     keyed as given (only the TCP peer or a trusted header reaches here).
@@ -109,9 +118,16 @@ def client_key(ip: str) -> int | str:
     if addr.version == 6:
         if addr.ipv4_mapped is not None:
             return int(addr.ipv4_mapped)
-        bits = max(0, min(128, config.REGISTER_IPV6_PREFIX))
+        bits = max(0, min(128, config.REGISTER_IPV6_PREFIX if prefix is None else prefix))
         return _V6_TAG | (int(addr) >> (128 - bits))
     return int(addr)
+
+
+def refusal_key(ip: str) -> int | str:
+    """The client a gas-check refusal counts against: an IPv4 /32 or an IPv6
+    /REGISTER_CLIENT_REFUSAL_IPV6_PREFIX (audit-6 M1: one subscriber's /64,
+    not the carrier's /48 the request window is kept for)."""
+    return client_key(ip, config.REGISTER_CLIENT_REFUSAL_IPV6_PREFIX)
 
 
 def _count(entry: int, now: float, window: float) -> tuple[int, int, int]:
@@ -190,7 +206,7 @@ def note_refusal(dsc: bytes | None = None, country: str | None = None, now: floa
 
 
 def note_client_refusal(client, now: float | None = None) -> None:
-    """Counts one gas-check refusal (any kind, either lane) against the client that sent it."""
+    """Counts one gas-check refusal (either lane) against the client (refusal_key) that sent it."""
     now = time.monotonic() if now is None else now
     idx, prev, cur = _count(_client_refusals.pop(client, 0), now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS)
     _client_refusals[client] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
@@ -199,7 +215,8 @@ def note_client_refusal(client, now: float | None = None) -> None:
 
 
 def client_refused_out(client, now: float | None = None) -> bool:
-    """Whether a client has had too many refusals lately to be queued again."""
+    """Whether a client (refusal_key) has had too many refusals lately to be
+    queued without a proof of work at the shedding difficulty."""
     limit = config.REGISTER_CLIENT_REFUSALS_PER_WINDOW
     if limit <= 0:
         return False
