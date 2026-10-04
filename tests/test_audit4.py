@@ -194,6 +194,24 @@ def test_a_copied_commitment_without_its_certificate_gets_no_priority(client, ch
     assert chain["priority"][-1] is True
 
 
+def _pow_between(b: dict, lo: int, hi: int) -> dict:
+    """b with a stamp of at least lo and fewer than hi bits (a with_pow stamp
+    can happen to clear hi as well)."""
+    import hashlib
+    import time
+
+    from services import pow
+
+    ts = int(time.time())
+    sig = b["public_signals"]
+    for i in range(1 << 20):
+        d = hashlib.sha256(pow.stamp_input(ts, sig[config.PASSPORT_ADDRESS_INDEX],
+                                           sig[config.PASSPORT_NULLIFIER_INDEX], str(i))).digest()
+        if lo <= pow.leading_zero_bits(d) < hi:
+            return dict(b, pow={"ts": ts, "nonce": str(i)})
+    raise AssertionError("unreachable")
+
+
 def test_every_refusal_in_the_reserved_lane_counts(client, chain, monkeypatch):
     """The PoC's flood with the real certificate. Audit 4 demoted the signer
     after five; audit-5 M3 found that demotion was anyone's to trigger, so
@@ -213,7 +231,8 @@ def test_every_refusal_in_the_reserved_lane_counts(client, chain, monkeypatch):
     # Past its refusal budget the client is shed (audit-6 M1: no longer a
     # hard 429): the reserved lane's work is not enough, the shedding
     # difficulty's is.
-    r = client.post("/gas/register", json=with_pow(body(71010), config.POW_RESERVED_BITS), headers=ip)
+    r = client.post("/gas/register", json=_pow_between(body(71010), config.POW_RESERVED_BITS, config.POW_SHED_BITS),
+                    headers=ip)
     assert r.status_code == 428 and "refused" in r.json()["message"]
     assert r.json()["pow"]["bits"] == config.POW_SHED_BITS
     assert len(chain["priority"]) == asked, "turned away before the queue"
