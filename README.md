@@ -116,11 +116,12 @@ everything that can refuse a request without one runs first, in this order:
    `affiliate_pc` / `affiliate_ciphertext` (MsgRegister 11 and 12, removed in chain audit round 5: the
    chain mints the referral note itself) in the body, even empty, → 400 naming them.
 3. **Binding**: `public_signals[address_index]` must equal
-   `RegistrationBinding = H(TAG_REG, idc, pc_anml, Bytes(ciphertext_anml),
-   pc_erth, Bytes(ciphertext_erth), affiliate)`, affiliate 0 or
+   `RegistrationBinding = H(TAG_REG, Bytes(chain_id), idc, pc_anml,
+   Bytes(ciphertext_anml), pc_erth, Bytes(ciphertext_erth), affiliate)`,
+   chain_id `EARTH_CHAIN_ID` (since chain audit round 6), affiliate 0 or
    `H(TAG_AFFILIATE, Bytes(affiliate_handle))` (Python Poseidon2, pinned to
    the chain's Go vectors) → 400. Someone else's proof with notes or
-   ciphertexts of one's own stops here.
+   ciphertexts of one's own, or a proof made for another chain, stops here.
 4. **Date**: `public_signals[current_date_index]` (YYMMDD) within
    `current_date_max_skew_seconds` of now (+10 min) → 400. A `dsc_der`
    outside its own validity by more than 10 min (the chain's
