@@ -302,12 +302,13 @@ and under `base` = `/privacy/<chain_id>/<genesis>`:
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
     GET {base}/roots/latest                         note, identity and stake roots, size, height, time
     GET {base}/rates?epoch=                         [validator, rate, supply, epoch, height]
-    GET {base}/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext, denom, amount, spc]
+    GET {base}/stake/notes?from_pos=&limit=         [position, height, cm, ciphertext]  (format 2)
     GET {base}/stake/nullifiers?from_height=&limit= [[height, [nf, ...]], ...]
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nullifier, height]
     GET {base}/stake/roots?from_height=&limit=      [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=  [height, proposal_id, root, tree_size, nf_root, nf_size]
     GET {base}/handles?from_index=&limit=           [handle, address, status, expires_at, renewal_until, owner]
+    GET {base}/debt_rows?from_index=&limit=         [index, key, retained, height, updated_height]  (+ size, root, clear_before)
 
 ### URL scheme for wallets
 
@@ -333,15 +334,15 @@ Compact JSON (rows as arrays, field order in `fields`), gzip'd.
 **Paging rule (wallets implement this; audit-4 B3).** `limit` is one of
 `PRIVACY_PAGE_SIZES` — 100 or 1000; default 1000; anything else is 400. A
 position- or index-paged stream (`notes`, `identity`, `stake/notes`,
-`stake/nullifier-tree`) takes only a page-aligned cursor: `from_pos` /
+`stake/nullifier-tree`, `debt_rows`, `handles`) takes only a page-aligned cursor: `from_pos` /
 `from_index` must be a multiple of `limit` (else 400, `no-store`), and page
 `k` is exactly positions `[k*limit, (k+1)*limit)`. A full page's
 `next_pos`/`next_index` is the next aligned cursor. A page that reaches the
 tip is short (`complete: false`) and its `next_*` is one past the last row;
 to continue later, ask for the page that contains it,
 `from = next - next % limit`, and drop the rows already held. The stake
-nullifier tree's first page is `from_index=0` (leaf 0, the sentinel, is never
-a row, so it holds leaves 1..limit-1). Every wallet thus asks for the same
+nullifier tree's and the debt tree's first page is `from_index=0` (leaf 0,
+the sentinel, is never a row, so it holds leaves 1..limit-1). Every wallet thus asks for the same
 URLs, a CDN keeps one copy of each, and an uncached page is no longer a URL
 anyone can mint (every distinct `from_pos` used to be a distinct cache key,
 and a 5000-row page cost ~8 MiB of heap and ~0.3 s on a laptop, seconds on
@@ -370,14 +371,14 @@ the block time (unix seconds) of its `height`.
 
 `/stake/*` is x/shieldedstaking's stake note tree (owner-locked
 `derth/<valoper>` notes; its own nullifiers and roots), served the same way.
-Every stake note row has a `ciphertext`. A stake note the chain minted
-(delegation, unlocked position) also has public `denom`, `amount` and stake
-pc `spc`, and
-its `ciphertext` is the blind stake ciphertext (177 bytes, salt
-`earth.stake.v1`, version `0x03`; `EncryptBlindStakeNote`); one a stake proof
-created has the proof's `ciphertext` and nulls for the rest.
+Since chain dff3a9b every stake note is a stake proof output with its
+201-byte wallet stake ciphertext (stake row format 2, below); the chain
+mints none.
 
 ### Stream row changes for wallets (chain fced976)
+
+(The `/stake/notes` part is superseded by stake row format 2, chain dff3a9b,
+below: no stake note is minted any more.)
 
 One note-discovery rule: a wallet finds every note it owns by trial
 decryption alone.
@@ -483,6 +484,121 @@ format 2 (same `fields`), `/stake/*` keeps its columns.
   the stake nullifier tree is unchanged. The index does not read votes.
 - The chain change is a fresh genesis, so `base` changes; an older index is
   not reused.
+
+### Stake row format 2 and the slash debt tree (chain dff3a9b)
+
+Chain ORCHARD_DESIGN.md section 20: one stake note per validator, the chain
+mints no stake note, and a private redelegation's credit carries a slash
+label that the slash debt tree settles. Two stream changes and one new
+stream; every other stream is unchanged (`/notes` stays format 2).
+
+**`/stake/notes` is format 2.** Every page has `"format": 2`;
+`/privacy/status` (and `{base}/status`) has `"stake_note_format": 2`.
+
+    GET {base}/stake/notes?from_pos=0&limit=1000
+
+    {"format": 2,
+     "fields": ["position", "height", "cm", "ciphertext"],
+     "synced_height": H, "from_pos": 0, "next_pos": N, "complete": true|false,
+     "notes": [[position, height, cm, ciphertext], ...]}
+
+| column | type | value |
+|---|---|---|
+| `position` | int | leaf position in the stake note tree |
+| `height` | int | block height that appended it |
+| `cm` | hex, 64 chars | `H(TAG_STAKE, AssetID(derth/<valoper>), amount, spc, label)`, label 0 or `H(TAG_SLABEL, move_key, move_time, exposed)` (`TAG_SLABEL = "earth.slabel"`) |
+| `ciphertext` | base64, never null | the wallet stake ciphertext, exactly **201 bytes**: `epk \|\| AEAD(0x04 \|\| asset \|\| amount \|\| rho \|\| rcm \|\| move_key \|\| move_time \|\| exposed) \|\| tag` (label fields zero when unlabelled) |
+
+Format 1 had `denom`, `amount`, `spc` (public for a chain-minted note) and
+177-byte blind stake ciphertexts; both are gone. Read columns by name and
+refuse a stake page whose `format` is not 2. A wallet finds its stake notes
+by trial decryption only: every row is a proof output (lane A's
+`commitment`, then the credit lane's `credit_commitment`, in append order),
+the zero note a full exit creates included. The indexer refuses (halts on) a
+stake note event with `denom`/`amount`/`spc` or a ciphertext that is not 201
+bytes.
+
+**Stake nullifiers.** Every non-zero nullifier of a stake proof is inserted
+and streamed (`/stake/nullifiers`, `/stake/nullifier-tree`), padding ones
+included: a first delegation spends a padding nullifier in its first slot
+(one nullifier, one note); a redelegation spends lane A's note and the
+credit lane's note or padding (two nullifiers, two notes: the change, and
+the labelled credit). A redelegation's `move_key` is its credit nullifier
+(the second of the two). The chain cannot tell padding from a real spend
+and neither can the index. The stake tree's empty root is recorded at the
+first block (`/stake/roots` has a row with `tree_size` 0), so a first
+delegation's padding input proves against it.
+
+**New: `{base}/debt_rows`**, the slash debt tree (zk/debt): one row per
+slashed private redelegation, keyed by its move key, holding what its
+credited exposure is still worth. Wallets need every row, the root and
+`clear_before` to clear a label (any lane-A stake proof after the window)
+or vote a labelled note, both against the CURRENT `debt_root`. Served whole
+by leaf index; there is no lookup by move key.
+
+    GET {base}/debt_rows?from_index=0&limit=1000
+
+    {"format": 1,
+     "fields": ["index", "key", "retained", "height", "updated_height"],
+     "synced_height": H,
+     "size": S,                    // leaf count, sentinel included; 0 before the first row
+     "root": "<hex32>",            // the debt root at synced_height (the empty root
+                                   // 0cea3d3e...6903 when there is no row)
+     "root_height": h | null,      // the block that last wrote a row
+     "window_seconds": W | null,   // Query/DebtTree at clear_before_height
+     "clear_before": C | null,     //   (block time - window): null until the indexer checked
+     "clear_before_height": h | null,
+     "from_index": 0, "next_index": N, "complete": true|false,
+     "rows": [[1, "<hex32 key>", retained, height, updated_height], ...]}
+
+| column | type | value |
+|---|---|---|
+| `index` | int | the row's leaf (1, 2, ... in insertion order; leaf 0 is the sentinel, never a row) |
+| `key` | hex, 64 chars | the move key: the redelegation's credit nullifier (`shieldedstaking_redelegate` `move_key`) |
+| `retained` | int | derth the move's exposure is still worth (latest; it only falls) |
+| `height` | int | block that wrote the row first |
+| `updated_height` | int | block that wrote it last (a later slash of the same move rewrites it in place) |
+
+Paging as every index stream: `limit` 100 or 1000, `from_index` a
+multiple of it; page 0 holds leaves 1..limit-1, page k leaves
+`[k*limit, (k+1)*limit)`; follow `next_index` while `complete`. Every
+response is `max-age=2` (a row can be rewritten, so no page is immutable),
+and each page's rows, `size` and `root` come from one snapshot.
+
+To use it: read every page; insert the rows in `index` order into an
+indexed tree, `leaf = H(TAG_DEBTL, key, next_key, next_index, retained)`
+(`TAG_DEBTL = "earth.debtl"`; sentinel leaf `H(TAG_DEBTL, 0, 0, 0, 0)` at
+index 0; a new key appends and repoints its low leaf; `next_key` 0 for the
+largest key; `services/zk/debt.py` is a reference, pinned to the chain's
+vectors); check the root equals `root` (if not, a row changed between your
+pages: read them all again). Your move's witness is its own leaf when
+`key` is listed (worth `retained`), else its low leaf (absent: worth the
+whole exposure). A clearing proof names `debt_root = root` and
+`clear_before` at most the chain's at its block: `clear_before` here is the
+chain's at `clear_before_height`, always safe to use (it only grows; the
+label clears if `move_time < clear_before`). The chain refuses a
+`debt_root` that is not the current one (a slash since: re-read and re-prove). The chain's own
+`Query/DebtTree` (`/earth/shieldedstaking/v1/debt_tree`) answers the same.
+
+The indexer stores each `shieldedstaking_debt_row` (`move_key`, `retained`,
+`index`, `root`): a new key must take exactly the next leaf, a known key
+its own, `retained` never rises, and `shieldedstaking_move_slashed` (key,
+retained) must follow its row; `shieldedstaking_slash_debt` must name its
+moves' validators and at most their summed debt. At every batch it compares
+the chain's `Query/DebtTree` size and root with the index (else it halts)
+and keeps `window_seconds` / `clear_before`. `bin/verify-trees.py` replays
+the tree from every write and checks each emitted root, and the chain's
+rows. `/privacy/status` has `debt_tree_size`.
+
+**`shieldedstaking_redelegate`** carries `credited` (was `minted`),
+`move_key` and `move_time`: the indexer checks `move_key` is a stake
+nullifier of the block, refuses `minted`, and stores nothing of it (the
+wallet knows its own moves). **`Query/Redelegation` is gone** (the backend
+never used it). Stake votes list one or two `vote_nullifiers` (two slots).
+
+The chain change is a fresh genesis, so `base` changes; an index built
+before it (stake rows with `denom`/`amount`/`spc`) refuses to open: wipe
+`INDEX_DB`.
 
 ### Stake nullifier tree (stake votes, chain ORCHARD_DESIGN.md section 15)
 
@@ -598,13 +714,15 @@ is stored), `identity_leaf` (append,
 or zero when the leaf is all zeros), `identity_root`,
 `shieldedstaking_epoch_validator`, `shieldedstaking_epoch`, and the stake
 tree's `shieldedstaking_stake_note` (`position_id`, `commitment`,
-`ciphertext`, and `denom`/`amount`/`spc` when minted), `shieldedstaking_stake_nullifier`
+`ciphertext`: 201 bytes), `shieldedstaking_stake_nullifier`
 (`nullifier`, `index`: its leaf in the stake nullifier tree),
 `shieldedstaking_stake_root` and `shieldedstaking_snapshot` (`proposal_id`,
 `root`, `tree_size`, `nf_root`, `nf_size`), and `shieldedstaking_unbond_payout`
 (`payout_id`, `amount`, `notes`, `positions`: checked to name this block's
 x/shieldedstaking uerth mints, one ciphertext, summing to `amount`; nothing
-of it is stored). Stake notes and nullifiers are written by the msg, so a
+of it is stored), the slash debt tree's `shieldedstaking_debt_row`,
+`shieldedstaking_move_slashed`, `shieldedstaking_slash_debt` and
+`shieldedstaking_redelegate` (above). Stake notes and nullifiers are written by the msg, so a
 failed staking msg leaves none. Ignored: dex LP
 events (private LP shares are ordinary notes), `shielded_unshield`,
 `shieldedstaking_self_bond_compounded`, `shieldedstaking_unbond_payout_failed`,
@@ -623,7 +741,8 @@ and `test_failed_tx_with_only_failure_code_still_counts_every_event` guard it.
 
 It refuses, and halts until an operator steps in, rather than serve trees that
 cannot match the chain: a note position out of sequence, a nullifier twice,
-a stake nullifier whose leaf `index` is not exactly the next one, a proposal
+a stake nullifier whose leaf `index` is not exactly the next one, a debt row
+out of leaf order or rising, a proposal
 snapshot naming a tree size past the index, a
 root event whose size differs from the index, a different chain id or block
 hash behind the RPC than the one indexed (the chain's first-block hash is
@@ -636,7 +755,7 @@ under the same chain id restarts low; before, that was retried forever with
 is not the block indexed before it (checked on every block, so an RPC
 swapped mid-run halts at the first block of the other chain), or tree sizes that differ from the
 chain's own (`Query/Tree`, `Query/IdentityTree`, `Query/StakeTree`,
-`Query/StakeNullifierTree` at each batch's last height —
+`Query/StakeNullifierTree`, `Query/DebtTree` (size and root) at each batch's last height —
 this is what catches notes imported at genesis, which emit no events, or a
 start height past the first private tx; when the node cannot answer that
 query — state pruned at old heights — the skip is logged at WARNING). The
@@ -666,15 +785,17 @@ rpc.erth.network serves every height from 1.
 
     bin/verify-trees.py --db privacy_index.db [--all-roots] [--no-chain]
 
-rebuilds the note, identity, stake and stake nullifier trees from the index
-with Python Poseidon2 (`services/zk`, a port of the chain's `zk/poseidon2`,
-`zk/merkle`, `zk/indexed` and `zk/privacy`), checks every chain-minted stake
-note's commitment against its public denom, amount and spc, checks the latest
+rebuilds the note, identity, stake, stake nullifier and slash debt trees
+from the index with Python Poseidon2 (`services/zk`, a port of the chain's
+`zk/poseidon2`, `zk/merkle`, `zk/indexed`, `zk/debt` and `zk/privacy`),
+checks every debt row write's leaf and the root the chain emitted after it,
+checks the latest
 root of each (every recorded root with `--all-roots`) against the root
 events the chain emitted, checks the stake nullifier tree's root at every
 proposal snapshot's `nf_size` against its `nf_root` (the chain emits no
 per-block nullifier root), and compares the rebuilt trees with the chain's
-own (including `Query/StakeNullifierTree` size and root) at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
+own (including `Query/StakeNullifierTree` size and root, and
+`Query/DebtTree` rows, size and root) at the synced height. Exit 0 all match, 1 mismatch, 2 the chain could not be
 asked.
 
 ### Fixtures
@@ -685,9 +806,17 @@ scenario tests (real proofs, the launch genesis path) recorded as RPC
 roots after each block, the stake nullifier tree's, and the chain's
 `Query/Handles` answer at each block in pages of one (personhood, shielded
 pool, staking lifecycle, owner-locked stake notes, self-bond compounding,
-private dex LP, stake votes on concurrent proposals).
-`zk_vectors.json` comes from the chain's Go zk packages. Both regenerate from
-a chain checkout without touching it:
+private dex LP, stake votes on concurrent proposals), with the slash debt
+tree's size, root and `Query/DebtTree` answer. The chain's redelegation
+tests fund and move outside blocks (no node serves such state), so the
+recorder adds its own scenario, `TestRecordRedelegateSlashDebt`
+(`bin/chainrec/zz_record_scenarios_test.go`: two redelegations, a slash
+reaching both, a labelled top-up, the label cleared), its proofs in
+`bin/chainrec/proofs`. `zk_vectors.json` comes from the chain's Go zk
+packages. Both regenerate from a chain checkout without touching it:
 
-    bin/record-chain-fixtures.sh ../earth-network-chain
+    bin/record-chain-fixtures.sh ../earth-network-chain [ref] [../earth-network-mobile/circuits]
     bin/zk-vectors.sh ../earth-network-chain
+
+(the circuits argument, with nargo and bb on PATH, proves the recorder
+scenario's missing proofs after a circuit change).
