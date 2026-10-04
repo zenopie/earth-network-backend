@@ -21,6 +21,12 @@ nullifier tree, which must be exactly the next one (1, 2, 3, ...), each
 nullifier once; a proposal snapshot is recorded once and never names a tree
 size past what is indexed.
 
+The slash debt tree's rows (shieldedstaking_debt_row) are kept as rows
+(debt_rows, the latest retained of each) and as writes (debt_writes, each
+with the root the chain emitted after it): a new move key must take exactly
+the next leaf (1, 2, ...), a known one its own leaf, and a row's retained
+never rises.
+
 The handle directory is not built from events: it is a snapshot of the
 chain's Handles query at one height (services/privacy/handles), replaced
 whole by replace_handles. A block with a handle event records its height
@@ -107,14 +113,13 @@ CREATE TABLE IF NOT EXISTS rates (
     undelegated TEXT NOT NULL,
     PRIMARY KEY (height, validator)
 );
+-- Every stake note is a stake proof output with its 201-byte wallet stake
+-- ciphertext (chain dff3a9b: the chain mints none).
 CREATE TABLE IF NOT EXISTS stake_notes (
     position   INTEGER PRIMARY KEY,
     cm         BLOB NOT NULL,
     height     INTEGER NOT NULL,
-    ciphertext BLOB,            -- every note (minted: blind stake ciphertext); NULL only in pre-fced976 indexes
-    denom      TEXT,            -- minted by the chain: denom, amount, spc public
-    amount     TEXT,
-    spc        BLOB
+    ciphertext BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS stake_notes_by_height ON stake_notes (height);
 -- The stake nullifier tree's values: idx is the leaf index the chain gave
@@ -134,6 +139,28 @@ CREATE TABLE IF NOT EXISTS stake_snapshots (
     nf_size     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS stake_snapshots_by_height ON stake_snapshots (height, proposal_id);
+-- The slash debt tree (zk/debt): one row per slashed private redelegation,
+-- idx its leaf (1, 2, ... in insertion order; leaf 0 is the sentinel), with
+-- its latest retained. height: the block that wrote it first; updated_height:
+-- the last (a later slash of the same move rewrites it, retained falling).
+CREATE TABLE IF NOT EXISTS debt_rows (
+    idx            INTEGER PRIMARY KEY,
+    key            BLOB NOT NULL UNIQUE,
+    retained       INTEGER NOT NULL,
+    height         INTEGER NOT NULL,
+    updated_height INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS debt_rows_by_updated ON debt_rows (updated_height);
+-- Every debt row write in chain order, with the root the chain emitted after
+-- it (bin/verify-trees.py replays them).
+CREATE TABLE IF NOT EXISTS debt_writes (
+    seq      INTEGER PRIMARY KEY,
+    idx      INTEGER NOT NULL,
+    key      BLOB NOT NULL,
+    retained INTEGER NOT NULL,
+    height   INTEGER NOT NULL,
+    root     BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS stake_roots (
     height    INTEGER PRIMARY KEY,
     root      BLOB NOT NULL,
@@ -186,6 +213,11 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
         conn.close()
         raise RuntimeError(f"{path} predates open notes (note rows without owner_pk/rho/rcm, from a chain "
                            f"before audit round 5): wipe INDEX_DB and index again")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(stake_notes)")]
+    if cols and "spc" in cols:
+        conn.close()
+        raise RuntimeError(f"{path} predates chain dff3a9b (stake note rows with denom/amount/spc, from a chain "
+                           f"that minted stake notes): wipe INDEX_DB and index again")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(handles)")]
     if cols and "owner" not in cols:
         # A handle directory from before HandleEntry.owner (chain audit
@@ -216,6 +248,19 @@ def stake_counts(c: sqlite3.Connection) -> tuple[int, int]:
     (n,) = c.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM stake_notes").fetchone()
     (f,) = c.execute("SELECT COUNT(*) FROM stake_nullifiers").fetchone()
     return n, f
+
+
+def debt_size(c: sqlite3.Connection) -> int:
+    """The slash debt tree's leaf count as the chain reports it: the rows plus
+    the sentinel, 0 before the first row."""
+    (n,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM debt_rows").fetchone()
+    return n
+
+
+def debt_root(c: sqlite3.Connection) -> tuple[bytes, int] | None:
+    """(root, height) the chain emitted with the last debt row write, None before the first."""
+    row = c.execute("SELECT root, height FROM debt_writes ORDER BY seq DESC LIMIT 1").fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def counts(c: sqlite3.Connection) -> tuple[int, int, int]:
@@ -264,6 +309,12 @@ class Store:
 
     def stake_nf_size(self) -> int:
         return stake_nf_size(self.conn)
+
+    def debt_size(self) -> int:
+        return debt_size(self.conn)
+
+    def debt_root(self) -> tuple[bytes, int] | None:
+        return debt_root(self.conn)
 
     # --- writing ----------------------------------------------------------
 
@@ -355,9 +406,8 @@ class Store:
                         f"block {d.height}: stake note at position {n.position}, expected {stakes}"
                         + (" (history before the start height is missing)" if not last and stakes == 0 else "")
                     )
-                c.execute("INSERT INTO stake_notes (position, cm, height, ciphertext, denom, amount, spc)"
-                          " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                          (n.position, n.cm, d.height, n.ciphertext, n.denom, n.amount, n.spc))
+                c.execute("INSERT INTO stake_notes (position, cm, height, ciphertext) VALUES (?, ?, ?, ?)",
+                          (n.position, n.cm, d.height, n.ciphertext))
                 stakes += 1
 
             # Leaf indexes exactly in sequence from 1 (leaf 0 is the
@@ -391,6 +441,31 @@ class Store:
                               (sn.proposal_id, d.height, sn.root, sn.tree_size, sn.nf_root, sn.nf_size))
                 except sqlite3.IntegrityError as exc:
                     raise Inconsistent(f"block {d.height}: proposal {sn.proposal_id} snapshotted twice") from exc
+
+            # Debt rows: a new key at exactly the next leaf (1, 2, ...), a
+            # known key at its own leaf with a retained that has not risen
+            # (a row only ever loses value; zk/debt Set).
+            (debt_next,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 1) FROM debt_rows").fetchone()
+            for r in d.debt_rows:
+                row = c.execute("SELECT idx, retained FROM debt_rows WHERE key = ?", (r.key,)).fetchone()
+                if row is None:
+                    if r.index != debt_next:
+                        raise Inconsistent(
+                            f"block {d.height}: debt row {r.key.hex()} at leaf {r.index}, expected {debt_next}"
+                            + (" (history before the start height is missing)" if not last and debt_next == 1 else ""))
+                    c.execute("INSERT INTO debt_rows (idx, key, retained, height, updated_height) VALUES (?, ?, ?, ?, ?)",
+                              (r.index, r.key, r.retained, d.height, d.height))
+                    debt_next += 1
+                else:
+                    if r.index != row[0]:
+                        raise Inconsistent(f"block {d.height}: debt row {r.key.hex()} rewritten at leaf {r.index}, "
+                                           f"indexed at {row[0]}")
+                    if r.retained > row[1]:
+                        raise Inconsistent(f"block {d.height}: debt row {r.key.hex()} rose from {row[1]} to {r.retained}")
+                    c.execute("UPDATE debt_rows SET retained = ?, updated_height = ? WHERE idx = ?",
+                              (r.retained, d.height, r.index))
+                c.execute("INSERT INTO debt_writes (idx, key, retained, height, root) VALUES (?, ?, ?, ?, ?)",
+                          (r.index, r.key, r.retained, d.height, r.root))
 
             if d.stake_root is not None:
                 if d.stake_root.tree_size != stakes:

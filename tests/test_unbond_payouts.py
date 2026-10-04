@@ -193,15 +193,15 @@ def test_a_failed_payout_changes_nothing():
     assert d.notes == [] and d.payouts == []
 
 
-# --- four-slot stake votes ----------------------------------------------------
+# --- two-slot stake votes (four slots at 48b631c) ------------------------------
 
-def test_a_four_note_vote_lists_its_used_slots_only():
-    """The event's vote_nullifiers are the used slots (1..4), not the msg's
-    four with zeros: a one-note vote lists one."""
+def test_a_two_note_vote_lists_its_used_slots_only():
+    """The event's vote_nullifiers are the used slots (1..2 since chain
+    dff3a9b), not the msg's two with zeros: a one-note vote lists one."""
     counts = {len(a["vote_nullifiers"].split(","))
               for name in (MANY_NOTES, VOTE_SCENARIO) for _, a in _events(load(name), "shieldedstaking_stake_vote")
               if "vote_nullifiers" in a}
-    assert {1, 4} <= counts <= {1, 2, 3, 4}
+    assert {1, 2} == counts
 
 
 @pytest.mark.parametrize("name", [MANY_NOTES, VOTE_SCENARIO])

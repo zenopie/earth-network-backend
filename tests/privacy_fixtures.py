@@ -4,9 +4,11 @@ tests/fixtures/privacy/Test*.json.gz are real FinalizeBlock responses from the
 chain's app scenario tests (real proofs, the launch genesis path), recorded by
 bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
 note, identity, stake and stake nullifier trees' sizes and roots after the
-block as the keepers reported them (stake fields are absent from fixtures recorded before
-the stake tree existed, and read as an empty tree), and the chain's Handles
-query answer at the block (pages of one, hex QueryHandlesResponse).
+block as the keepers reported them (stake fields are absent from fixtures
+recorded before the stake tree existed, and read as an empty tree), the
+slash debt tree's size, root and whole Query/DebtTree answer (chain dff3a9b
+on), and the chain's Handles query answer at the block (pages of one, hex
+QueryHandlesResponse).
 """
 import gzip
 import json
@@ -66,6 +68,28 @@ def stake_nf_tree_response(block: dict) -> bytes:
     return (_field(2, block.get("stake_nf_tree_size", 0))
             + _field(3, bytes.fromhex(block.get("stake_nf_current_root", "")))
             + _field(4, bytes.fromhex(block.get("stake_nf_latest_root", ""))))
+
+
+def debt_tree_response(block: dict, request: bytes) -> bytes:
+    """The recorded QueryDebtTreeResponse (every row, limit 1000) answering
+    request {start 1, limit 2} as the chain would: rows from leaf start+1, at
+    most limit (0 or above 1000: 1000), with size, root, window_seconds and
+    clear_before. A block recorded before the debt tree: an empty tree."""
+    from services.privacy.rpc import proto_fields
+    from services.zk.debt import EMPTY_ROOT
+
+    if "debt_tree" not in block:
+        return _field(3, EMPTY_ROOT.to_bytes(32, "big"))
+    rec = proto_fields(bytes.fromhex(block["debt_tree"]))
+    req = proto_fields(request)
+    start, limit = (req.get(1) or [0])[-1], (req.get(2) or [0])[-1]
+    if limit == 0 or limit > 1000:
+        limit = 1000
+    rows = (rec.get(1) or [])[start:start + limit]
+    out = b"".join(_varint(1 << 3 | 2) + _varint(len(r)) + r for r in rows)
+    for num in (2, 3, 4, 5):
+        out += _field(num, (rec.get(num) or [0 if num != 3 else b""])[-1])
+    return out
 
 
 def handles_response(block: dict, request: bytes) -> bytes:
@@ -136,6 +160,8 @@ class FakeRPC:
             if "stake_nf_tree_size" not in b:
                 raise RPCError(f"unknown path {path}")  # recorded before the nullifier tree
             return stake_nf_tree_response(b)
+        if path == "/earth.shieldedstaking.v1.Query/DebtTree":
+            return debt_tree_response(b, data)
         if path == "/earth.personhood.v1.Query/Handles" and "handles" in b:
             return handles_response(b, data)
         raise RPCError(f"unknown path {path}")

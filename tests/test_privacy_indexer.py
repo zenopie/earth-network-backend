@@ -72,7 +72,9 @@ def test_indexes_every_scenario_and_matches_the_keepers(db, name):
     assert bad == 0
     assert rep.open_notes_checked == store.conn.execute(
         "SELECT COUNT(*) FROM notes WHERE owner_pk IS NOT NULL").fetchone()[0]
-    bad = store.conn.execute("SELECT COUNT(*) FROM stake_notes WHERE spc IS NOT NULL AND length(ciphertext) IS NOT 177").fetchone()[0]
+    # Every stake note is a stake proof output with its 201-byte wallet stake
+    # ciphertext (chain dff3a9b).
+    bad = store.conn.execute("SELECT COUNT(*) FROM stake_notes WHERE length(ciphertext) != 201").fetchone()[0]
     assert bad == 0
 
 

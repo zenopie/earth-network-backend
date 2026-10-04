@@ -1,16 +1,24 @@
 """What the recorded staking scenarios hold of the stake note tree.
 
 TestPrivateStakingLifecycle and TestStakeNotesOwnerLocked are real blocks
-(bin/record-chain-fixtures.sh) with shieldedstaking_stake_note events of both
-kinds (chain-minted: denom, amount, spc; proof-created: ciphertext),
-shieldedstaking_stake_nullifier (with its leaf index in the stake nullifier
-tree) and shieldedstaking_stake_root, and the keeper's stake tree and stake
-nullifier tree sizes and roots after every block. TestStakeVoteConcurrentProposals
-adds proposal snapshots (shieldedstaking_snapshot) and stake votes.
+(bin/record-chain-fixtures.sh) with shieldedstaking_stake_note events (since
+chain dff3a9b every one a stake proof output with its 201-byte wallet stake
+ciphertext; the chain mints none), shieldedstaking_stake_nullifier (with its
+leaf index in the stake nullifier tree; a first delegation's padding
+nullifier included) and shieldedstaking_stake_root (the empty tree's at the
+first block), and the keeper's stake tree and stake nullifier tree sizes and
+roots after every block. TestStakeVoteConcurrentProposals adds proposal
+snapshots (shieldedstaking_snapshot) and stake votes.
+TestRecordRedelegateSlashDebt (bin/chainrec's own scenario) adds private
+redelegations (two stake notes and two nullifiers a msg, labelled credits)
+and the slash debt tree's rows.
 """
 from tests.privacy_fixtures import load
 
-STAKE_SCENARIOS = ("TestPrivateStakingLifecycle", "TestStakeNotesOwnerLocked", "TestStakeVoteConcurrentProposals")
+STAKE_SCENARIOS = ("TestPrivateStakingLifecycle", "TestStakeNotesOwnerLocked", "TestStakeVoteConcurrentProposals",
+                   "TestRecordRedelegateSlashDebt")
+# Private redelegations and a slash reaching them (shieldedstaking_debt_row).
+DEBT_SCENARIO = "TestRecordRedelegateSlashDebt"
 # Proposals snapshotted (shieldedstaking_snapshot, with nf_root / nf_size)
 # after a stake nullifier was spent, then stake votes and later spends.
 VOTE_SCENARIO = "TestStakeVoteConcurrentProposals"

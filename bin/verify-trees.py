@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuilds the note, identity, stake and stake nullifier trees from the privacy index and checks them.
+"""Rebuilds the note, identity, stake, stake nullifier and slash debt trees from the privacy index and checks them.
 
     bin/verify-trees.py [--db privacy_index.db] [--rpc https://rpc...] [--all-roots] [--no-chain]
 
@@ -8,13 +8,14 @@ Replays the indexed notes, identity writes and stake notes with Poseidon2
 
 - the latest root of each tree (every recorded root with --all-roots) with
   the root event the chain emitted for that block;
-- every chain-minted stake note's commitment with its public denom, amount
-  and stake pc;
+- the slash debt tree (an indexed tree, replayed from every debt row write
+  in order) with the root the chain emitted after each write;
 - the stake nullifier tree (an indexed tree, rebuilt in leaf-index order)
   with every proposal snapshot's nf_root at its nf_size;
 - the rebuilt trees with the chain's own Query/Tree, Query/IdentityTree,
-  Query/StakeTree and Query/StakeNullifierTree at the index's synced height,
-  over the RPC (skip with --no-chain).
+  Query/StakeTree, Query/StakeNullifierTree and Query/DebtTree (size, root
+  and every row with its retained) at the index's synced height, over the
+  RPC (skip with --no-chain).
 
 Exit status 0 when everything matches, 1 on any mismatch, 2 when the chain
 could not be asked.
@@ -45,19 +46,20 @@ def main() -> int:
     rep = verify.rebuild(conn, all_roots=args.all_roots)
     print(f"index synced to height {rep.synced_height}: {rep.note_size} notes ({rep.open_notes_checked} open, "
           f"commitments checked), {rep.identity_size} identity leaves, "
-          f"{rep.stake_size} stake notes ({rep.stake_minted_checked} minted, commitments checked)")
+          f"{rep.stake_size} stake notes, {rep.debt_size} slash debt leaves ({rep.debt_writes_checked} row writes checked)")
     print(f"rebuilt in {time.monotonic() - started:.1f}s; {rep.roots_checked} recorded roots checked")
     print(f"note root     {rep.note_root.hex()}")
     print(f"identity root {rep.identity_root.hex()}")
     print(f"stake root    {rep.stake_root.hex() if rep.stake_root else '(empty)'}")
     print(f"stake nf root {rep.stake_nf_root.hex()} (size {rep.stake_nf_size}; "
           f"{rep.snapshots_checked} proposal snapshots checked)")
+    print(f"debt root     {rep.debt_root.hex()} (size {rep.debt_size})")
 
     if not args.no_chain:
         async def ask():
             rpc = CometRPC(args.rpc)
             try:
-                await verify.check_chain(rep, rpc)
+                await verify.check_chain(rep, rpc, conn)
             finally:
                 await rpc.close()
 

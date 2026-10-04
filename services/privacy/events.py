@@ -54,23 +54,57 @@ x/shieldedstaking/keeper/stake_tree.go):
 The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
 tree of owner-locked derth/<valoper> notes, its own nullifier set and roots;
 since chain 48b631c an undelegation mints no stake note, its payout is pool
-notes, above):
+notes, above; since chain dff3a9b the chain mints no stake note at all: every
+one is a stake proof output, ORCHARD_DESIGN.md section 20):
 
     shieldedstaking_stake_note       position_id, commitment (hex), ciphertext
-                                     (base64), and for a note the chain minted
-                                     (value public) also denom, amount, spc (hex).
-                                     A minted note's ciphertext is its blind
-                                     stake ciphertext (177 bytes, salt
-                                     "earth.stake.v1", version 0x03); a created
-                                     one's is the stake proof's.
+                                     (base64): the stake proof's commitment
+                                     (lane A) or credit_commitment (the credit
+                                     lane), in that order, each with its
+                                     wallet stake ciphertext, exactly 201
+                                     bytes (the slash label inside). A zero
+                                     note (a full exit's padding output) is a
+                                     note like any other. A note with denom,
+                                     amount or spc (a chain-minted note,
+                                     before dff3a9b) is refused.
     shieldedstaking_stake_nullifier  nullifier (hex), index (its leaf index in
                                      the stake nullifier tree: 1, 2, 3, ... in
-                                     insertion order; leaf 0 is the sentinel)
+                                     insertion order; leaf 0 is the sentinel).
+                                     Every non-zero nullifier of a stake proof
+                                     (nf_0, nf_1, credit_nullifier), padding
+                                     ones included: the chain cannot tell them
+                                     apart, and inserts each.
     shieldedstaking_stake_root       root (hex), tree_size              EndBlock
+                                     (the empty tree's root too, at the first
+                                     block: tree_size 0)
     shieldedstaking_snapshot         proposal_id, root (hex), tree_size,
                                      nf_root (hex), nf_size: the stake note
                                      tree and the stake nullifier tree a
                                      proposal's stake votes prove against
+
+The slash debt tree (zk/debt, ORCHARD_DESIGN.md section 20.6: one row per
+slashed private redelegation, written in BeginBlock when a slash reaches the
+module's redelegation entries):
+
+    shieldedstaking_debt_row         move_key (hex), retained (derth, an
+                                     integer), index (the row's leaf: the
+                                     next one for a new key, its own for a
+                                     rewritten one), root (hex, the tree's
+                                     root after the write). Stored.
+    shieldedstaking_move_slashed     move_key, src_validator, dst_validator,
+                                     debt, retained: right after its row,
+                                     checked to repeat its key and retained.
+    shieldedstaking_slash_debt       src_validator, dst_validator, value, debt,
+                                     entries: after its moves, checked to
+                                     name their validators and a debt of at
+                                     most theirs summed (the book may cap it).
+    shieldedstaking_redelegate       src_validator, dst_validator, derth,
+                                     value, credited, queued, bonded,
+                                     completion_time, move_key (the credit
+                                     nullifier), move_time: move_key checked
+                                     to be a stake nullifier of the block;
+                                     `minted` (before dff3a9b) refused.
+                                     Nothing of it is stored.
 
 The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
 (sorted) Merkle tree whose leaf positions are insertion order, so wallets
@@ -160,14 +194,30 @@ class Root:
     tree_size: int
 
 
+# A wallet stake ciphertext (privacy.WalletStakeCiphertextBytes, chain
+# dff3a9b): epk || AEAD(0x04 || asset || amount || rho || rcm || move_key ||
+# move_time || exposed) || tag. Every stake note carries one.
+STAKE_CIPHERTEXT_BYTES = 201
+# A debt row's retained is at most its move's credit, a note amount
+# (<= 2^63-1): it fits SQLite's signed 64-bit integers.
+MAX_NOTE_VALUE = 2**63 - 1
+
+
 @dataclass
 class StakeNote:
     position: int
     cm: bytes
-    ciphertext: bytes = b""          # every stake note (minted: the blind stake ciphertext)
-    denom: str | None = None         # a note the chain minted: denom, amount, spc public
-    amount: str | None = None
-    spc: bytes | None = None
+    ciphertext: bytes  # the wallet stake ciphertext, STAKE_CIPHERTEXT_BYTES
+
+
+@dataclass
+class DebtRow:
+    """A shieldedstaking_debt_row event: the row of move key `key` at leaf
+    `index` is now worth `retained`; the debt tree's root after it is `root`."""
+    key: bytes
+    retained: int
+    index: int
+    root: bytes
 
 
 @dataclass
@@ -219,6 +269,8 @@ class BlockDelta:
     referrals: list[Referral] = field(default_factory=list)
     # Undelegation payouts, checked against their shieldedstaking mints.
     payouts: list[UnbondPayout] = field(default_factory=list)
+    # Slash debt tree writes, in order (BeginBlock).
+    debt_rows: list[DebtRow] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -256,19 +308,28 @@ def _b64(value: str, what: str) -> bytes:
 
 
 def _stake_note(a: dict[str, str]) -> StakeNote:
-    n = StakeNote(_int(a.get("position_id"), "shieldedstaking_stake_note position_id"),
-                  _hex32(a.get("commitment", ""), "shieldedstaking_stake_note commitment"))
+    w = "shieldedstaking_stake_note"
+    if "spc" in a or "denom" in a or "amount" in a:
+        raise EventError(f"{w}: a chain-minted stake note (denom/amount/spc): a chain before dff3a9b")
     if "ciphertext" not in a:
-        raise EventError("shieldedstaking_stake_note: no ciphertext")
-    n.ciphertext = _b64(a["ciphertext"], "shieldedstaking_stake_note ciphertext")
-    minted = "spc" in a or "denom" in a or "amount" in a
-    if minted:
-        n.denom = a.get("denom") or ""
-        if not n.denom:
-            raise EventError("shieldedstaking_stake_note: empty denom")
-        n.amount = str(_int(a.get("amount"), "shieldedstaking_stake_note amount"))
-        n.spc = _hex32(a.get("spc", ""), "shieldedstaking_stake_note spc")
-    return n
+        raise EventError(f"{w}: no ciphertext")
+    ct = _b64(a["ciphertext"], f"{w} ciphertext")
+    if len(ct) != STAKE_CIPHERTEXT_BYTES:
+        raise EventError(f"{w}: ciphertext of {len(ct)} bytes, want {STAKE_CIPHERTEXT_BYTES}")
+    return StakeNote(_int(a.get("position_id"), f"{w} position_id"), _hex32(a.get("commitment", ""), f"{w} commitment"), ct)
+
+
+def _debt_row(a: dict[str, str]) -> DebtRow:
+    w = "shieldedstaking_debt_row"
+    r = DebtRow(_hex32(a.get("move_key", ""), f"{w} move_key"), _int(a.get("retained"), f"{w} retained"),
+                _int(a.get("index"), f"{w} index"), _hex32(a.get("root", ""), f"{w} root"))
+    if r.key == ZERO32:
+        raise EventError(f"{w}: move_key 0 (the sentinel's)")
+    if r.index == 0:
+        raise EventError(f"{w}: index 0 (the sentinel's leaf)")
+    if r.retained > MAX_NOTE_VALUE:
+        raise EventError(f"{w}: retained {r.retained} above a note's maximum")
+    return r
 
 
 def ordered_events(results: dict) -> list[dict]:
@@ -294,6 +355,9 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
     notes_by_pos: dict[int, Note] = {}
     mint_module: dict[int, str] = {}  # position -> shielded_mint module
     pending_rates: list[Rate] = []
+    unmatched_row: DebtRow | None = None    # a debt row awaiting its move_slashed
+    slashed: list[tuple[str, str, int]] = []  # (src, dst, debt) since the last slash_debt
+    move_keys: list[bytes] = []               # shieldedstaking_redelegate move keys
     for ev in ordered_events(results):
         t = ev.get("type")
         if t == "shielded_note":
@@ -325,6 +389,31 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
                                             _int(a.get("referral"), "register referral")))
         elif t == "shieldedstaking_unbond_payout":
             d.payouts.append(_unbond_payout(_attrs(ev)))
+        elif t == "shieldedstaking_debt_row":
+            if unmatched_row is not None:
+                raise EventError(f"shieldedstaking_debt_row {unmatched_row.key.hex()} without its move_slashed")
+            unmatched_row = _debt_row(_attrs(ev))
+            d.debt_rows.append(unmatched_row)
+        elif t == "shieldedstaking_move_slashed":
+            a = _attrs(ev)
+            w = "shieldedstaking_move_slashed"
+            key = _hex32(a.get("move_key", ""), f"{w} move_key")
+            retained = _int(a.get("retained"), f"{w} retained")
+            if unmatched_row is None or (unmatched_row.key, unmatched_row.retained) != (key, retained):
+                raise EventError(f"{w} {key.hex()} (retained {retained}) does not follow its debt row")
+            unmatched_row = None
+            slashed.append((a.get("src_validator", ""), a.get("dst_validator", ""), _int(a.get("debt"), f"{w} debt")))
+        elif t == "shieldedstaking_slash_debt":
+            _check_slash_debt(_attrs(ev), slashed)
+            slashed = []
+        elif t == "shieldedstaking_redelegate":
+            a = _attrs(ev)
+            w = "shieldedstaking_redelegate"
+            if "minted" in a:
+                raise EventError(f"{w}: `minted` (a chain-minted derth/<dst> note): a chain before dff3a9b")
+            _int(a.get("credited"), f"{w} credited")
+            _int(a.get("move_time"), f"{w} move_time")
+            move_keys.append(_hex32(a.get("move_key", ""), f"{w} move_key"))
         elif t == "shielded_nullifier":
             d.nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shielded_nullifier"))
         elif t == "shielded_root":
@@ -391,6 +480,15 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             pending_rates = []
             d.epoch_ended = epoch
     d.rates.extend(pending_rates)
+    if unmatched_row is not None:
+        raise EventError(f"shieldedstaking_debt_row {unmatched_row.key.hex()} without its move_slashed")
+    if slashed:
+        raise EventError("shieldedstaking_move_slashed without its slash_debt")
+    # A move's key is its credit nullifier, spent in the same msg.
+    spent = {n.nf for n in d.stake_nullifiers}
+    for k in move_keys:
+        if k not in spent:
+            raise EventError(f"shieldedstaking_redelegate move_key {k.hex()} is not a stake nullifier of this block")
     for r in d.referrals:
         n = notes_by_pos.get(r.position)
         if n is None or n.owner_pk is None:
@@ -401,6 +499,24 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
     for p in d.payouts:
         _check_payout(p, notes_by_pos, mint_module, paid)
     return d
+
+
+def _check_slash_debt(a: dict[str, str], moves: list[tuple[str, str, int]]) -> None:
+    """A slash_debt names the validators of the moves it charged (those
+    since the previous slash_debt) and at most their debt summed: the module
+    books the moves' debt, capped by the destination's supply."""
+    w = "shieldedstaking_slash_debt"
+    src, dst = a.get("src_validator", ""), a.get("dst_validator", "")
+    if not src or not dst:
+        raise EventError(f"{w}: no src_validator or dst_validator")
+    debt = _int(a.get("debt"), f"{w} debt")
+    _int(a.get("value"), f"{w} value")
+    _int(a.get("entries"), f"{w} entries")
+    for s_, d_, _ in moves:
+        if (s_, d_) != (src, dst):
+            raise EventError(f"{w} {src} -> {dst}: a move of {s_} -> {d_} before it")
+    if debt > sum(x for _, _, x in moves):
+        raise EventError(f"{w} {src} -> {dst}: debt {debt}, its moves owe {sum(x for _, _, x in moves)}")
 
 
 PAYOUT_MODULE = "shieldedstaking"

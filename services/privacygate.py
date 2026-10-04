@@ -68,6 +68,7 @@ ENDPOINTS: dict[str, frozenset[str]] = {
     "stake/roots": frozenset({"from_height", "limit"}),
     "stake/snapshots": frozenset({"from_height", "limit"}),
     "handles": frozenset({"from_index", "limit"}),
+    "debt_rows": frozenset({"from_index", "limit"}),
 }
 STATUS = PREFIX + "/status"  # the unkeyed status: no parameters
 _SEGMENT = re.compile(r"[^/]+")

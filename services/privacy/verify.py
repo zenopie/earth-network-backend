@@ -1,4 +1,4 @@
-"""Rebuilds the note, identity, stake and stake nullifier trees from the index and checks their roots.
+"""Rebuilds the note, identity, stake, stake nullifier and slash debt trees from the index and checks their roots.
 
 Two checks, the second optional:
 
@@ -9,9 +9,13 @@ Two checks, the second optional:
    each tree is checked (one bulk rebuild, ~2 hashes a leaf); all_roots checks
    every recorded root (up to 32 hashes per changed leaf per block). The
    stake tree (x/shieldedstaking: same depth-32 Poseidon2 tree, leaves the
-   stake commitments) is replayed the same way, and every stake note the
-   chain minted is checked against its public denom, amount and stake pc:
-   cm == H(TAG_STAKE, AssetID(denom), amount, spc). The stake nullifier
+   stake commitments; every one a stake proof output since chain dff3a9b,
+   none with a public value) is replayed the same way. The slash debt tree
+   (zk/debt: an indexed tree, leaf H(TAG_DEBTL, key, next_key, next_index,
+   retained), rows rewritten in place) is replayed from every debt row
+   write in order, each write's leaf index and the root the chain emitted
+   after it checked, always (rows are only written by slashes, so few). The
+   stake nullifier
    tree (zk/indexed: an indexed tree whose leaves are in insertion order) is
    rebuilt from the nullifiers in leaf-index order and its root checked at
    every proposal snapshot's nf_size against the snapshot's nf_root (the
@@ -23,8 +27,9 @@ Two checks, the second optional:
 2. Against the chain itself, at the index's synced height, over CometBFT
    abci_query: x/shielded Query/Tree (size, current root, latest anchor),
    x/personhood Query/IdentityTree (size, latest root) and x/shieldedstaking
-   Query/StakeTree (size, latest root), and Query/StakeNullifierTree (size,
-   current root). This is what proves
+   Query/StakeTree (size, latest root), Query/StakeNullifierTree (size,
+   current root) and Query/DebtTree (every row, in leaf order with its
+   retained, the size and the root). This is what proves
    the index — and so every wallet syncing from it — sees the chain's trees.
 """
 import re
@@ -32,6 +37,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from services.zk import privacy
+from services.zk.debt import DebtTree
 from services.zk.indexed import IndexedTree
 from services.zk.merkle import SparseTree
 
@@ -42,6 +48,8 @@ IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"
 STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"
 STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
 STAKE_NF_TREE_REQUEST = b"\x10\x01"  # limit 1: only size and roots are read
+DEBT_TREE_QUERY = "/earth.shieldedstaking.v1.Query/DebtTree"
+DEBT_PAGE = 1000  # Query/DebtTree's own cap
 _COIN = re.compile(r"([0-9]+)([a-zA-Z][a-zA-Z0-9/:._-]*)")
 
 
@@ -54,7 +62,9 @@ class Report:
     identity_root: bytes | None = None
     stake_size: int = 0
     stake_root: bytes | None = None
-    stake_minted_checked: int = 0
+    debt_size: int = 0
+    debt_root: bytes | None = None
+    debt_writes_checked: int = 0
     open_notes_checked: int = 0
     stake_nf_size: int = 0
     stake_nf_root: bytes | None = None
@@ -144,17 +154,10 @@ def rebuild(conn: sqlite3.Connection, all_roots: bool = False) -> Report:
     if not all_roots:
         roots = roots[-1:]
     st = SparseTree()
-    stakes = conn.execute("SELECT position, cm, denom, amount, spc FROM stake_notes ORDER BY position")
+    stakes = conn.execute("SELECT position, cm FROM stake_notes ORDER BY position")
 
     def stake_append(row) -> None:
-        pos, cm, denom, amount, spc = row
-        v = int.from_bytes(cm, "big")
-        if denom is not None:
-            want = privacy.stake_cm(privacy.asset_id(denom), int(amount), int.from_bytes(spc, "big"))
-            rep.stake_minted_checked += 1
-            if want != v:
-                rep.errors.append(f"stake note {pos}: commitment {cm.hex()} is not H(TAG_STAKE, {denom}, {amount}, spc), {_b(want).hex()}")
-        st.append(v)
+        st.append(int.from_bytes(row[1], "big"))
 
     pending = stakes.fetchone()
     for height, root, size in roots:
@@ -169,7 +172,30 @@ def rebuild(conn: sqlite3.Connection, all_roots: bool = False) -> Report:
         stake_append(pending)
         pending = stakes.fetchone()
     rep.stake_size = st.size
-    rep.stake_root = _b(st.root()) if st.size else None
+    # The empty tree has a root too (ZERO[32]): the chain records it at the
+    # first block (dff3a9b), so a first delegation's padding proves against it.
+    rep.stake_root = _b(st.root())
+
+    # --- slash debt tree (indexed; rows rewritten in place) ---
+    dt = DebtTree()
+    for seq, idx, key, retained, height, root in conn.execute(
+            "SELECT seq, idx, key, retained, height, root FROM debt_writes ORDER BY seq"):
+        try:
+            got = dt.set(int.from_bytes(key, "big"), retained)
+        except ValueError as exc:
+            rep.errors.append(f"debt row {key.hex()} (height {height}): {exc}")
+            continue
+        rep.debt_writes_checked += 1
+        if got != idx:
+            rep.errors.append(f"debt row {key.hex()} (height {height}): indexed at leaf {idx}, rebuilt at {got}")
+        r = _b(dt.root())
+        if r != root:
+            rep.errors.append(f"debt row {key.hex()} (height {height}): chain emitted root {root.hex()}, rebuilt {r.hex()}")
+    for idx, key, retained in conn.execute("SELECT idx, key, retained FROM debt_rows ORDER BY idx"):
+        if dt._index.get(int.from_bytes(key, "big")) != idx or dt._retained.get(int.from_bytes(key, "big")) != retained:
+            rep.errors.append(f"debt row {key.hex()} at leaf {idx} (retained {retained}) is not its last write")
+    rep.debt_size = dt.size
+    rep.debt_root = _b(dt.root())
 
     # --- stake nullifier tree (indexed; leaf order is insertion order) ---
     # Every proposal snapshot names the tree's root at a size (the first
@@ -214,8 +240,9 @@ def rebuild(conn: sqlite3.Connection, all_roots: bool = False) -> Report:
     return rep
 
 
-async def check_chain(rep: Report, rpc: CometRPC) -> None:
-    """Compares the rebuilt trees with the chain's own at the synced height."""
+async def check_chain(rep: Report, rpc: CometRPC, conn: sqlite3.Connection | None = None) -> None:
+    """Compares the rebuilt trees with the chain's own at the synced height
+    (with conn, the index's debt rows with the chain's too)."""
     h = rep.synced_height
     if not h:
         rep.errors.append("the index is empty")
@@ -255,3 +282,51 @@ async def check_chain(rep: Report, rpc: CometRPC) -> None:
         rep.errors.append(f"stake nullifier tree: chain size {nsize} at height {h}, index {rep.stake_nf_size}")
     if nroot and nroot != rep.stake_nf_root:
         rep.errors.append(f"stake nullifier tree: chain root {nroot.hex()} at height {h}, rebuilt {(rep.stake_nf_root or b'').hex()}")
+
+    await check_debt_rows(rep, rpc, conn)
+
+
+def _debt_request(start: int, limit: int) -> bytes:
+    """QueryDebtTreeRequest {start 1, limit 2}: rows from leaf start+1."""
+    def varint(v: int) -> bytes:
+        out = bytearray()
+        while True:
+            b, v = v & 0x7F, v >> 7
+            out.append(b | 0x80 if v else b)
+            if not v:
+                return bytes(out)
+    return (b"\x08" + varint(start) if start else b"") + b"\x10" + varint(limit)
+
+
+async def check_debt_rows(rep: Report, rpc: CometRPC, conn: sqlite3.Connection | None) -> None:
+    """Query/DebtTree at the synced height: size and root against the rebuilt
+    tree, and (with conn) every row, in leaf order, against the index's."""
+    h = rep.synced_height
+    first = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, _debt_request(0, DEBT_PAGE), height=h))
+    size = (first.get(2) or [0])[-1]
+    root = (first.get(3) or [b""])[-1]
+    if size != rep.debt_size:
+        rep.errors.append(f"slash debt tree: chain size {size} at height {h}, index {rep.debt_size}")
+    if root != rep.debt_root:
+        rep.errors.append(f"slash debt tree: chain root {root.hex()} at height {h}, rebuilt {(rep.debt_root or b'').hex()}")
+    if conn is None:
+        return
+    chain_rows: list[tuple[bytes, int]] = []
+    page = first
+    while True:
+        rows = page.get(1) or []
+        for r in rows:
+            f = proto_fields(r)
+            chain_rows.append(((f.get(1) or [b""])[-1], (f.get(2) or [0])[-1]))
+        if len(rows) < DEBT_PAGE or len(chain_rows) >= max(size - 1, 0):
+            break
+        page = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, _debt_request(len(chain_rows), DEBT_PAGE), height=h))
+    have = [(k, r) for k, r in conn.execute("SELECT key, retained FROM debt_rows ORDER BY idx")]
+    if chain_rows != have:
+        for i, (c, x) in enumerate(zip(chain_rows, have)):
+            if c != x:
+                rep.errors.append(f"slash debt row at leaf {i + 1}: chain {c[0].hex()} retained {c[1]}, "
+                                  f"index {x[0].hex()} retained {x[1]}")
+                break
+        else:
+            rep.errors.append(f"slash debt rows: chain {len(chain_rows)}, index {len(have)}")

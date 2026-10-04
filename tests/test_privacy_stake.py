@@ -36,11 +36,10 @@ def _index(path: str, sc: dict):
 def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
     sc = scenario(name)
     want = summary(sc)
-    assert any("spc" in a for _, a in want["notes"]) and any("spc" not in a for _, a in want["notes"]), \
-        "the scenario mints stake notes and creates them by proof"
-    assert all("ciphertext" in a for _, a in want["notes"]), "every stake note carries a ciphertext"
-    assert all(len(base64.b64decode(a["ciphertext"])) == 177 for _, a in want["notes"] if "spc" in a), \
-        "a minted stake note's is its 177-byte blind stake ciphertext"
+    assert want["notes"] and not any({"spc", "denom", "amount"} & set(a) for _, a in want["notes"]), \
+        "the chain mints no stake note (dff3a9b)"
+    assert all(len(base64.b64decode(a["ciphertext"])) == 201 for _, a in want["notes"]), \
+        "every stake note carries its 201-byte wallet stake ciphertext"
     assert want["nullifiers"] and want["roots"]
     store, rpc = _index(str(tmp_path / "i.db"), sc)
     last = sc["blocks"][-1]
@@ -48,17 +47,10 @@ def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
     rows = store.conn.execute("SELECT height, root, tree_size FROM stake_roots ORDER BY height").fetchall()
     assert [(h, r.hex(), n) for h, r, n in rows] == want["roots"]
     for h, a in want["notes"]:
-        row = store.conn.execute("SELECT height, cm, ciphertext, denom, amount, spc FROM stake_notes WHERE position = ?",
+        row = store.conn.execute("SELECT height, cm, ciphertext FROM stake_notes WHERE position = ?",
                                  (int(a["position_id"]),)).fetchone()
         assert row[0] == h and row[1].hex() == a["commitment"]
         assert base64.b64encode(row[2]).decode() == a["ciphertext"]
-        if "spc" in a:
-            assert (row[3], row[4], row[5].hex()) == (a["denom"], a["amount"], a["spc"])
-            # Only derth/<valoper> notes since 48b631c (the unbond/ claim
-            # notes are gone: an undelegation pays out as pool notes).
-            assert row[3].startswith("derth/")
-        else:
-            assert row[3:] == (None, None, None)
     nfs = store.conn.execute("SELECT idx, nf, height FROM stake_nullifiers ORDER BY idx").fetchall()
     assert [(i, nf.hex(), h) for i, nf, h in nfs] == want["nf_index"]
     assert [i for i, _, _ in want["nf_index"]] == list(range(1, len(want["nf_index"]) + 1))
@@ -69,7 +61,6 @@ def test_stake_tree_is_indexed_and_rebuilds(tmp_path, name):
     assert rep.stake_root.hex() == last["stake_latest_root"]
     assert (rep.stake_nf_size, rep.stake_nf_root.hex()) == (
         last["stake_nf_tree_size"], last["stake_nf_current_root"] or EMPTY_ROOT.to_bytes(32, "big").hex())
-    assert rep.stake_minted_checked == sum("spc" in a for _, a in want["notes"])
 
 
 @pytest.fixture
@@ -77,17 +68,9 @@ def indexed(tmp_path):
     return _index(str(tmp_path / "i.db"), scenario())
 
 
-def test_a_tampered_minted_amount_is_caught(indexed):
-    store, _ = indexed
-    (pos,) = store.conn.execute("SELECT MIN(position) FROM stake_notes WHERE denom IS NOT NULL").fetchone()
-    store.conn.execute("UPDATE stake_notes SET amount = '999' WHERE position = ?", (pos,))
-    rep = verify.rebuild(store.conn)
-    assert any(f"stake note {pos}" in e for e in rep.errors)
-
-
 def test_a_tampered_stake_commitment_is_caught_against_the_chain(indexed):
     store, rpc = indexed
-    (pos,) = store.conn.execute("SELECT MIN(position) FROM stake_notes WHERE denom IS NULL").fetchone()
+    (pos,) = store.conn.execute("SELECT MIN(position) FROM stake_notes").fetchone()
     store.conn.execute("UPDATE stake_notes SET cm = ? WHERE position = ?", (bytes(31) + b"\x05", pos))
     rep = verify.rebuild(store.conn, all_roots=True)
     assert any("stake root" in e for e in rep.errors)
@@ -225,19 +208,39 @@ def test_stake_notes_missing_from_the_index_halt(tmp_path):
         sync(Indexer(Store(str(tmp_path / "i.db")), FakeRPC(sc)))
 
 
-@pytest.mark.parametrize("attrs", [
-    {"position_id": "0", "commitment": "11" * 32},  # no ciphertext
-    {"position_id": "0", "commitment": "11" * 32, "denom": "d", "amount": "1", "spc": "22" * 32},  # minted, no ciphertext
-    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "", "denom": "d", "amount": "1"},  # no spc
-    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "", "denom": "", "amount": "1", "spc": "22" * 32},
-    {"position": "0", "commitment": "11" * 32, "ciphertext": ""},  # x/shielded's key, not position_id
-    {"position_id": "0", "commitment": "11" * 32, "ciphertext": "!!"},
+CT201 = base64.b64encode(bytes(range(201))).decode()
+
+
+@pytest.mark.parametrize("attrs,match", [
+    ({"position_id": "0", "commitment": "11" * 32}, "no ciphertext"),
+    # A chain-minted note (before dff3a9b), with or without the ciphertext.
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": CT201, "denom": "d", "amount": "1", "spc": "22" * 32},
+     "before dff3a9b"),
+    ({"position_id": "0", "commitment": "11" * 32, "denom": "d", "amount": "1", "spc": "22" * 32}, "before dff3a9b"),
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": CT201, "spc": "22" * 32}, "before dff3a9b"),
+    # Not a wallet stake ciphertext: empty, the old 153 / 177 bytes, one more.
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": ""}, "0 bytes, want 201"),
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": base64.b64encode(bytes(153)).decode()}, "want 201"),
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": base64.b64encode(bytes(177)).decode()}, "want 201"),
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": base64.b64encode(bytes(202)).decode()}, "want 201"),
+    ({"position": "0", "commitment": "11" * 32, "ciphertext": CT201}, "position_id"),  # x/shielded's key
+    ({"position_id": "0", "commitment": "11" * 32, "ciphertext": "!!"}, "not base64"),
+    ({"position_id": "0", "commitment": "11" * 31, "ciphertext": CT201}, "31 bytes"),
 ])
-def test_malformed_stake_notes_are_refused(attrs):
+def test_malformed_stake_notes_are_refused(attrs, match):
     res = {"height": "1", "txs_results": [{"code": 0, "events": [
         {"type": "shieldedstaking_stake_note", "attributes": [{"key": k, "value": v} for k, v in attrs.items()]}]}]}
-    with pytest.raises(events.EventError):
+    with pytest.raises(events.EventError, match=match):
         events.parse_block(1, 0, "H", res)
+
+
+def test_a_wallet_stake_note_parses():
+    res = {"height": "1", "txs_results": [{"code": 0, "events": [
+        {"type": "shieldedstaking_stake_note", "attributes": [
+            {"key": "position_id", "value": "3"}, {"key": "commitment", "value": "11" * 32},
+            {"key": "ciphertext", "value": CT201}]}]}]}
+    (n,) = events.parse_block(1, 0, "H", res).stake_notes
+    assert (n.position, n.cm, n.ciphertext) == (3, bytes([0x11]) * 32, bytes(range(201)))
 
 
 @pytest.fixture(autouse=True)
@@ -260,20 +263,18 @@ def test_stake_notes_stream(api):
     while True:
         r = api.get("/privacy/stake/notes", params={"from_pos": pos, "limit": 2})
         body = r.json()
-        assert body["fields"] == ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"]
+        assert body["format"] == 2
+        assert body["fields"] == ["position", "height", "cm", "ciphertext"]
         assert ("immutable" in r.headers["cache-control"]) == body["complete"]
         seen += body["notes"]
         if not body["complete"]:
             break
         pos = body["next_pos"]
     assert [n[0] for n in seen] == list(range(len(want["notes"])))
-    for (p, h, cm, ct, denom, amount, spc), (wh, a) in zip(seen, want["notes"]):
+    for (p, h, cm, ct), (wh, a) in zip(seen, want["notes"]):
         assert (h, cm) == (wh, a["commitment"])
-        assert ct == a["ciphertext"]
-        if "spc" in a:
-            assert (denom, amount, spc) == (a["denom"], a["amount"], a["spc"])
-        else:
-            assert denom is None and amount is None and spc is None
+        assert ct == a["ciphertext"] and len(base64.b64decode(ct)) == 201
+    assert api.get("/privacy/status").json()["stake_note_format"] == 2
 
 
 def test_stake_nullifiers_and_roots_streams(api):
@@ -353,6 +354,20 @@ def test_empty_stake_streams(tmp_path, monkeypatch):
     assert (body["nullifiers"], body["size"], body["next_index"]) == ([], 0, 1)
     assert c.get("/privacy/stake/snapshots").json()["snapshots"] == []
     assert c.get("/privacy/roots/latest").json()["stake"] is None
+
+
+def test_an_index_with_minted_stake_note_columns_is_refused(tmp_path):
+    """An index from before dff3a9b (stake rows with denom, amount, spc): wipe it."""
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE stake_notes (position INTEGER PRIMARY KEY, cm BLOB NOT NULL, height INTEGER NOT NULL,"
+                " ciphertext BLOB, denom TEXT, amount TEXT, spc BLOB)")
+    old.commit()
+    old.close()
+    with pytest.raises(RuntimeError, match="predates chain dff3a9b"):
+        Store(path)
 
 
 def test_an_index_from_before_the_nullifier_tree_is_refused(tmp_path):

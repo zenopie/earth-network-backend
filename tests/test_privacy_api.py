@@ -205,6 +205,7 @@ def test_no_per_user_lookups():
         "/status", "/notes", "/nullifiers", "/identity", "/identity/zeroed", "/roots/latest", "/rates",
         "/stake/notes", "/stake/nullifiers", "/stake/nullifier-tree", "/stake/roots", "/stake/snapshots",
         "/handles",  # the whole directory; no path names one handle
+        "/debt_rows",  # every slash debt row; no path names one move
     )}
 
 

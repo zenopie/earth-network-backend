@@ -21,8 +21,9 @@ Blocks are fetched in batches (block_results concurrently, block times and
 hashes from /blockchain) and applied strictly in order, one SQLite
 transaction each; see store.py for what applying checks. After each batch
 the indexed tree sizes are compared with the chain's own (an abci_query of
-x/shielded Tree, x/personhood IdentityTree, x/shieldedstaking StakeTree and
-StakeNullifierTree at that height). That catches
+x/shielded Tree, x/personhood IdentityTree, x/shieldedstaking StakeTree,
+StakeNullifierTree and DebtTree at that height; the debt tree's root too,
+against the root of the last debt row event). That catches
 history the index never saw — notes or leaves imported at genesis, which emit
 no events, or a start height past the first private tx — which events alone
 cannot reveal.
@@ -60,7 +61,9 @@ import config
 from . import handles as handles_mod
 from . import store as store_mod
 from .events import EventError, parse_block
-from .rpc import CometRPC, RPCError, varint_field
+from services.zk.debt import EMPTY_ROOT as DEBT_EMPTY_ROOT
+
+from .rpc import CometRPC, RPCError, proto_fields, varint_field
 from .store import Inconsistent, Store
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,10 @@ STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"  # QueryStakeTree
 # limit 1 (request field 2), so the answer carries one value, not 1,000.
 STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
 STAKE_NF_TREE_REQUEST = b"\x10\x01"
+# QueryDebtTreeResponse {rows 1, size 2, root 3, window_seconds 4,
+# clear_before 5}, asked with limit 1 (request field 2): one row, not 1,000.
+DEBT_TREE_QUERY = "/earth.shieldedstaking.v1.Query/DebtTree"
+DEBT_TREE_REQUEST = b"\x10\x01"
 
 
 class Halted(Exception):
@@ -290,6 +297,10 @@ class Indexer:
             ids = varint_field(await self.rpc.abci_query(IDENTITY_TREE_QUERY, height=height), 1)
             stakes = varint_field(await self.rpc.abci_query(STAKE_TREE_QUERY, height=height), 1)
             nfs = varint_field(await self.rpc.abci_query(STAKE_NF_TREE_QUERY, STAKE_NF_TREE_REQUEST, height=height), 2)
+            debt = proto_fields(await self.rpc.abci_query(DEBT_TREE_QUERY, DEBT_TREE_REQUEST, height=height))
+            dsize = (debt.get(2) or [0])[-1]
+            droot = (debt.get(3) or [b""])[-1]
+            window, clear_before = (debt.get(4) or [0])[-1], (debt.get(5) or [0])[-1]
         except (RPCError, ValueError, IndexError) as exc:
             # State at an old height may be pruned while catching up; the
             # check resumes once the indexer reaches heights the node keeps.
@@ -307,12 +318,27 @@ class Indexer:
         have_notes, have_ids, _ = await asyncio.to_thread(self.store.counts)
         have_stakes, _ = await asyncio.to_thread(self.store.stake_counts)
         have_nfs = await asyncio.to_thread(self.store.stake_nf_size)
-        if (notes, ids, stakes, nfs) != (have_notes, have_ids, have_stakes, have_nfs):
+        have_dsize = await asyncio.to_thread(self.store.debt_size)
+        if (notes, ids, stakes, nfs, dsize) != (have_notes, have_ids, have_stakes, have_nfs, have_dsize):
             self._halt(
-                f"at height {height} the chain holds {notes} notes, {ids} identity leaves, {stakes} stake notes and a "
-                f"stake nullifier tree of {nfs} leaves, the index {have_notes}, {have_ids}, {have_stakes} and {have_nfs}: "
-                f"history before the start height (or at genesis) is missing"
+                f"at height {height} the chain holds {notes} notes, {ids} identity leaves, {stakes} stake notes, a "
+                f"stake nullifier tree of {nfs} leaves and a slash debt tree of {dsize}, the index {have_notes}, "
+                f"{have_ids}, {have_stakes}, {have_nfs} and {have_dsize}: history before the start height (or at "
+                f"genesis) is missing"
             )
+        # The debt root the last row event named (the empty root before any)
+        # is the chain's: rows are only written in BeginBlock, so nothing
+        # after the event changed it within its block.
+        last_write = await asyncio.to_thread(self.store.debt_root)
+        have_droot = last_write[0] if last_write else DEBT_EMPTY_ROOT.to_bytes(32, "big")
+        if droot != have_droot:
+            self._halt(f"at height {height} the chain's slash debt root is {droot.hex()}, the index's "
+                       f"{have_droot.hex()} (its last debt row event): history is missing")
+        # What a wallet clearing a label needs besides the rows: the chain's
+        # window and clear_before (block time - window) at this height.
+        for k, v in (("debt_window_seconds", window), ("debt_clear_before", clear_before),
+                     ("debt_checked_height", height)):
+            await asyncio.to_thread(self.store.set_meta, k, str(v))
         # Only now are this batch's pages final: the API marks a page
         # immutable only up to here (audit-5 L6).
         await asyncio.to_thread(self.store.set_meta, "verified_height", str(height))

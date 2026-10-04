@@ -19,12 +19,13 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/identity/zeroed?from_height=&limit=  [[height, [index, ...]], ...]
     GET {base}/roots/latest
     GET {base}/rates?epoch=
-    GET {base}/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext, denom, amount, spc]
+    GET {base}/stake/notes?from_pos=&limit=          [position, height, cm, ciphertext]  (format 2)
     GET {base}/stake/nullifiers?from_height=&limit=  [[height, [nf, ...]], ...]
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nf, height]
     GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=   [height, proposal_id, root, tree_size, nf_root, nf_size]
     GET {base}/handles?from_index=&limit=            [handle, address, status, expires_at, renewal_until, owner]
+    GET {base}/debt_rows?from_index=&limit=          [index, key, retained, height, updated_height]
 
 genesis is the first 16 hex digits (lowercase) of the hash of the chain's
 first block. earth-1 has been relaunched under the same chain id, so the chain
@@ -38,10 +39,11 @@ was built from and start over when status names another.
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
 derth/<valoper> notes), served exactly like the pool's. An undelegation's
 payout is pool notes (ordinary minted rows of /notes, split ones sharing a
-ciphertext), not stake notes. Every stake note has a ciphertext (a minted one its 177-byte blind
-stake ciphertext, a created one the stake proof's); a note the chain minted
-also has public denom, amount and stake pc (spc), a note a stake proof
-created has them null. Every pool note but an open one has a ciphertext
+ciphertext), not stake notes. Since chain dff3a9b every stake note is a
+stake proof output (the chain mints none) with its 201-byte wallet stake
+ciphertext, the slash label inside: stake rows are format STAKE_NOTE_FORMAT
+(2), [position, height, cm, ciphertext], stated on every page ("format") and
+in status ("stake_note_format"). Every pool note but an open one has a ciphertext
 (minted: the 177-byte amount-blind v2 one). An open note (the referral note
 the chain mints to a referrer handle's address, chain ORCHARD_DESIGN.md
 section 16) has ciphertext null and its public opening in owner_pk, rho and
@@ -57,6 +59,16 @@ proving a stake vote rebuilds it from the first nf_size - 1 values of
 checks its root against the proposal snapshot's nf_root. The index refuses a
 gap or a repeat in the leaf indexes, so the stream is exactly the chain's
 insertion order.
+
+The slash debt tree (zk/debt, chain ORCHARD_DESIGN.md section 20.6) is
+served whole by leaf index like the stake nullifier tree: every row (a
+slashed redelegation's move key and what its exposure is still worth), the
+root at the synced height and the chain's window_seconds / clear_before, so
+a wallet clearing a label or voting a labelled note rebuilds the tree and
+proves against the current debt_root without asking about its own move. A
+row can be rewritten (a later slash: retained falls), so no page is
+immutable; a wallet whose rebuilt root differs from `root` reads every page
+again.
 
 The handle directory (x/personhood handles, services/privacy/handles) is
 served whole, like every other stream: there is no endpoint for one handle,
@@ -121,6 +133,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 import config
 from services.privacy import store as store_mod
+from services.zk.debt import EMPTY_ROOT as DEBT_EMPTY_ROOT
 
 GENESIS_PREFIX_HEX = 16
 # SQLite integers are signed 64-bit: a larger query parameter is a 422, not
@@ -280,6 +293,12 @@ def _group(rows, fmt) -> list:
 # an open note.
 NOTE_FORMAT = 2
 NOTE_FIELDS = ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"]
+# The stake notes stream's row format. 1: [position, height, cm, ciphertext,
+# denom, amount, spc] (chain-minted notes public). 2 (chain dff3a9b, no
+# chain-minted stake note): [position, height, cm, ciphertext].
+STAKE_NOTE_FORMAT = 2
+STAKE_NOTE_FIELDS = ["position", "height", "cm", "ciphertext"]
+DEBT_ROW_FIELDS = ["index", "key", "retained", "height", "updated_height"]
 
 
 @router.get("/privacy/status")
@@ -306,6 +325,8 @@ def status(response: Response):
             "stake_notes": stake_notes,
             "stake_nullifiers": stake_nfs,
             "stake_nf_tree_size": store_mod.stake_nf_size(c),
+            "stake_note_format": STAKE_NOTE_FORMAT,
+            "debt_tree_size": store_mod.debt_size(c),
             "handles": _handles_size(c),
             "handles_height": int(_meta(c, "handles_height") or 0) or None,
             "handles_stale": store_mod.handles_stale(c, config.HANDLES_STALE_BLOCKS),
@@ -445,10 +466,6 @@ def rates(response: Response, epoch: int | None = Query(None, ge=0, le=MAX_INT))
         }
 
 
-def _b64_or_none(v: bytes | None) -> str | None:
-    return None if v is None else base64.b64encode(v).decode()
-
-
 def _hex_or_none(v: bytes | None) -> str | None:
     return None if v is None else v.hex()
 
@@ -458,20 +475,20 @@ def stake_notes(response: Response, from_pos: int = Query(0, ge=0, le=MAX_INT), 
     n, last = _aligned(from_pos, limit, "from_pos")
     with _read() as c:
         rows = c.execute(
-            "SELECT position, height, cm, ciphertext, denom, amount, spc FROM stake_notes"
+            "SELECT position, height, cm, ciphertext FROM stake_notes"
             " WHERE position BETWEEN ? AND ? ORDER BY position",
             (from_pos, last),
         ).fetchall()
         complete = bool(rows) and rows[-1][0] == last
         response.headers["Cache-Control"] = _closed(complete, rows[-1][1] if rows else 0, c)
         return {
-            "fields": ["position", "height", "cm", "ciphertext", "denom", "amount", "spc"],
+            "format": STAKE_NOTE_FORMAT,
+            "fields": STAKE_NOTE_FIELDS,
             "synced_height": _synced(c),
             "from_pos": from_pos,
             "next_pos": rows[-1][0] + 1 if rows else from_pos,
             "complete": complete,
-            "notes": [[p, h, cm.hex(), _b64_or_none(ct), denom, amt, _hex_or_none(spc)]
-                      for p, h, cm, ct, denom, amt, spc in rows],
+            "notes": [[p, h, cm.hex(), base64.b64encode(ct).decode()] for p, h, cm, ct in rows],
         }
 
 
@@ -568,6 +585,53 @@ def stake_roots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT
             "next_height": rows[-1][0] + 1 if complete else max(from_height, _synced(c) + 1),
             "complete": complete,
             "roots": [[h, r.hex(), size, t] for h, r, size, t in rows],
+        }
+
+
+def _meta_int(c: sqlite3.Connection, key: str) -> int | None:
+    v = _meta(c, key)
+    return int(v) if v is not None else None
+
+
+@chain.get("/debt_rows")
+def debt_rows(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
+              limit: int | None = Query(None, ge=1, le=MAX_INT)):
+    """The slash debt tree's rows by leaf index (insertion order), each with its latest retained.
+
+    Leaf 0 is the sentinel and never a row; the first row is leaf 1, so the
+    first page (from_index=0, aligned like every index cursor) holds leaves
+    1 .. limit-1. size is the leaf count as the chain counts it (rows + 1, 0
+    when empty); root is the tree's root at synced_height (the last row
+    event's, the empty root before any), root_height the block that wrote
+    it. window_seconds and clear_before are the chain's (Query/DebtTree) at
+    clear_before_height, the indexer's last check: a stake proof clearing a
+    label names clear_before (at most the chain's at its block) and
+    debt_root = root. Every response is short-lived: a later slash rewrites
+    a row in place.
+    """
+    n, last = _aligned(from_index, limit, "from_index")
+    with _read() as c:
+        rows = c.execute(
+            "SELECT idx, key, retained, height, updated_height FROM debt_rows WHERE idx BETWEEN ? AND ? ORDER BY idx",
+            (from_index, last),
+        ).fetchall()
+        size = store_mod.debt_size(c)
+        root = store_mod.debt_root(c)
+        response.headers["Cache-Control"] = TIP
+        return {
+            "format": 1,
+            "fields": DEBT_ROW_FIELDS,
+            "synced_height": _synced(c),
+            "size": size,
+            "root": (root[0] if root else DEBT_EMPTY_ROOT.to_bytes(32, "big")).hex(),
+            "root_height": root[1] if root else None,
+            "window_seconds": _meta_int(c, "debt_window_seconds"),
+            "clear_before": _meta_int(c, "debt_clear_before"),
+            "clear_before_height": _meta_int(c, "debt_checked_height"),
+            "from_index": from_index,
+            "next_index": rows[-1][0] + 1 if rows else max(from_index, 1),
+            "complete": bool(rows) and rows[-1][0] == last,
+            "rows": [[i, k.hex(), r, h, u] for i, k, r, h, u in rows],
         }
 
 
