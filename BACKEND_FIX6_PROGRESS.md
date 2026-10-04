@@ -81,5 +81,6 @@ fixes only. Baseline (45dfae3): 379 passed, 1 skipped.
 - [x] I2 _coarse: the hex pattern already cuts 16+ digit decimal runs;
       documented and tested, no code change (0c14094)
 - [x] I3 replay rows older than 31 days pruned in claim(), at most once an
-      hour (_paid_today already used the granted_at index, not a scan)
-- [ ] I4 action SHAs
+      hour (_paid_today already used the granted_at index, not a scan) (e272182)
+- [x] I4 actions/checkout pinned to 11d5960a (v4.4.0, the commit v4 points
+      at); the only third-party action
