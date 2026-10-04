@@ -37,10 +37,6 @@ def set_known(keys) -> None:
     _known = frozenset(keys)
 
 
-def size() -> int:
-    return len(_known)
-
-
 def parse_pairs(value: bytes) -> set[bytes]:
     """DSC commitments with a non-zero count, from a store subspace answer (kv.Pairs)."""
     out = set()

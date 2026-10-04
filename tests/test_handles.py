@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 import config
 from routers import privacy
 from services.privacy import handles
+from services.privacy.events import HANDLE_EVENTS
 from services.privacy.indexer import Indexer
 from services.privacy.rpc import proto_fields
 from services.privacy.store import Store
@@ -70,7 +71,7 @@ def test_recorded_owners_are_the_handle_events_owners():
     owners, seen = {}, 0
     for b in load(SCENARIO)["blocks"]:
         for ev in ordered_events(b["block_results"]):
-            if ev["type"] not in handles.EVENTS:
+            if ev["type"] not in HANDLE_EVENTS:
                 continue
             a = {x["key"]: x["value"] for x in ev["attributes"]}
             assert len(a["owner"]) == 64 and a["owner"] == a["owner"].lower()
@@ -229,9 +230,9 @@ def test_reread_after_a_handle_event_and_not_otherwise(tmp_path):
     reads = sorted({int(c.split()[-1]) for c in rpc.calls if c.startswith(f"abci_query {handles.HANDLES_QUERY}")})
     sc = load(SCENARIO)
     event_heights = {b["height"] for b in sc["blocks"]
-                     if any(e["type"] in handles.EVENTS for tx in b["block_results"].get("txs_results") or []
+                     if any(e["type"] in HANDLE_EVENTS for tx in b["block_results"].get("txs_results") or []
                             for e in tx.get("events") or [])
-                     or any(e["type"] in handles.EVENTS for e in b["block_results"].get("finalize_block_events") or [])}
+                     or any(e["type"] in HANDLE_EVENTS for e in b["block_results"].get("finalize_block_events") or [])}
     assert event_heights, "the scenario binds handles"
     first = sc["blocks"][0]["height"]
     # The first snapshot, then one after each block with a handle event

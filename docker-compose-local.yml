@@ -15,8 +15,4 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./:/app:delegated
-      - monero-wallet-data:/wallet
     restart: unless-stopped
-
-volumes:
-  monero-wallet-data:

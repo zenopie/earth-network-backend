@@ -50,7 +50,6 @@ import asyncio
 import re
 from dataclasses import dataclass
 
-from .events import HANDLE_EVENTS as EVENTS  # noqa: F401  (re-exported)
 from .rpc import proto_fields
 
 HANDLES_QUERY = "/earth.personhood.v1.Query/Handles"

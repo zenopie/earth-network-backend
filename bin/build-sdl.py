@@ -89,11 +89,6 @@ assert "provider." not in node, (
     "rest+https://lcd.erth.network — or this hangs on startup if it is ever "
     "leased on the same provider as the chain." % node)
 
-# The device-attestation grants are gone; their settings must not linger.
-for k in ("IOS_APP_ID", "APP_ATTEST_ALLOW_DEVELOPMENT", "ANDROID_PACKAGE", "ANDROID_SIGNING_CERT_SHA256",
-          "ANDROID_REQUIRE_LOCKED_BOOTLOADER", "GRANT_MAX_PER_ADDRESS_PER_DAY", "GRANT_MAX_PER_DAY"):
-    assert k not in a, "%s is no longer read; remove it from deploy.yaml" % k
-
 # CF-Connecting-IP keys the per-client limits only while Cloudflare is the
 # sole way in; a globally published app port lets clients choose their key.
 if a.get("TRUST_CF_CONNECTING_IP", "true").lower() == "true":

@@ -23,8 +23,6 @@ from cosmpy.protos.cosmos.base.v1beta1 import coin_pb2  # noqa: F401  registers 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 TYPE_URL = "/earth.shielded.v1.MsgShield"
-# The chain's types.MaxCiphertextBytes.
-MAX_CIPHERTEXT_BYTES = 1024
 # The chain's types.BlindCiphertextBytes (zk/privacy BlindNoteCiphertextBytes):
 # MsgShield.ciphertext must be exactly this long.
 BLIND_CIPHERTEXT_BYTES = 177
