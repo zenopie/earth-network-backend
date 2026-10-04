@@ -328,6 +328,10 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 # reports the error text only. Of the codes added with handles, 1122
 # (ErrHandleTaken), 1125 (ErrHandleMovedOut), 1126 (ErrCaretakerMovedOut) and
 # x/dex 1120 (ErrPoolCap) belong to msgs no registration check reaches.
+# 1127 (ErrSwitchSignerMismatch, chain audit round 6: a switch proven under
+# another Document Signer than the live registration's) is checked before
+# the proof is verified, so it is mintable from public chain data (a live
+# nullifier, any chaining DSC) and counts against the client like the rest.
 _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
@@ -335,6 +339,8 @@ _REFUSAL_KINDS = (
     ("proof public inputs do not match", "public inputs"),
     ("this registration has already been used", "binding used"),  # 1124 ErrBindingUsed
     ("passport is already registered to this identity commitment", "replay"),  # 1123 ErrRegistrationReplay
+    ("identity switch must be proven under the live registration's document signer",
+     "switch signer"),  # 1127 ErrSwitchSignerMismatch
     ("affiliate_handle is not a live handle", "affiliate"),  # 1121 ErrNoReferrer
     ("identity tree full", "tree full"),  # 1120 ErrIdentityTreeFull
     ("has been revoked", "revoked"),

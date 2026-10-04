@@ -389,10 +389,18 @@ def test_a_handle_the_chain_says_is_not_live_is_a_refusal(client, shields, chain
     ('affiliate_handle "x": affiliate_handle is not a live handle', "affiliate"),  # 1121
     ("passport is already registered to this identity commitment", "replay"),  # 1123
     ("this registration has already been used", "binding used"),  # 1124
+    ("identity switch must be proven under the live registration's document signer", "switch signer"),  # 1127
 ])
 def test_refusal_kinds_of_the_new_codes(error, kind):
     from routers import gas
     assert gas._refusal_kind(error) == kind
+
+
+def test_a_switch_under_another_signer_counts_against_the_client():
+    # 1127 is refused before the proof is verified: anyone can mint it from a
+    # live nullifier and any chaining DSC, so it is not user state.
+    from routers import gas
+    assert "switch signer" not in gas._USER_STATE_KINDS
 
 
 @pytest.mark.parametrize("over", [
