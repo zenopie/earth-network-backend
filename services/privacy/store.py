@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS meta (
 -- Only the blocks something reads (audit-5 L7): the last applied one (its
 -- hash is what the next block must name as parent) and every height that
 -- appended an identity leaf (the identity stream serves its time). Every
--- other row is deleted once the next block is applied: one row a block
--- forever was several hundred MB a year on the volume the replay DB shares.
+-- other row is deleted once the next block is applied (a row a block would
+-- be several hundred MB a year on the volume the replay DB shares).
 CREATE TABLE IF NOT EXISTS blocks (
     height INTEGER PRIMARY KEY,
     hash   TEXT NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS rates (
     PRIMARY KEY (height, validator)
 );
 -- Every stake note is a stake proof output with its 201-byte wallet stake
--- ciphertext (chain dff3a9b: the chain mints none).
+-- ciphertext (the chain mints none).
 CREATE TABLE IF NOT EXISTS stake_notes (
     position   INTEGER PRIMARY KEY,
     cm         BLOB NOT NULL,
@@ -203,6 +203,9 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # An index written for an earlier chain format cannot be served or
+    # extended: refused, to be wiped. The handle directory is a snapshot,
+    # not history, so one without owners is dropped and read again.
     cols = [r[1] for r in conn.execute("PRAGMA table_info(stake_nullifiers)")]
     if cols and "idx" not in cols:
         conn.close()
@@ -220,9 +223,7 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
                            f"that minted stake notes): wipe INDEX_DB and index again")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(handles)")]
     if cols and "owner" not in cols:
-        # A handle directory from before HandleEntry.owner (chain audit
-        # round 6). It is a snapshot, not history: drop it and the indexer
-        # reads the chain's whole again (handles_due: never taken).
+        # handles_due then finds no snapshot and the indexer reads it whole.
         with conn:
             conn.execute("DROP TABLE IF EXISTS handles")
             conn.execute("DROP TABLE IF EXISTS handles_staging")
@@ -276,7 +277,7 @@ class Store:
         self.path = path
         self.conn = connect(path)
         self._lock = threading.Lock()
-        # An index from before pruning holds a row for every block.
+        # Keep only the blocks rows apply() would have kept (see SCHEMA).
         self.conn.execute("DELETE FROM blocks WHERE height < (SELECT MAX(height) FROM blocks)"
                           " AND height NOT IN (SELECT height FROM identity_leaves)")
 
@@ -576,10 +577,9 @@ def handles_stale(c: sqlite3.Connection, stale_blocks: int) -> bool:
     stale_blocks old. A payer resolving a handle from it may pay an address
     the handle no longer names.
 
-    Measured from the first pending event, not the latest (audit-6 L2):
-    from the latest, a handle event every block kept the flag down however
-    old the snapshot was, while refreshes failed. An index from before
-    handles_pending_height falls back to the latest event."""
+    Measured from the first pending event, not the latest (audit-6 L2), so a
+    handle event every block cannot keep the flag down while refreshes fail.
+    Without handles_pending_height it falls back to the latest event."""
     def meta(key):
         row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return int(row[0]) if row else 0

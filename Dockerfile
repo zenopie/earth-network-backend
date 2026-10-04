@@ -1,7 +1,5 @@
-# Dockerfile
-#
-# The service is one FastAPI app now, so this is a plain uvicorn image: no
-# monero-wallet-rpc to fetch and no supervisor multiplexing processes.
+# One FastAPI app (entrypoint.py runs uvicorn) plus the chain's earthd for
+# `earthd gas-check`.
 
 # Pinned by digest (audit-5 L12): the tag moves with every Debian and Python
 # patch, and this image holds the hot key. The digest is the multi-arch index
@@ -28,9 +26,9 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r
 #
 # Bump EARTHD_VERSION with the chain, together with its checksum: a circuit or
 # parameter change the node has and this binary lacks means refusing proofs the
-# chain would take. The shielded chain's gas-check takes MsgRegister without a
-# creator and with idc/pc fields, which v0.9.x cannot parse: this must be the
-# privacy release before /gas/register can pay anything on that chain.
+# chain would take. It must be the release of the chain the service grants on
+# (privacy/orchard): v1.0.0 predates its MsgRegister (handles, the binding with
+# the chain id) and is bumped when that release is cut.
 ARG EARTHD_VERSION=v1.0.0
 ARG EARTHD_SHA256=16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db475
 RUN python -c "import hashlib, sys, tarfile, urllib.request; \

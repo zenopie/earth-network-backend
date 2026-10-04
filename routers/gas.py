@@ -11,37 +11,29 @@ new human needs is a note:
                            pc_gas, ciphertext_gas, pow?}
     GET  /gas/pow         the proof of work it needs now (services/pow)
 
+/gas/register takes the registration the app is about to broadcast, asks the
+chain's own checks whether it would be accepted (`earthd gas-check
+registration`, services/gascheck), and if so shields DUST_UERTH from the hot
+wallet into a note to pc_gas — once per passport in any 30 days, keyed on the
+passport nullifier, which the registration makes public anyway. The app then
+broadcasts MsgRegister and pays its fee from that note; the registration
+reward pays every later fee. The backend stores only the passport key, never
+pc_gas or anything else that names the note.
+
 Every ciphertext is a note's amount-blind v2 ciphertext (zk/privacy
-EncryptBlindNote), exactly 177 bytes, as the chain requires of every note it
-mints: ciphertext_anml / ciphertext_erth exactly as in MsgRegister (the proof's
-binding covers them), ciphertext_gas the gas note's own.
+EncryptBlindNote), exactly 177 bytes: ciphertext_anml / ciphertext_erth
+exactly as in MsgRegister (the proof's binding covers them), ciphertext_gas
+the gas note's own.
 
 A referral names a live handle (affiliate_handle, MsgRegister field 15),
 bound into the proof as H("earth.affiliate", Bytes(handle)) (0 for none).
-The chain itself mints the referrer's half as a note to the handle's address,
-with an opening derived from the passport nullifier and leaf index (chain
-ORCHARD_DESIGN.md section 16); the registrant's wallet makes no referral note.
-affiliate_pc and affiliate_ciphertext (MsgRegister 11 and 12, removed in
-audit round 5) are refused with a 400 naming them.
+The chain mints the referrer's half itself (chain ORCHARD_DESIGN.md section
+16). affiliate_pc and affiliate_ciphertext are not MsgRegister fields; a body
+carrying either is refused 400 with a message naming them.
 
-takes the registration the app is about to broadcast, asks the chain's own
-checks whether it would be accepted (`earthd gas-check registration`,
-services/gascheck), and if so shields DUST_UERTH from the hot wallet into a
-note to pc_gas — once per passport in any 30 days, keyed on the passport nullifier,
-which the registration makes public anyway. The app then broadcasts
-MsgRegister and pays its fee from that note; the registration reward pays
-every later fee. The backend stores only the passport key, never pc_gas or
-anything else that names the note, and the note's spend is unlinkable to it.
-
-/gas/human is gone: it paid an address the chain counted as a human, and
-nothing on chain links an address to a registration any more. /gas/transparent
-(a membership-proof bank send) and the device-attestation grants (/gas/ios,
-/gas/android, /gas/challenge) are gone too: /gas/register is the only grant.
-
-Grant endpoints answer with {status, message, tx_hash?} and a status code the
-app can act on: 200 sent, 202 broadcast but unresolved, 428 attach (or
-redo) a proof of work, other 4xx the request cannot succeed as sent, 5xx try
-again later.
+Answers are {status, message, tx_hash?} with a status code the app can act
+on: 200 sent, 202 broadcast but unresolved, 428 attach (or redo) a proof of
+work, other 4xx the request cannot succeed as sent, 5xx try again later.
 """
 import base64
 import binascii
@@ -69,8 +61,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/gas")
 
 # Registration grant ids: passport:<nullifier hex>:<YYYY-MM-DD>, at most one
-# per passport in any GRANT_ONCE_PER_SECONDS (ids from before this change end
-# in :<YYYY-MM>; they share the passport's prefix and count the same).
+# per passport (every id under passport:<nullifier hex>:) in any
+# GRANT_ONCE_PER_SECONDS.
 PASSPORT_PREFIX = "passport:"
 # The replay kind of a grant for a switch (a passport already registered
 # moving to a new identity): capped apart from first registrations.
@@ -109,9 +101,9 @@ class RegisterGrant(BaseModel):
     ciphertext_erth: _SHORT
     # A referral: a live handle (MsgRegister 15); "" for none.
     affiliate_handle: Annotated[str, StringConstraints(max_length=64)] = ""
-    # Removed from MsgRegister (11, 12; chain audit round 5): accepted by the
-    # schema only so _affiliate can refuse them with a 400 that names them,
-    # not drop them silently. Not in the published schema.
+    # Not MsgRegister fields: accepted by the schema only so _affiliate can
+    # refuse them with a 400 that names them rather than drop them silently.
+    # Not in the published schema.
     affiliate_pc: SkipJsonSchema[Any] = None
     affiliate_ciphertext: SkipJsonSchema[Any] = None
     # Where the gas goes: the pc of a note the app will spend MsgRegister's
@@ -324,14 +316,11 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 # The chain's refusals by kind (gas-check's error is "<detail>: <base>", the
 # base an x/personhood or x/pki error description). Only the kind is logged:
 # the detail can name the affiliate handle, the country, a nullifier.
-# Codes beside each are the chain's (x/personhood unless named); gas-check
-# reports the error text only. Of the codes added with handles, 1122
-# (ErrHandleTaken), 1125 (ErrHandleMovedOut), 1126 (ErrCaretakerMovedOut) and
-# x/dex 1120 (ErrPoolCap) belong to msgs no registration check reaches.
-# 1127 (ErrSwitchSignerMismatch, chain audit round 6: a switch proven under
-# another Document Signer than the live registration's) is checked before
-# the proof is verified, so it is mintable from public chain data (a live
-# nullifier, any chaining DSC) and counts against the client like the rest.
+# Codes beside each are the chain's x/personhood ones; gas-check reports the
+# error text only. 1127 (a switch proven under another Document Signer than
+# the live registration's) is checked before the proof is verified, so it is
+# mintable from public chain data and counts against the client like the
+# rest.
 _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
@@ -389,8 +378,8 @@ def pow_params(request: Request):
                  % (config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_NULLIFIER_INDEX),
         # What admits a request on every path right now: the reserved lane's,
         # or shedding's while the network budget (or this client's refusal
-        # budget) is spent. A signer's or
-        # country's own budget can ask more of its requests; a 428 says so.
+        # budget) is spent. A spent signer or country budget can ask it of
+        # that signer's or country's requests too; a 428 says so.
         "bits": pow.required_bits(shedding=shed),
         "reserved_bits": pow.required_bits(shedding=False),
         "shedding_bits": pow.required_bits(shedding=True),
@@ -454,16 +443,14 @@ async def register(request: Request):
     # Shedding: the network's, this signer's or this country's budget of
     # verification failures is spent, or this client's of refusals. Such a
     # request is queued only with a proof of work at the shedding
-    # difficulty. A client over its refusal budget used to be refused 429
-    # outright (audit-6 M1): on a CGNAT address or a carrier's shared prefix
-    # three junk requests an hour locked everyone there out, with no way to
-    # pay through.
+    # difficulty, never refused outright: a CGNAT address or a carrier's
+    # shared prefix must be able to pay through (audit-6 M1).
     country = _dsc_country(dsc_der)
     shed = ratelimit.shedding(dsc, country) or ("client" if ratelimit.client_refused_out(refuser) else None)
     # The reserved lane: a passport not yet granted (peek, above) from a
     # Document Signer the chain already holds registrations from, with a
-    # proof of work, whose
-    # dsc_der really is the signer public_signals names (checked last: it
+    # proof of work, whose dsc_der really is the signer public_signals
+    # names (checked last: it
     # hashes the key, and only a request that paid the work gets that far;
     # a key past dsccommit.LANE_MAX_KEY_BYTES is never hashed and takes the
     # ordinary lane).
@@ -486,10 +473,9 @@ async def register(request: Request):
         return _pow_needed(need, f"too many failed registrations for this {shed} right now; "
                                  f"attach a proof of work of {need} bits (GET /gas/pow)")
     if bits >= need and digest is not None:
-        # Consumed at once, before the await below (audit-6 L1): checked
-        # and consumed across lane_commitment, concurrent copies of one
-        # request each passed check(), and one stamp admitted several
-        # shed or priority checks. Given back below if it is not relied on.
+        # Consumed at once, before the await below (audit-6 L1), so
+        # concurrent copies of one request cannot each pass check() across
+        # lane_commitment. Given back below if it is not relied on.
         pow.consume(digest)
     else:
         digest = None  # not relied on: still the wallet's to use
@@ -554,9 +540,8 @@ async def register(request: Request):
         # that only produces refusals pays a proof of work for each request
         # for a while. Not a daily cap: that is the registrant's
         # circumstance, not junk (audit-6 M1). No refusal demotes the signer
-        # it named: that was anyone's to trigger with the signer's public
-        # certificate, and it evicted the signer's real registrants from the
-        # lane.
+        # it named: anyone could trigger that with the signer's public
+        # certificate (audit-5 M3).
         if kind not in _USER_STATE_KINDS:
             ratelimit.note_client_refusal(refuser)
         # The chain's own reason — "passport expired", "daily cap reached" —
@@ -597,11 +582,11 @@ async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: byt
     try:
         tx_hash = await chain.shield_dust(pc, ciphertext)
     except chain.SendUnresolved as exc:
-        # Always names its tx (chain._resolve raises it with the signed
-        # tx's hash). Broadcast, and the chain did not show it within the wait. The id
-        # stays claimed: a tx still in a mempool will land, and releasing
-        # would let it be paid twice. The app holds the hash and can watch for
-        # it; this side keeps no record that ties it to the passport.
+        # Broadcast, and the chain did not show it within the wait; always
+        # names the signed tx's hash. The id stays claimed: a tx still in a
+        # mempool will land, and releasing would let it be paid twice. The
+        # app holds the hash and can watch for it; this side keeps no record
+        # that ties it to the passport.
         logger.error("gas note shield is unresolved: %s", exc)
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
     except Exception as exc:

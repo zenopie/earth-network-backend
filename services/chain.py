@@ -1,12 +1,10 @@
 """Paying gas grants from the hot wallet on the earth chain.
 
-One shape of payment:
-
-- shield_dust: a MsgShield of the dust into the shielded pool, as a note owned
-  by whoever holds the opening of the pc the app sent. This is the
-  registration grant. A private tx is unsigned and pays its fee from a note,
-  so a new human needs a note, not an account; and the hot wallet learns only
-  that some note was funded, never the account or key that will spend it.
+shield_dust: a MsgShield of the dust into the shielded pool, as a note owned
+by whoever holds the opening of the pc the app sent. A private tx is unsigned
+and pays its fee from a note, so a new human needs a note, not an account;
+and the hot wallet learns only that some note was funded, never the key that
+will spend it.
 """
 import asyncio
 import hashlib
@@ -30,9 +28,8 @@ _client: LedgerClient | None = None
 _wallet: LocalWallet | None = None
 
 # Every send goes through one lock. The hot key has a single account sequence,
-# and concurrent callbacks would otherwise race to reuse it and fail with a
-# sequence mismatch — which is what the old backend's transaction queue existed
-# to prevent.
+# and concurrent sends would otherwise race to reuse it and fail with a
+# sequence mismatch.
 _send_lock = asyncio.Lock()
 
 
@@ -63,9 +60,8 @@ def _bound_http(client: LedgerClient) -> None:
 
     cosmpy's RestClient uses a bare requests session, which waits forever. Every
     send runs under _send_lock, so one request to a node that accepted the
-    connection and never answered used to stop every payout behind it until the
-    process was restarted. A gRPC endpoint has no session to bound and is left
-    alone.
+    connection and never answered would stop every payout behind it. A gRPC
+    endpoint has no session to bound and is left alone.
     """
     rest = getattr(client.bank, "_rest_api", None)
     if rest is None:

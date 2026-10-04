@@ -2,9 +2,9 @@
 
 The app holds the hot wallet's mnemonic, so it runs unprivileged. Root is kept
 only for the chown: a volume made by an earlier, root-running image is
-root-owned, and an app that cannot write the replay table there would find
-every callback payable again. Plain Python rather than gosu or setpriv, so the
-image needs nothing it does not already have.
+root-owned, and an app that cannot write the replay table there cannot record
+a grant. Plain Python rather than gosu or setpriv, so the image needs nothing
+it does not already have.
 """
 import os
 import pwd

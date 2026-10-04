@@ -9,8 +9,8 @@ Two checks, the second optional:
    each tree is checked (one bulk rebuild, ~2 hashes a leaf); all_roots checks
    every recorded root (up to 32 hashes per changed leaf per block). The
    stake tree (x/shieldedstaking: same depth-32 Poseidon2 tree, leaves the
-   stake commitments; every one a stake proof output since chain dff3a9b,
-   none with a public value) is replayed the same way. The slash debt tree
+   stake commitments, every one a stake proof output with no public value)
+   is replayed the same way. The slash debt tree
    (zk/debt: an indexed tree, leaf H(TAG_DEBTL, key, next_key, next_index,
    retained), rows rewritten in place) is replayed from every debt row
    write in order, each write's leaf index and the root the chain emitted
@@ -173,7 +173,7 @@ def rebuild(conn: sqlite3.Connection, all_roots: bool = False) -> Report:
         pending = stakes.fetchone()
     rep.stake_size = st.size
     # The empty tree has a root too (ZERO[32]): the chain records it at the
-    # first block (dff3a9b), so a first delegation's padding proves against it.
+    # first block, so a first delegation's padding proves against it.
     rep.stake_root = _b(st.root())
 
     # --- slash debt tree (indexed; rows rewritten in place) ---

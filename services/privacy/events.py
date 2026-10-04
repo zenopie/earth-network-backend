@@ -52,10 +52,10 @@ x/shieldedstaking/keeper/stake_tree.go):
     shieldedstaking_epoch            epoch (the one that just ended)
 
 The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
-tree of owner-locked derth/<valoper> notes, its own nullifier set and roots;
-since chain 48b631c an undelegation mints no stake note, its payout is pool
-notes, above; since chain dff3a9b the chain mints no stake note at all: every
-one is a stake proof output, ORCHARD_DESIGN.md section 20):
+tree of owner-locked derth/<valoper> notes, its own nullifier set and roots).
+The chain mints no stake note: every one is a stake proof output
+(ORCHARD_DESIGN.md section 20), and an undelegation's payout is pool notes
+(above):
 
     shieldedstaking_stake_note       position_id, commitment (hex), ciphertext
                                      (base64): the stake proof's commitment
@@ -65,8 +65,8 @@ one is a stake proof output, ORCHARD_DESIGN.md section 20):
                                      bytes (the slash label inside). A zero
                                      note (a full exit's padding output) is a
                                      note like any other. A note with denom,
-                                     amount or spc (a chain-minted note,
-                                     before dff3a9b) is refused.
+                                     amount or spc (a chain-minted note) is
+                                     refused.
     shieldedstaking_stake_nullifier  nullifier (hex), index (its leaf index in
                                      the stake nullifier tree: 1, 2, 3, ... in
                                      insertion order; leaf 0 is the sentinel).
@@ -103,7 +103,7 @@ module's redelegation entries):
                                      completion_time, move_key (the credit
                                      nullifier), move_time: move_key checked
                                      to be a stake nullifier of the block;
-                                     `minted` (before dff3a9b) refused.
+                                     an event with `minted` is refused.
                                      Nothing of it is stored.
 
 The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
@@ -125,7 +125,7 @@ validator, epoch, attempts, retry_at, error: kept and retried, nothing
 minted) / _stake_vote (vote_nullifiers: the used slots' vote nullifiers,
 comma-separated hex; per proposal, they spend nothing and are in no tree) and
 shieldedstaking_self_bond_compounded (an operator's own SDK self-bond grows;
-derth rates come from shieldedstaking_epoch_validator as before).
+derth rates come from shieldedstaking_epoch_validator).
 
 Order. A block's state changes run PreBlock, BeginBlock, each tx in order,
 EndBlock. block_results gives the txs' events per tx and everything else in
@@ -194,9 +194,9 @@ class Root:
     tree_size: int
 
 
-# A wallet stake ciphertext (privacy.WalletStakeCiphertextBytes, chain
-# dff3a9b): epk || AEAD(0x04 || asset || amount || rho || rcm || move_key ||
-# move_time || exposed) || tag. Every stake note carries one.
+# A wallet stake ciphertext (privacy.WalletStakeCiphertextBytes): epk ||
+# AEAD(0x04 || asset || amount || rho || rcm || move_key || move_time ||
+# exposed) || tag. Every stake note carries one.
 STAKE_CIPHERTEXT_BYTES = 201
 # A debt row's retained is at most its move's credit, a note amount
 # (<= 2^63-1): it fits SQLite's signed 64-bit integers.

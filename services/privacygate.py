@@ -3,8 +3,8 @@
 The streams are public and cacheable; a CDN serves almost every request. What
 reaches the origin is a miss, and the lease has 0.1 CPU and 256 MiB: a burst
 of uncached pages, each a SQLite read, a JSON encode and a gzip, queued in
-the threadpool (40 threads) and held their bodies in memory together
-(audit-4 B3, poc_privacy_page_cost.py). This bounds both:
+the threadpool (40 threads) and hold their bodies in memory together
+(audit-4 B3). This bounds both:
 
 - PRIVACY_MAX_CONCURRENT responses in flight, counted from arrival until the
   last body byte is sent (pure ASGI, outside GZip, so the encode and the
@@ -21,16 +21,16 @@ Cloudflare rate-limit rule that bounds misses before they reach the tunnel.
 Canonical URLs only (audit-5 M2). The CDN keys on the full query string,
 so every spelling of a page is another cache entry and another miss: an
 unknown parameter (?cb=1, ?cb=2, ...), a repeated one, or an integer
-spelled any other way than its plain decimal (0001000, %2B1000, +1000).
-FastAPI took all of those as the same page, so one client could keep every
-origin slot busy with misses. The gate answers each with 400, no-store,
-before any handler runs: a query is name=value pairs joined by &, each name
-one the endpoint takes, at most once and in alphabetical order (from_*
-before limit; audit-6 L4), each value 0 or a decimal without a leading
-zero, nothing percent-encoded. (An omitted parameter and its explicit
-default are still two spellings; that is bounded, two per page.) A path that is not one of the
-streams is 404, no-store. ENDPOINTS must list every /privacy route
-(tests/test_audit5 checks it against the router).
+spelled any other way than its plain decimal (0001000, %2B1000, +1000),
+each of which FastAPI would take as the same page. The gate answers each
+with 400, no-store, before any handler runs: a query is name=value pairs
+joined by &, each name one the endpoint takes, at most once and in
+alphabetical order (from_* before limit; audit-6 L4), each value 0 or a
+decimal without a leading zero, nothing percent-encoded. (An omitted
+parameter and its explicit default are still two spellings; that is
+bounded, two per page.) A path that is not one of the streams is 404,
+no-store. ENDPOINTS must list every /privacy route (a test checks it
+against the router).
 
 CORS, for the web wallet: every /privacy response (refusals included)
 carries Access-Control-Allow-Origin: PRIVACY_CORS_ORIGIN
@@ -41,8 +41,8 @@ another. A request from a local dev origin (http://localhost[:port],
 http://127.0.0.1[:port], when PRIVACY_CORS_LOCALHOST) gets its own origin
 back instead, with Cache-Control: no-store so no CDN keeps that copy
 (no Vary: Origin is needed, since a cacheable response never depends on
-Origin). No
-credentials, GET and HEAD only (an OPTIONS preflight is answered 204).
+Origin). No credentials, GET and HEAD only (an OPTIONS preflight is
+answered 204).
 Nothing outside /privacy has CORS headers.
 """
 import json
@@ -112,8 +112,8 @@ def query_problem(name: str, query: bytes) -> str | None:
             return f"unknown parameter {key}; this stream takes {sorted(allowed) or 'none'}"
         if key in seen:
             return f"parameter {key} given twice"
-        # One order (audit-6 L4): limit=..&from_pos=.. and from_pos=..&limit=..
-        # were two cache keys for one page.
+        # One order (audit-6 L4): otherwise limit=..&from_pos=.. and
+        # from_pos=..&limit=.. would be two cache keys for one page.
         if seen and key < max(seen):
             return f"parameters must be in alphabetical order ({' before '.join(sorted(allowed))})"
         seen.add(key)

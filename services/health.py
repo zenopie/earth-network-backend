@@ -1,11 +1,9 @@
 """The hot wallet's balance for /health, read in the background (audit-5 L3).
 
-/health used to read the balance from the LCD on every call: a synchronous
-query of up to CHAIN_HTTP_TIMEOUT on the threadpool the /privacy handlers
-share, unthrottled, on cosmpy's session with shield_dust. A flood of
-/health exhausted the pool and loaded the LCD. Now one task reads it every
-HEALTH_REFRESH_SECONDS and /health serves the last reading (cacheable for
-as long), whatever the request rate.
+One task reads the balance every HEALTH_REFRESH_SECONDS and /health serves
+the last reading (cacheable for as long), whatever the request rate: a
+request never queries the LCD, so a flood of /health cannot exhaust the
+threadpool the /privacy handlers share or load the node.
 """
 import asyncio
 import logging

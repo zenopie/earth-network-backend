@@ -1,10 +1,11 @@
 """Asking the chain's own personhood checks, through `earthd gas-check`.
 
 One question decides the grant, and it is the chain's to answer: would it
-accept this registration, and for which passport (`registration`). The earthd binary from the chain release answers them with the chain's own code,
-reading live state from the node with plain store reads and verifying any proof
-here, on this machine — so junk proofs cost this service CPU and the chain
-nothing. See `earthd gas-check --help` in the chain repo.
+accept this registration, and for which passport (`registration`). The
+earthd binary from the chain release answers it with the chain's own code,
+reading live state from the node with plain store reads and verifying the
+proof here, on this machine — so junk proofs cost this service CPU and the
+chain nothing. See `earthd gas-check --help` in the chain repo.
 
 One check at a time. A proof verification peaks near 120 MB, and this lease has
 256 MiB beside a ~70 MB service; two at once would be killed. Waiting is

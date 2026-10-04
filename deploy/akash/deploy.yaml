@@ -59,7 +59,8 @@ services:
       # issuing country, network-wide (at most what this 0.1-CPU lease can
       # verify, ~6 a minute). Past one, requests under it need a proof of
       # work (POW_SHED_BITS) to be queued. Every refusal also counts against
-      # its client: 3 an hour and it is refused before the queue. The
+      # its client (an IPv6 /64): past 3 an hour its requests need that proof
+      # of work too. The
       # reserved lane (5 of the 20 queue places, for a new passport from a
       # DSC the chain already knows, with a POW_RESERVED_BITS stamp) holds
       # at most one check per DSC at a time.

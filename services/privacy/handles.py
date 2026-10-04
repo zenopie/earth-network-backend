@@ -41,10 +41,10 @@ strictly increasing order across pages, a known status, an erthz1
 address, renewal_until >= expires_at >= 0, an owner of 64 lowercase hex
 characters or none, and a `next` that moves forward.
 
-owner (chain audit round 6) is what a wallet compares with its own
-handle-scope nullifier to know a handle is its own; an entry merely naming
-its address is not. It is already public (the claiming bind's membership
-nullifier, a move's new_owner; the handle events carry it).
+owner is what a wallet compares with its own handle-scope nullifier to know
+a handle is its own; an entry merely naming its address is not. It is
+already public (the claiming bind's membership nullifier, a move's
+new_owner; the handle events carry it).
 """
 import asyncio
 import re

@@ -247,10 +247,9 @@ class Indexer:
         """Re-reads the handle directory at the last applied height when the snapshot is behind.
 
         Bounded (audit-5 L4): at most once every handles_min_blocks blocks
-        (a handle event every block, which anyone can pay for, no longer
-        means a full re-read every block); each page parsed in a worker
-        thread and staged in SQLite as it arrives, so memory is one page
-        whatever the directory's size; at most handles_max entries.
+        (anyone can pay for a handle event every block); each page parsed in
+        a worker thread and staged in SQLite as it arrives, so memory is one
+        page whatever the directory's size; at most handles_max entries.
         """
         height = self.next_height - 1
         taken = await asyncio.to_thread(self.store.meta, "handles_height")

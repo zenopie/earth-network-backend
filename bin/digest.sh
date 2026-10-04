@@ -2,10 +2,10 @@
 #
 # Resolve a released tag to the image digest the SDL should pin.
 #
-# The chain repo deliberately does not write this anywhere: it used to rewrite
-# the SDL and commit it back, which put deployment state in a public repository
-# and raced anyone pushing at the same time. The digest is a property of what
-# was published, so it is read from the registry at deploy time instead.
+# CI deliberately writes the digest nowhere in the repo: committing it would
+# put deployment state in a public repository and race anyone pushing at the
+# same time. The digest is a property of what was published, so it is read
+# from the registry at deploy time instead.
 #
 # No credentials. The package is public, which it has to be anyway or the Akash
 # provider could not pull it.

@@ -1,7 +1,8 @@
 """The chain's domain-tagged derivations (zk/privacy), as far as the backend needs
-them: checking field encodings, asset ids and note commitments, and identity
-leaves. Every function must match its Go twin exactly; tests/test_zk.py pins
-them to vectors produced by the Go code.
+them: field encodings, the registration binding, note and stake commitments,
+identity, nullifier-tree and debt-tree leaves. Every function must match its
+Go twin exactly; tests/test_zk.py pins them to vectors produced by the Go
+code.
 """
 from .poseidon2 import P, hash_fields
 
@@ -90,8 +91,7 @@ def stake_pc(owner: int, rho: int, rcm: int) -> int:
 
 def stake_cm(asset: int, amount: int, spc: int, label: int = 0) -> int:
     """privacy.StakeCM: a stake tree leaf, H(TAG_STAKE, asset, amount, spc,
-    label), asset = asset_id(derth/<valoper>), label 0 or stake_label(...)
-    (chain dff3a9b)."""
+    label), asset = asset_id(derth/<valoper>), label 0 or stake_label(...)."""
     return H(TAG_STAKE, asset, amount, spc, label)
 
 
@@ -116,8 +116,8 @@ def registration_binding(chain_id: str, idc_: int, pc_anml: int, ct_anml: bytes,
                          affiliate: int) -> int:
     """privacy.RegistrationBinding: the passport proof's address input,
     H(TAG_REG, Bytes(chain_id), idc, pc_anml, Bytes(ct_anml), pc_erth, Bytes(ct_erth), affiliate).
-    The chain id (audit round 6, B6-4) keeps a proof made for one chain from
-    registering on another. affiliate is 0 for none, else affiliate_field(handle)."""
+    The chain id keeps a proof made for one chain from registering on
+    another. affiliate is 0 for none, else affiliate_field(handle)."""
     return H(TAG_REG, bytes_field(chain_id.encode()), idc_, pc_anml, bytes_field(ct_anml), pc_erth,
              bytes_field(ct_erth), affiliate)
 

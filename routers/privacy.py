@@ -39,9 +39,9 @@ was built from and start over when status names another.
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
 derth/<valoper> notes), served exactly like the pool's. An undelegation's
 payout is pool notes (ordinary minted rows of /notes, split ones sharing a
-ciphertext), not stake notes. Since chain dff3a9b every stake note is a
-stake proof output (the chain mints none) with its 201-byte wallet stake
-ciphertext, the slash label inside: stake rows are format STAKE_NOTE_FORMAT
+ciphertext), not stake notes. Every stake note is a stake proof output (the
+chain mints none) with its 201-byte wallet stake ciphertext, the slash label
+inside: stake rows are format STAKE_NOTE_FORMAT
 (2), [position, height, cm, ciphertext], stated on every page ("format") and
 in status ("stake_note_format"). Every pool note but an open one has a ciphertext
 (minted: the 177-byte amount-blind v2 one). An open note (the referral note
@@ -80,16 +80,14 @@ pages 0 .. size-1 and starts over if `height` differs between its pages.
 status is the chain's at `time`: "live" resolves (pay it, name it as a
 referrer), "renewal" and "free" do not; a wallet also treats a "live" entry
 whose expires_at has passed by its own clock as not resolving. owner (the
-sixth element, chain audit round 6) is the handle-scope nullifier holding
-the handle, 64 lowercase hex, "" for a handle never claimed: a wallet knows
-a handle is its own by owner equal to its own handle-scope nullifier, never
-by the address alone. The column was appended, so a reader of the first
-five is unaffected and there is no handle format number. `stale`
-(here and handles_stale in status) is true while the snapshot is
-HANDLES_STALE_BLOCKS or more behind the first handle event the index has
-applied since it (audit-6 L2):
-a handle may name another address by now, so a wallet should not pay a
-handle from it (audit-5 L5).
+sixth element) is the handle-scope nullifier holding the handle, 64
+lowercase hex, "" for a handle never claimed: a wallet knows a handle is its
+own by owner equal to its own handle-scope nullifier, never by the address
+alone. The stream has no format number. `stale` (here and handles_stale in
+status) is true while the snapshot is HANDLES_STALE_BLOCKS or more behind
+the first handle event the index has applied since it (audit-5 L5, audit-6
+L2): a handle may name another address by now, so a wallet should not pay a
+handle from it.
 
 Hex for 32-byte values, standard base64 for ciphertexts, rows as arrays (the
 field order is in each response's "fields"). Responses are gzip'd by the app.
@@ -108,15 +106,12 @@ verified_height), and while the index is halted every {base}/* answer is
 
 Paging (audit-4 B3): limit is one of PRIVACY_PAGE_SIZES (100, 1000) and
 nothing else, and a position- or index-paged stream (notes, identity,
-stake/notes, stake/nullifier-tree) takes only a page-aligned cursor:
-from_pos / from_index a multiple of limit, else 400. Page k of size L is
-exactly [k*L, (k+1)*L). Every client asks for the same few URLs, so one
-CDN entry serves them all; an uncached page is no longer a URL an attacker
-can mint at will (each distinct from_pos was a distinct cache key, and an
-uncached 5000-row page cost ~8 MiB of heap and ~0.3 s on a laptop, several
-times that on the 0.1-CPU lease). A wallet whose sync
-ends mid-page asks for the page containing its cursor and skips the rows
-it holds. Height-paged streams end at a block boundary, so their cursor
+stake/notes, stake/nullifier-tree, debt_rows, handles) takes only a
+page-aligned cursor: from_pos / from_index a multiple of limit, else 400.
+Page k of size L is exactly [k*L, (k+1)*L). Every client asks for the same
+few URLs, so one CDN entry serves them all, and an uncached page is not a
+URL an attacker can mint at will. A wallet whose sync ends mid-page asks
+for the page containing its cursor and skips the rows it holds. Height-paged streams end at a block boundary, so their cursor
 (next_height) cannot be aligned; their rows are small (32-byte values) and
 they share the limits on sizes, the per-client rate and the concurrency
 cap (services/privacygate) with the rest. The gate also refuses (400,
@@ -162,11 +157,10 @@ def _read():
     """This thread's reader connection inside one read transaction.
 
     Every query of a response — its rows and the synced height beside them —
-    sees one snapshot. In autocommit each statement had its own, so a block
-    the indexer committed between a page's row query and its synced-height
-    query was named as covered (next_height past it) without its rows: a
-    client following next_height never saw them (audit-3
-    poc_height_page_race.py).
+    sees one snapshot. Otherwise a block the indexer committed between a
+    page's row query and its synced-height query would be named as covered
+    (next_height past it) without its rows, and a client following
+    next_height would never see them.
     """
     c = _db()
     c.execute("BEGIN")
@@ -288,14 +282,10 @@ def _group(rows, fmt) -> list:
     return out
 
 
-# The notes stream's row format. 1: [position, height, cm, ciphertext,
-# amount]. 2 (chain audit round 5): + owner_pk, rho, rcm; ciphertext null for
-# an open note.
+# Row formats, stated on every page ("format") and in status. A wallet
+# refuses a page whose format it does not know.
 NOTE_FORMAT = 2
 NOTE_FIELDS = ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "rho", "rcm"]
-# The stake notes stream's row format. 1: [position, height, cm, ciphertext,
-# denom, amount, spc] (chain-minted notes public). 2 (chain dff3a9b, no
-# chain-minted stake note): [position, height, cm, ciphertext].
 STAKE_NOTE_FORMAT = 2
 STAKE_NOTE_FIELDS = ["position", "height", "cm", "ciphertext"]
 DEBT_ROW_FIELDS = ["index", "key", "retained", "height", "updated_height"]

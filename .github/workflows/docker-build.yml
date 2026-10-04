@@ -7,8 +7,7 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
-# packages: write to push to ghcr. contents stays read — this workflow used to
-# commit a generated compose file back to main, which is why it held write.
+# packages: write to push to ghcr; contents: read is all a build needs.
 permissions:
   contents: read
   packages: write

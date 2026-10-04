@@ -46,20 +46,17 @@ reaches gas-check). A client past it is shed like a spent signer or country
 budget: queued only with a proof of work at the shedding difficulty (428
 without), never refused outright. The client a refusal counts against is
 an IPv4 /32 or an IPv6 /REGISTER_CLIENT_REFUSAL_IPV6_PREFIX (refusal_key,
-default /64: one subscriber), not the request window's /48. Before audit 6
-it was a hard 429 per /48: three junk requests an hour from one subscriber
-on a carrier /48, or behind a CGNAT address, locked every registrant there
-out, and three people with expired passports on one CGNAT address did the
-same by accident. Now junk from a shared network costs everyone on it a
-proof of work for a while, not their registration.
+default /64: one subscriber), not the request window's /48. Junk from a
+shared network (a carrier /48, a CGNAT address) costs everyone on it a proof
+of work for a while, never their registration.
 
 The reserved lane, per signer (audit-5 M3): at most one priority check per
 DSC commitment waits or runs at a time (take_signer_lane). A second request
 naming a signer whose check is in flight takes the ordinary lane. Refusals
 never demote a signer: a DSC certificate and its commitment are public, so
-demotion by refusals let anyone evict a signer's real registrants from the
-lane with five junk requests an hour. Junk naming one signer now holds one
-place, only while its check waits or runs; holding five places takes five
+demotion by refusals would let anyone evict a signer's real registrants from
+the lane. Junk naming one signer holds one place, only while its check waits
+or runs; holding five places takes five
 known certificates, a proof of work each and a client each, and the client
 refusal budget takes those clients' places back.
 

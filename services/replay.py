@@ -1,21 +1,15 @@
-"""Replay protection and payout limits for gas grants.
+"""Replay protection and payout limits for gas grants (SQLite, STATE_DB).
 
-A grant id — the passport key `passport:<nullifier>:<YYYY-MM-DD>` of a
-registration grant — may be honoured exactly once, and a passport (every id
-under `passport:<nullifier>:`) at most once in any `once_per` window (30
-days): keyed by calendar month, a grant on the 31st and another on the 1st
-were two grants a day apart. It is stored under its id
-alone, with an empty address: the backend keeps nothing that names where the
-note went. SQLite rather than a JSON file: the id set is
-append-only and read on every request, and a file that gets rewritten wholesale
-loses entries the moment two requests land together.
+A grant id — `passport:<nullifier>:<YYYY-MM-DD>` — may be honoured exactly
+once, and a passport (every id under `passport:<nullifier>:`) at most once in
+any `once_per` window (30 days, sliding). A row is the id, the grant's kind
+and when it was granted; nothing that names where the note went.
 
-The table keeps its original name from the AdMob era, when the ids were SSV
-transaction ids, and its address column from the device-attestation grants;
-renaming either would drop the history the daily cap counts. The address
-column now holds a grant's *kind* and nothing else: '' for a first
-registration, 'switch' for a passport already registered moving to a new
-identity (public on chain anyway). Each kind has its own daily cap, so
+Table and column names are historical (`used_transactions`, `address`) and
+kept so an existing STATE_DB keeps the history its 30-day window and daily
+caps count. `address` holds the grant's kind and nothing else: '' for a
+first registration, 'switch' for a passport already registered moving to a
+new identity (public on chain anyway). Each kind has its own daily cap, so
 switches cannot spend the cap new registrants need (audit-4 B4).
 """
 import sqlite3
@@ -150,7 +144,7 @@ def release(transaction_id: str) -> None:
     """Gives a claimed id back, for when the grant itself failed.
 
     Without this a failed send would still count against the daily limit, and
-    the passport could not try again this month.
+    the passport could not try again for 30 days.
     """
     with _lock:
         _db().execute("DELETE FROM used_transactions WHERE transaction_id = ?", (transaction_id,))
