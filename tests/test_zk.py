@@ -8,7 +8,9 @@ poseidon2_test.go pins to @zkpassport/poseidon2 (== the Noir circuits).
 import json
 import os
 
-from services.zk import indexed, merkle, poseidon2, privacy
+import pytest
+
+from services.zk import debt, indexed, merkle, poseidon2, privacy
 
 VEC = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "privacy", "zk_vectors.json")))
 
@@ -99,6 +101,12 @@ def test_stake_commitments_and_tree():
     assert hx(spc) == VEC["stake_pc"]
     d = VEC["stake_cm_derth"]
     assert hx(privacy.stake_cm(privacy.asset_id(d["denom"]), int(d["amount"]), spc)) == d["cm"]
+    # The slash label (chain dff3a9b): StakeCM's fifth input.
+    v = VEC["stake_label"]
+    label = privacy.stake_label(int(v["move_key"], 16), int(v["move_time"]), int(v["exposed"]))
+    assert hx(label) == v["label"]
+    d = VEC["stake_cm_labelled"]
+    assert hx(privacy.stake_cm(privacy.asset_id(d["denom"]), int(d["amount"]), spc, label)) == d["cm"]
     t = merkle.SparseTree()
     for i, want in enumerate(VEC["stake_roots"]):
         cm = privacy.stake_cm(privacy.asset_id(VEC["asset_long"]["denom"]), 10 + i, privacy.stake_pc(700 + i, 800 + i, 900 + i))
@@ -163,3 +171,31 @@ def test_stake_nullifier_tree_refuses_zero_repeats_and_non_canonical():
     for bad in (0, 5, poseidon2.P):
         with pytest.raises(ValueError):
             t.insert(bad)
+
+
+def test_debt_tags_match_the_circuits():
+    # zk/privacy/privacy.go: TAG_SLABEL "earth.slabel", TAG_DEBTL "earth.debtl".
+    assert privacy.TAG_SLABEL == int.from_bytes(b"earth.slabel", "big")
+    assert privacy.TAG_DEBTL == int.from_bytes(b"earth.debtl", "big")
+
+
+def test_debt_tree_matches_go():
+    # zk/debt TestNoirParity pins DebtLeaf(1, 2, 3, 4) and EmptyRoot.
+    assert hx(privacy.debt_leaf(1, 2, 3, 4)) == VEC["debt_leaf_1_2_3_4"] == \
+        "0b28cc858d976ddad0ede75ca9538f9b5ab36538964f6e241b8e89be2711e82a"
+    assert hx(debt.EMPTY_ROOT) == VEC["debt_empty_root"] == \
+        "0cea3d3e26cd2710109d7cbff5bf48570ba54332f812d538893f0958007f6903"
+    t = debt.DebtTree()
+    assert t.size == 0 and t.root() == debt.EMPTY_ROOT
+    for key, retained, idx, root in VEC["debt_sets"]:
+        assert t.set(int(key, 16), int(retained)) == int(idx)
+        assert hx(t.root()) == root
+    # The last set rewrote the first row: no leaf appended.
+    assert t.size == 7
+
+
+def test_debt_tree_refuses_bad_rows():
+    t = debt.DebtTree()
+    for key, retained in ((0, 1), (debt.P, 1), (1, -1), (1, 1 << 64)):
+        with pytest.raises(ValueError):
+            t.set(key, retained)

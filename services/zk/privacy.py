@@ -23,6 +23,8 @@ TAG_BYTES = tag("earth.bytes")
 TAG_SNFL = tag("earth.snfl")
 TAG_AFFILIATE = tag("earth.affiliate")
 TAG_REFERRAL = tag("earth.referral")
+TAG_SLABEL = tag("earth.slabel")
+TAG_DEBTL = tag("earth.debtl")
 
 
 def H(*xs: int) -> int:
@@ -86,9 +88,23 @@ def stake_pc(owner: int, rho: int, rcm: int) -> int:
     return H(TAG_SPC, owner, rho, rcm)
 
 
-def stake_cm(asset: int, amount: int, spc: int) -> int:
-    """privacy.StakeCM: a stake tree leaf, asset = asset_id(derth/<valoper>)."""
-    return H(TAG_STAKE, asset, amount, spc)
+def stake_cm(asset: int, amount: int, spc: int, label: int = 0) -> int:
+    """privacy.StakeCM: a stake tree leaf, H(TAG_STAKE, asset, amount, spc,
+    label), asset = asset_id(derth/<valoper>), label 0 or stake_label(...)
+    (chain dff3a9b)."""
+    return H(TAG_STAKE, asset, amount, spc, label)
+
+
+def stake_label(move_key: int, move_time: int, exposed: int) -> int:
+    """privacy.StakeLabel: a stake note's slash label, H(TAG_SLABEL, move_key,
+    move_time, exposed)."""
+    return H(TAG_SLABEL, move_key, move_time, exposed)
+
+
+def debt_leaf(key: int, next_key: int, next_index: int, retained: int) -> int:
+    """privacy.DebtLeaf: a leaf of the slash debt indexed tree, H(TAG_DEBTL,
+    key, next_key, next_index, retained)."""
+    return H(TAG_DEBTL, key, next_key, next_index, retained)
 
 
 def bytes_field(b: bytes) -> int:

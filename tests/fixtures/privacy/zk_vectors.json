@@ -6,6 +6,52 @@
     "asset_uanml": "09a93f6121b300558b4d5c25855dd2470350918a1ae536d72ee5851df5e8914f",
     "asset_uerth": "0ad44a14c7205c61e39db2c64b79005ffb14a2a927977e8cda2208be2e3fe54c",
     "cm_uerth_100000": "10d98f1fc9464ef1e5a78c0d5cdd6687b208fa74bd43a3f2da019aef85345ad1",
+    "debt_empty_root": "0cea3d3e26cd2710109d7cbff5bf48570ba54332f812d538893f0958007f6903",
+    "debt_leaf_1_2_3_4": "0b28cc858d976ddad0ede75ca9538f9b5ab36538964f6e241b8e89be2711e82a",
+    "debt_sets": [
+        [
+            "252831f5643310df97b61d0de9826f2b241a6f89ec614aa26d8c38cee7b430f3",
+            "1000",
+            "1",
+            "16341e1db6e5cef70fd8a0a6588ea753ebf8cb324750d265d9d4a331caf2c909"
+        ],
+        [
+            "0000000000000000000000000000000000000000000000000000000000000059",
+            "2000",
+            "2",
+            "137970fc799555a9b80497bdaadd216f24ea8f166bed1184e60c9e2135df0f74"
+        ],
+        [
+            "0000000000000000000000000000000000000000000000000010000000000000",
+            "3000",
+            "3",
+            "114e30196f7dbdc39f5f440e979a3de27221ada532ebb028cd571bed85069592"
+        ],
+        [
+            "0c45ba37f2785d16cd72a66092f78f7cfb7fce35bfdb8c93bb8176215717b6c0",
+            "4000",
+            "4",
+            "11b86ab37d4e4b928720952ce0ff04b32e729676d35c493b7fb3d7490587d6f9"
+        ],
+        [
+            "0000000000000000000000000000000000000000000000000000000000000056",
+            "5000",
+            "5",
+            "2b916ea0b8609952da5cad8fa6d6494b8aa9fab0770fbb5c6b1de7a02099d847"
+        ],
+        [
+            "0000000000000000000000000000000000000000000000000080000000000000",
+            "6000",
+            "6",
+            "070189b1c86d0efc6e0ccdd2907c95aa0be7df9abb0427bd0a98990385d40026"
+        ],
+        [
+            "252831f5643310df97b61d0de9826f2b241a6f89ec614aa26d8c38cee7b430f3",
+            "1",
+            "1",
+            "116d398232d12dc90d45cb46cd7ccc462574c42db16aad1dfcb7d3c4ad384798"
+        ]
+    ],
     "handles_query": {
         "address": "erthz1qy4s66v0wxsklwjt0svyufm5p7lmgwc9umuv4e6ezthrn7a7y9625qgzqvzq2ps8pqys5zcvp58q7yq3zgf3g9gkzuvpjxsmrsw3u8eqrkj3pa",
         "entries": [
@@ -119,21 +165,32 @@
     },
     "stake_cm_derth": {
         "amount": "250000",
-        "cm": "1c97851ac5c49ddce81abc69c9c5d8257f6884df0d58216defd063c54014dbf9",
+        "cm": "29143e80ca19c58adfc30c2e2035a67ac2eaf2a56aa3c3932f0fb6b362d9f872",
+        "denom": "derth/earthvaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+    },
+    "stake_cm_labelled": {
+        "amount": "250000",
+        "cm": "2c8d441ecda7181d3fccd22a7d8c8f03c34c50dcc664a056ce61fd2d75af2c0a",
         "denom": "derth/earthvaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
     },
     "stake_cms": [
-        "212085c094f71d7f8624ad49307345b942be3a7b37fc39db95761c3f8939ffcd",
-        "0936b26a17107b2bf9b54b63c17cad0a4636089c9c546844ca37e8c38873c87f",
-        "11d913f78e9c094e69c071fb4d6c9e2a319eb5160d6e65f030d64ec0d7c9f2b5",
-        "0fd6ee370c6471dc43b3819c00bd692f4221fafaea05f290bd0abf9215093191"
+        "1ad6c90f1badf48af5e9091cc62cf36d9bfae497f37420d4892e098803a08882",
+        "0fa2d34c18c896d9b3d3aee99be097e88db2beb35343775e1748fd3b572c1a41",
+        "1bdf04482ee9fc193a25dba468ae06c92e543f03a329631e743ca8ccfb4e797e",
+        "0e3d199bc495120baec0e162107267a2dab9170a3857478f8b354d41226cc6ae"
     ],
+    "stake_label": {
+        "exposed": "200",
+        "label": "2dfbc154973d1d3ec6e03137ba41b5c2cf5119f66cc69e3e58c033a77c80a881",
+        "move_key": "0000000000000000000000000000000000000000000000000000000000004d4b",
+        "move_time": "1000"
+    },
     "stake_pc": "197df72198542b1708bf8c63623cf0e1e1fa596da7d0481e42ac8917989d8e9a",
     "stake_roots": [
-        "018607267a5bcee192221f250e2b9f5386b05cf61404fe7795b2bba92b70247d",
-        "0c5740ca3d4a08864ff72d9060afaa8ad8c5073e1fe13c188e4e795474adae63",
-        "091fe3a3d04e70025172231ce12b82b18de2b975140e582aabb6e036f60ed0df",
-        "2c12509b4fe147cbc9d43ef6d9f1024ea2d690602191914105cfd4b988c68b6b"
+        "06138ca755d740d2d66ae5b3506795074beca0c839832a38044d9713eef6f513",
+        "016049d85e17778086e2307135a80ac3531d8db04a7439339e29a1bece2c5b55",
+        "0a04a499d09b6079fec5b28d416e4f68fb841b0f949087909830510492f6f0ae",
+        "2a69d6dbe49685e1f77f301fe7d6f5eda98131c79d4032a869acc14f1c445127"
     ],
     "zero32": "0b59baa35b9dc267744f0ccb4e3b0255c1fc512460d91130c6bc19fb2668568d"
 }

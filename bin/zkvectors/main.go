@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strconv"
 
 	"cosmossdk.io/math"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	personhoodtypes "github.com/earth-network/earth/x/personhood/types"
 	shieldedtypes "github.com/earth-network/earth/x/shielded/types"
+	"github.com/earth-network/earth/zk/debt"
 	"github.com/earth-network/earth/zk/indexed"
 	"github.com/earth-network/earth/zk/merkle"
 	"github.com/earth-network/earth/zk/poseidon2"
@@ -70,11 +72,16 @@ func main() {
 	// x/shieldedstaking's stake tree holds them.
 	spc := privacy.StakePC(privacy.OwnerPK(u(42)), u(7), u(9))
 	out["stake_pc"] = hx(spc)
-	out["stake_cm_derth"] = map[string]string{"denom": long, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(long), 250000, spc))}
+	// StakeCM carries the slash label (chain dff3a9b): 0 for an unlabelled
+	// note, else StakeLabel(move_key, move_time, exposed).
+	out["stake_cm_derth"] = map[string]string{"denom": long, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(long), 250000, spc, fr.Element{}))}
+	label := privacy.StakeLabel(u(0x4d4b), 1000, 200)
+	out["stake_label"] = map[string]string{"move_key": hx(u(0x4d4b)), "move_time": "1000", "exposed": "200", "label": hx(label)}
+	out["stake_cm_labelled"] = map[string]string{"denom": long, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(long), 250000, spc, label))}
 	st := merkle.NewMem()
 	var scms, sroots []string
 	for i := uint64(0); i < 4; i++ {
-		cm := privacy.StakeCM(privacy.AssetID(long), 10+i, privacy.StakePC(u(700+i), u(800+i), u(900+i)))
+		cm := privacy.StakeCM(privacy.AssetID(long), 10+i, privacy.StakePC(u(700+i), u(800+i), u(900+i)), fr.Element{})
 		st.Append(cm)
 		scms = append(scms, hx(cm))
 		r, _ := st.Root()
@@ -111,6 +118,35 @@ func main() {
 	}
 	out["nf_values"] = nfs
 	out["nf_roots"] = nfroots
+
+	// The slash debt tree (zk/debt): DebtLeaf, the empty root, and the root
+	// after each Set of a sequence of rows: new keys in an order neither
+	// sorted nor reversed, then a row rewritten (its retained falls).
+	out["debt_leaf_1_2_3_4"] = hx(privacy.DebtLeaf(u(1), u(2), 3, 4))
+	out["debt_empty_root"] = hx(debt.EmptyRoot)
+	dt := debt.NewMem()
+	var dsets [][]string
+	for i := uint64(0); i < 7; i++ {
+		var k fr.Element
+		retained := 1000 * (i + 1)
+		switch {
+		case i == 6:
+			k, retained = privacy.H(u(2000)), 1 // rewrites the first row
+		case i%3 == 0:
+			k = privacy.H(u(2000 + i))
+		case i%3 == 1:
+			k = u(90 - i)
+		default:
+			k = u(1 << (50 + i))
+		}
+		idx, err := dt.Set(k, retained)
+		if err != nil {
+			panic(err)
+		}
+		r, _ := dt.Root()
+		dsets = append(dsets, []string{hx(k), strconv.FormatUint(retained, 10), strconv.FormatUint(idx, 10), hx(r)})
+	}
+	out["debt_sets"] = dsets
 
 	// The registration binding: the passport proof's address input, as
 	// personhood's MsgRegister.Binding computes it (affiliate 0 for none, else
