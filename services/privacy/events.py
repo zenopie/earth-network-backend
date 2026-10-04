@@ -19,7 +19,18 @@ x/shieldedstaking/keeper/stake_tree.go):
                          pc and cm. A split payout (MintNoteSplit: an LP
                          payout leg above 2^64-1) is several notes, each its
                          own shielded_note + shielded_mint at its own
-                         position, all with the same ciphertext.
+                         position, all with the same ciphertext. An
+                         undelegation's payout (x/shieldedstaking, module
+                         "shieldedstaking", EndBlock) is such a mint, split
+                         or not: its notes are ordinary rows of the note
+                         stream, with the undelegate msg's ciphertext.
+    shieldedstaking_unbond_payout
+                         payout_id, validator, epoch, value, amount (uerth,
+                         an integer), notes, positions (comma-separated,
+                         "" when the amount is 0): after its mints. Checked
+                         to name exactly the shieldedstaking mints of this
+                         block at those positions, one ciphertext, amounts
+                         summing to amount (nothing about it is stored)
     register             nullifier, leaf_index, reward, switched, and for a
                          referred registration handle, referral (amount)
                          and, when the referral was paid, referral_position:
@@ -41,8 +52,9 @@ x/shieldedstaking/keeper/stake_tree.go):
     shieldedstaking_epoch            epoch (the one that just ended)
 
 The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
-tree of owner-locked derth/<valoper> and unbond/<valoper>/<epoch> notes, its
-own nullifier set and roots):
+tree of owner-locked derth/<valoper> notes, its own nullifier set and roots;
+since chain 48b631c an undelegation mints no stake note, its payout is pool
+notes, above):
 
     shieldedstaking_stake_note       position_id, commitment (hex), ciphertext
                                      (base64), and for a note the chain minted
@@ -65,18 +77,19 @@ The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
 rebuild it from the nullifiers in index order; the store refuses an index
 that is not exactly the next one.
 
-Most stake notes and nullifiers are written by the msg, so a failed staking
-msg leaves none of them. A claim (MsgClaimUnbonding) runs in the private ante
-(it pays its fee from what it claims): its nullifiers and its change note
-persist, and their events are in the tx result, even when the tx then fails.
-Every tx is read whatever its code (below), so both cases come out right.
+Stake notes and nullifiers are written by the msg, so a failed staking msg
+leaves none of them (only its fee bundle's pool events, from the ante; see
+"Failed txs" below).
 
 Not read, because they change no tree and no rate a wallet derives:
 shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
 (private LP shares are ordinary shielded_note events; add/remove/complete
-liquidity events name no provider), shieldedstaking_delegate / _undelegate /
-_claim / _position / _stake_vote (its vote_nullifier is per proposal and
-spends nothing) / _matured and
+liquidity events name no provider), shieldedstaking_delegate / _undelegate
+(validator, derth, value, epoch, payout_id) / _position / _matured
+(validator, epoch, value, payout) / _unbond_payout_failed (payout_id,
+validator, epoch, attempts, retry_at, error: kept and retried, nothing
+minted) / _stake_vote (vote_nullifiers: the used slots' vote nullifiers,
+comma-separated hex; per proposal, they spend nothing and are in no tree) and
 shieldedstaking_self_bond_compounded (an operator's own SDK self-bond grows;
 derth rates come from shieldedstaking_epoch_validator as before).
 
@@ -97,6 +110,7 @@ every tx result describes state that persisted, whatever the code, and every
 tx is read regardless of its code.
 """
 import base64
+import re
 from dataclasses import dataclass, field
 
 ZERO32 = bytes(32)
@@ -124,6 +138,14 @@ class Referral:
     """A register event's paid referral: where the note is and its amount."""
     position: int
     amount: int
+
+
+@dataclass
+class UnbondPayout:
+    """A shieldedstaking_unbond_payout event, checked against its mints."""
+    payout_id: int
+    amount: int
+    positions: list[int]
 
 
 @dataclass
@@ -195,6 +217,8 @@ class BlockDelta:
     handles_changed: bool = False
     # Paid referrals (register events), checked against the open notes.
     referrals: list[Referral] = field(default_factory=list)
+    # Undelegation payouts, checked against their shieldedstaking mints.
+    payouts: list[UnbondPayout] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -268,6 +292,7 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
         raise EventError(f"block_results for height {results.get('height')}, asked {height}")
     d = BlockDelta(height=height, time=time, hash=block_hash)
     notes_by_pos: dict[int, Note] = {}
+    mint_module: dict[int, str] = {}  # position -> shielded_mint module
     pending_rates: list[Rate] = []
     for ev in ordered_events(results):
         t = ev.get("type")
@@ -283,6 +308,8 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             if n is None:
                 raise EventError(f"{t} names position {a.get('position')}, not a note of this block")
             n.amount = a.get("amount") or None
+            if t == "shielded_mint":
+                mint_module[n.position] = a.get("module", "")
             if "ciphertext" in a and _b64(a["ciphertext"], f"{t} ciphertext") != n.ciphertext:
                 raise EventError(f"{t} at position {n.position}: ciphertext differs from its shielded_note's")
             if t == "shielded_mint" and ("owner_pk" in a or "rho" in a or "rcm" in a):
@@ -296,6 +323,8 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             if "referral_position" in a:
                 d.referrals.append(Referral(_int(a["referral_position"], "register referral_position"),
                                             _int(a.get("referral"), "register referral")))
+        elif t == "shieldedstaking_unbond_payout":
+            d.payouts.append(_unbond_payout(_attrs(ev)))
         elif t == "shielded_nullifier":
             d.nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shielded_nullifier"))
         elif t == "shielded_root":
@@ -368,7 +397,53 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             raise EventError(f"register names referral_position {r.position}, not an open note of this block")
         if n.amount is None or _amount_value(n.amount) != r.amount:
             raise EventError(f"register referral {r.amount} differs from the note at {r.position} ({n.amount})")
+    paid: set[int] = set()
+    for p in d.payouts:
+        _check_payout(p, notes_by_pos, mint_module, paid)
     return d
+
+
+PAYOUT_MODULE = "shieldedstaking"
+PAYOUT_DENOM = "uerth"
+
+
+def _unbond_payout(a: dict[str, str]) -> UnbondPayout:
+    w = "shieldedstaking_unbond_payout"
+    p = UnbondPayout(_int(a.get("payout_id"), f"{w} payout_id"), _int(a.get("amount"), f"{w} amount"),
+                     [_int(x, f"{w} positions") for x in a["positions"].split(",")] if a.get("positions") else [])
+    if _int(a.get("notes"), f"{w} notes") != len(p.positions):
+        raise EventError(f"{w} {p.payout_id}: notes {a.get('notes')}, {len(p.positions)} positions")
+    if len(set(p.positions)) != len(p.positions):
+        raise EventError(f"{w} {p.payout_id}: a position twice")
+    if (p.amount == 0) != (not p.positions):
+        raise EventError(f"{w} {p.payout_id}: amount {p.amount} in {len(p.positions)} notes")
+    return p
+
+
+def _check_payout(p: UnbondPayout, notes_by_pos: dict[int, Note], mint_module: dict[int, str], paid: set[int]) -> None:
+    """A payout's positions are its own shieldedstaking mints of this block:
+    plain notes (no opening) with one ciphertext and uerth amounts summing to
+    the payout's amount (a split payout is several of them)."""
+    w = f"shieldedstaking_unbond_payout {p.payout_id}"
+    total, cts = 0, set()
+    for pos in p.positions:
+        n = notes_by_pos.get(pos)
+        if n is None or mint_module.get(pos) != PAYOUT_MODULE:
+            raise EventError(f"{w} names position {pos}, not a {PAYOUT_MODULE} mint of this block")
+        if pos in paid:
+            raise EventError(f"{w}: position {pos} is another payout's")
+        paid.add(pos)
+        if n.owner_pk is not None or not n.ciphertext:
+            raise EventError(f"{w}: the note at {pos} has no ciphertext")
+        m = re.fullmatch(r"(\d+)" + PAYOUT_DENOM, n.amount or "")
+        if m is None:
+            raise EventError(f"{w}: the note at {pos} is {n.amount}, not {PAYOUT_DENOM}")
+        total += int(m.group(1))
+        cts.add(n.ciphertext)
+    if len(cts) > 1:
+        raise EventError(f"{w}: its notes' ciphertexts differ")
+    if total != p.amount:
+        raise EventError(f"{w}: amount {p.amount}, its notes hold {total}")
 
 
 def _amount_value(coin: str) -> int | None:
