@@ -61,6 +61,32 @@ def test_every_recorded_page_is_well_formed():
         recorded(b)  # raises Malformed otherwise
 
 
+def test_recorded_owners_are_the_handle_events_owners():
+    """Every claimed handle in the chain's directory names, as owner, the
+    owner its latest handle_bound / handle_moved event carried (chain audit
+    round 6); handle_moved's previous_owner is the owner before it."""
+    from services.privacy.events import ordered_events
+
+    owners, seen = {}, 0
+    for b in load(SCENARIO)["blocks"]:
+        for ev in ordered_events(b["block_results"]):
+            if ev["type"] not in handles.EVENTS:
+                continue
+            a = {x["key"]: x["value"] for x in ev["attributes"]}
+            assert len(a["owner"]) == 64 and a["owner"] == a["owner"].lower()
+            if ev["type"] == "handle_moved":
+                assert a["previous_owner"] == owners[a["handle"]] != a["owner"]
+            if ev["type"] == "handle_released":
+                owners.pop(a["handle"], None)
+            else:
+                owners[a["handle"]] = a["owner"]
+        for e in recorded(b):
+            if e.owner:
+                assert e.owner == owners[e.handle], (b["height"], e.handle)
+                seen += 1
+    assert seen
+
+
 @pytest.mark.parametrize("bad", [
     {"handle": "Bob"}, {"handle": "-ab"}, {"handle": "ab"}, {"handle": "a" * 33},
     {"status": "expired"}, {"address": "earth1abcdefgh"}, {"address": ""},
