@@ -46,6 +46,8 @@ def test_commitments_and_leaves():
     # predecessor_at (the switch or re-entry that made the leaf) is in it.
     pred = privacy.identity_leaf(privacy.idc(11), 12, privacy.country_field("DE"), 1700000000, 1690000000)
     assert hx(pred) == VEC["identity_leaf_DE_pred"] != VEC["identity_leaf_DE"]
+    assert privacy.TAG_SUCC == 0x65617274682e73756363
+    assert hx(privacy.succession_leaf(privacy.idc(11), privacy.idc(21))) == VEC["succession_leaf"]
     assert privacy.country_field("DE") == 0x4445
     assert privacy.country_field("de") == 0 and privacy.country_field("") == 0
 

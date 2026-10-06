@@ -1,6 +1,6 @@
 """The chain's domain-tagged derivations (zk/privacy), as far as the backend needs
 them: field encodings, the registration binding, note and stake commitments,
-identity, nullifier-tree and debt-tree leaves. Every function must match its
+identity, succession, nullifier-tree and debt-tree leaves. Every function must match its
 Go twin exactly; tests/test_zk.py pins them to vectors produced by the Go
 code.
 """
@@ -26,6 +26,7 @@ TAG_AFFILIATE = tag("earth.affiliate")
 TAG_REFERRAL = tag("earth.referral")
 TAG_SLABEL = tag("earth.slabel")
 TAG_DEBTL = tag("earth.debtl")
+TAG_SUCC = tag("earth.succ")
 
 
 def H(*xs: int) -> int:
@@ -82,6 +83,14 @@ def identity_leaf(idc_: int, dsc_key: int, country: int, activated_at: int, pred
     predecessor_at). predecessor_at is the time of the switch or re-entry that
     made the leaf, 0 for a passport never registered before."""
     return H(TAG_LEAF, idc_, dsc_key, country, activated_at, predecessor_at)
+
+
+def succession_leaf(idc_old: int, idc_new: int) -> int:
+    """privacy.SuccessionLeaf: H(TAG_SUCC, idc_old, idc_new), the identity-tree
+    leaf the chain appends right after idc_new's identity leaf when a passport
+    last registered to idc_old registers to idc_new (a switch or a re-entry).
+    A move proof (circuits/move) runs along it; it is never zeroed."""
+    return H(TAG_SUCC, idc_old, idc_new)
 
 
 def stake_pc(owner: int, rho: int, rcm: int) -> int:

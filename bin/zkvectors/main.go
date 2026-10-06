@@ -39,6 +39,7 @@ func main() {
 	out["cm_uerth_100000"] = hx(privacy.CM(privacy.AssetID("uerth"), 100000, pc))
 	out["identity_leaf_DE"] = hx(privacy.IdentityLeaf(privacy.IDC(u(11)), u(12), privacy.CountryField("DE"), 1700000000, 0))
 	out["identity_leaf_DE_pred"] = hx(privacy.IdentityLeaf(privacy.IDC(u(11)), u(12), privacy.CountryField("DE"), 1700000000, 1690000000))
+	out["succession_leaf"] = hx(privacy.SuccessionLeaf(privacy.IDC(u(11)), privacy.IDC(u(21))))
 
 	// note tree: 5 cms derived deterministically
 	nt := merkle.NewMem()
