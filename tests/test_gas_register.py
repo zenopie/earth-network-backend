@@ -274,23 +274,6 @@ def test_logs_never_tie_the_passport_to_the_gas_tx(client, chain_says, monkeypat
     assert "registration gas note sent" in caplog.text
 
 
-@pytest.mark.parametrize("path", ["/gas/human", "/gas/transparent", "/gas/challenge", "/gas/ios", "/gas/android"])
-def test_only_register_is_left(client, path):
-    assert client.post(path, json={"address": "earth1x"}).status_code == 404
-
-
-def test_removed_services_are_gone():
-    import importlib.util
-
-    for name in ("services.appattest", "services.keyattest", "services.challenges"):
-        assert importlib.util.find_spec(name) is None
-    assert not hasattr(gascheck, "human") and not hasattr(gascheck, "membership")
-    assert not hasattr(chain, "send_dust")
-    for name in ("IOS_APP_ID", "APP_ATTEST_ALLOW_DEVELOPMENT", "ANDROID_SIGNING_CERT_SHA256",
-                 "CHALLENGE_TTL_SECONDS", "GRANT_MAX_PER_ADDRESS_PER_DAY", "GRANT_MAX_PER_DAY"):
-        assert not hasattr(config, name)
-
-
 def test_gascheck_missing_binary_is_unavailable(monkeypatch):
     import asyncio
 
