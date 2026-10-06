@@ -111,6 +111,14 @@ for i, arg in enumerate(cmd):
     if arg in ("--loglevel", "--transport-loglevel") or arg.startswith(("--loglevel=", "--transport-loglevel=")):
         lvl = arg.split("=", 1)[1] if "=" in arg else (cmd[i + 1] if i + 1 < len(cmd) else "")
         assert lvl not in ("debug", "trace"), "cloudflared %s %s logs client requests" % (arg, lvl)
+    assert not (arg in ("--logfile", "--log-directory") or arg.startswith(("--logfile=", "--log-directory="))), (
+        "cloudflared %s writes logs to disk (NO_LOGS.md)" % arg)
+# cloudflared also reads each flag from a TUNNEL_* env var, which the command
+# checks above never see; the command is the one place these are set.
+for k in sorted(envmap("cloudflared")):
+    assert k not in ("TUNNEL_LOGLEVEL", "TUNNEL_TRANSPORT_LOGLEVEL", "TUNNEL_LOGFILE", "TUNNEL_LOGDIRECTORY",
+                     "TUNNEL_METRICS"), (
+        "cloudflared env %s is refused: set it in command, where it is checked" % k)
 
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
