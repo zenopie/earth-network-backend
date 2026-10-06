@@ -699,6 +699,30 @@ opening; and, unless `--no-chain`, the rebuilt trees against the chain's own
 queries (the debt tree row by row) at the synced height. Exit 0 all match, 1
 mismatch, 2 the chain could not be asked.
 
+## No logs
+
+The deploy repo's `NO_LOGS.md` is the policy; this service's part of it:
+
+- **No access log.** uvicorn runs with `--no-access-log` and `--no-proxy-headers`
+  (`entrypoint.py`); nothing logs a request line, a client address or a body. httpx
+  (the service's own calls to the chain) logs at WARNING only.
+- **What the gas grant logs**: the refusal *kind* ("invalid proof", "daily cap"),
+  "registration gas note sent", and coarse errors with hex and long decimal runs cut
+  out (`_coarse`). Never a passport nullifier, a handle, a country, a tx hash, an
+  address, or a client IP, and never two of them together.
+- **Rate limiting** (`services/ratelimit.py`) keeps in-memory counters keyed by the
+  client's IPv4 address or IPv6 prefix, nothing else: dropped two windows after the
+  client's last request (2 h for `/gas/register`, 2 min for `/privacy` at the
+  defaults), and on every restart. Never written to disk.
+- **Proof-of-work stamps** (`services/pow.py`): in memory, the stamp digest only,
+  until it expires (2 × `POW_MAX_AGE_SECONDS`).
+- **The replay database** (`STATE_DB`) is the one thing kept on disk about a
+  registrant: `passport:<nullifier>:<day>`, the grant kind and the time, for 31 days,
+  because the once-per-passport and daily caps need it. The nullifier is public on
+  chain in the registration itself. No IP, address, pc or tx hash is stored with it.
+- cloudflared runs at `--loglevel info` (connector state only); `bin/build-sdl.py`
+  refuses debug or trace, which log request headers including `CF-Connecting-IP`.
+
 ## Deploy
 
 The service runs on Akash behind a Cloudflare tunnel (`api.erth.network`);

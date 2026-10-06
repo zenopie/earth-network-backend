@@ -3,7 +3,14 @@
 `earthd gas-check` runs one at a time (gascheck: ~120 MB a proof on a 256 MiB
 lease), so without bounds one script could hold the queue and every real
 registrant would wait behind its junk or be refused. All of it in memory (one
-replica; a restart forgets it, which only loosens the limits for a while).
+replica; a restart forgets it, which only loosens the limits for a while), never
+written to disk or logged, and pruned: a client's entry (keyed by its IPv4
+address or IPv6 prefix) is dropped two windows after its last request, so at
+most 2 h for /gas/register (REGISTER_IP_WINDOW_SECONDS,
+REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS) and 2 min for /privacy
+(PRIVACY_IP_WINDOW_SECONDS) at the defaults. No entry holds a passport
+nullifier, handle or address beside the client key (NO_LOGS.md in the deploy
+repo).
 
 The client is a network, not an address: an IPv4 /32, or the IPv6 prefix of
 REGISTER_IPV6_PREFIX bits (default /48: a VPS host routinely hands one
@@ -143,8 +150,22 @@ def _estimate(prev: int, cur: int, now: float, window: float) -> float:
     return prev * overlap + cur
 
 
+def _prune(table: OrderedDict, now: float, window: float) -> None:
+    """Drops entries whose counts have fully rolled out (last touched two or more
+    windows ago). The table is least recently touched first, so this stops at the
+    first live entry. Retention (NO_LOGS policy): a client key -- derived from its
+    IP -- is held in memory at most two windows after its last request."""
+    idx = int(now // window)
+    while table:
+        key, entry = next(iter(table.items()))
+        if entry >> 32 >= idx - 1:
+            return
+        table.popitem(last=False)
+
+
 def _allow(table: OrderedDict, key, now: float | None, limit: int, window: float, tracked: int) -> bool:
     now = time.monotonic() if now is None else now
+    _prune(table, now, window)
     entry = table.pop(key, 0)
     idx, prev, cur = _count(entry, now, window)
     ok = _estimate(prev, cur, now, window) < limit
@@ -173,6 +194,7 @@ def allow_privacy(key, now: float | None = None) -> bool:
 
 
 def _bump(table: OrderedDict, key, now: float, window: float, tracked: int) -> None:
+    _prune(table, now, window)
     idx, prev, cur = _count(table.pop(key, 0), now, window)
     table[key] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
     while len(table) > tracked:

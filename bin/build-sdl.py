@@ -105,6 +105,13 @@ for i, arg in enumerate(cmd):
         assert addr.startswith("127.0.0.1:") or addr.startswith("localhost:"), (
             "cloudflared --metrics %s is not loopback: it serves pprof and /config" % addr)
 
+# NO_LOGS: cloudflared at debug/trace logs every request's headers
+# (CF-Connecting-IP included).
+for i, arg in enumerate(cmd):
+    if arg in ("--loglevel", "--transport-loglevel") or arg.startswith(("--loglevel=", "--transport-loglevel=")):
+        lvl = arg.split("=", 1)[1] if "=" in arg else (cmd[i + 1] if i + 1 < len(cmd) else "")
+        assert lvl not in ("debug", "trace"), "cloudflared %s %s logs client requests" % (arg, lvl)
+
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
 assert int(a.get("DUST_UERTH", "0")) > 0, "DUST_UERTH must be positive"
 

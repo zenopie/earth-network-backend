@@ -587,7 +587,9 @@ async def _grant_note(grant_id: str, key_prefix: str, pc: bytes, ciphertext: byt
         # mempool will land, and releasing would let it be paid twice. The
         # app holds the hash and can watch for it; this side keeps no record
         # that ties it to the passport.
-        logger.error("gas note shield is unresolved: %s", exc)
+        # _coarse: the exception names the tx hash, and a log line naming the
+        # shield's tx when a passport checked out ties the two (see below).
+        logger.error("gas note shield is unresolved: %s", _coarse(exc))
         return _reply(202, "pending", "gas is on its way", tx_hash=exc.tx_hash)
     except Exception as exc:
         # chain.shield_dust raises an ordinary exception only when the tx

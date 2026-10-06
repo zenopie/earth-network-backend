@@ -149,6 +149,11 @@ services:
       # request goes through. Check connector health in the lease logs.
       - --metrics
       - 127.0.0.1:2000
+      # NO_LOGS (deploy repo NO_LOGS.md): info logs connector state only. At
+      # debug cloudflared logs each request with its headers, CF-Connecting-IP
+      # included; bin/build-sdl.py refuses debug or trace.
+      - --loglevel
+      - info
       - run
 
     # Akash rejects a manifest with "zero global services", so something must

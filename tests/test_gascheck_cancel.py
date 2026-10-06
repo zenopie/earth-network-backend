@@ -55,3 +55,15 @@ def test_failure_message_is_the_last_stderr_line(tmp_path, monkeypatch):
         assert str(e) == "node status: refused"
     else:
         raise AssertionError("no Unavailable")
+
+
+def test_rate_limit_entries_expire_two_windows_after_last_use():
+    """NO_LOGS: an IP-derived key is not kept past two windows of silence."""
+    from collections import OrderedDict
+    from services import ratelimit
+    t = OrderedDict()
+    assert ratelimit._allow(t, "a", 0.0, 10, 60.0, 100)
+    assert ratelimit._allow(t, "b", 100.0, 10, 60.0, 100)
+    assert "a" in t                      # window 0 is still the previous one at t=100
+    ratelimit._allow(t, "c", 130.0, 10, 60.0, 100)
+    assert "a" not in t and "b" in t     # a: last seen in window 0, now window 2
