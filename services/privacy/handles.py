@@ -25,7 +25,7 @@ consistent state:
 Status is the chain's at the block's time: live while time < expires_at
 (it resolves), renewal until renewal_until (owner only, does not resolve),
 then free until swept. A record changes only with an event
-(a handle_* event: handle_bound, handle_released, which the sweep emits),
+(a handle_* event: handle_bound, handle_moved, handle_released, which the sweep emits),
 and a status only with time, so the indexer refreshes after a block with
 one of those events, once the synced block time reaches the earliest
 expires_at / renewal_until in the snapshot, and at least every

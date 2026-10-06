@@ -66,20 +66,21 @@ def test_every_recorded_page_is_well_formed():
 
 def test_recorded_owners_are_the_handle_events_owners():
     """Every claimed handle in the chain's directory names, as owner, the
-    owner its latest handle_* event carried (chain audit round 6). An event
-    naming a previous_owner (a move, when moves return) names the owner
-    before it."""
+    owner its latest handle_* event carried (chain audit round 6). A
+    handle_moved names the owner before it as previous_owner, and the
+    scenario moves "amy" from A1 to its successor A2."""
     from services.privacy.events import ordered_events
 
-    owners, seen = {}, 0
+    owners, seen, moves = {}, 0, []
     for b in load(SCENARIO)["blocks"]:
         for ev in ordered_events(b["block_results"]):
             if not is_handle_event(ev["type"]):
                 continue
             a = {x["key"]: x["value"] for x in ev["attributes"]}
             assert len(a["owner"]) == 64 and a["owner"] == a["owner"].lower()
-            if "previous_owner" in a:
-                assert a["previous_owner"] == owners[a["handle"]] != a["owner"]
+            if ev["type"] == "handle_moved":
+                assert a["previous_owner"] == owners[a["handle"]] != a["owner"] == a["nullifier"]
+                moves.append(a["handle"])
             if ev["type"] == "handle_released":
                 owners.pop(a["handle"], None)
             else:
@@ -88,21 +89,46 @@ def test_recorded_owners_are_the_handle_events_owners():
             if e.owner:
                 assert e.owner == owners[e.handle], (b["height"], e.handle)
                 seen += 1
-    assert seen
+    assert seen and moves == ["amy"]
+
+
+def _block(ev: dict):
+    from services.privacy.events import parse_block
+    return parse_block(7, 1000, "H", {"height": "7", "txs_results": [{"code": 0, "events": [ev]}]})
+
+
+def _ev(event_type: str, **attrs) -> dict:
+    return {"type": event_type, "attributes": [{"key": k, "value": v} for k, v in attrs.items()]}
 
 
 @pytest.mark.parametrize("event_type,changed", [
     ("handle_bound", True), ("handle_released", True),
-    # Moves were removed in the final-audit fixes and return behind a
-    # same-holder circuit; whatever its event is named, it refreshes.
-    ("handle_moved", True), ("handle_transferred", True),
+    # Any handle_* event refreshes, whatever a later chain names it.
+    ("handle_transferred", True),
     ("set_caretaker", False), ("register", False),
 ])
 def test_any_handle_event_marks_the_directory_changed(event_type, changed):
-    from services.privacy.events import parse_block
-    ev = {"type": event_type, "attributes": [{"key": "handle", "value": "bob"}, {"key": "owner", "value": "ab" * 32}]}
-    d = parse_block(7, 1000, "H", {"height": "7", "txs_results": [{"code": 0, "events": [ev]}]})
-    assert d.handles_changed is changed
+    assert _block(_ev(event_type, handle="bob", owner="ab" * 32)).handles_changed is changed
+
+
+def test_handle_moved_refreshes_and_is_checked():
+    from services.privacy.events import EventError
+    good = dict(handle="amy", nullifier="ab" * 32, owner="ab" * 32, previous_owner="cd" * 32)
+    assert _block(_ev("handle_moved", **good)).handles_changed
+    for bad in ({"previous_owner": "ab" * 32}, {"previous_owner": ""}, {"previous_owner": "cd" * 31},
+                {"nullifier": "ef" * 32}, {"owner": "zz" * 32}):
+        with pytest.raises(EventError):
+            _block(_ev("handle_moved", **{**good, **bad}))
+
+
+def test_move_caretaker_is_checked_and_not_a_handle_change():
+    from services.privacy.events import EventError
+    good = dict(nullifier="ab" * 32, previous_nullifier="cd" * 32, expires_at="1790000000")
+    assert not _block(_ev("move_caretaker", **good)).handles_changed
+    for bad in ({"previous_nullifier": "ab" * 32}, {"previous_nullifier": ""}, {"nullifier": "ab" * 33},
+                {"expires_at": "-1"}, {"expires_at": ""}):
+        with pytest.raises(EventError):
+            _block(_ev("move_caretaker", **{**good, **bad}))
 
 
 @pytest.mark.parametrize("bad", [

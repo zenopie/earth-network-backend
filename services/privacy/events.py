@@ -40,16 +40,22 @@ x/shieldedstaking/keeper/stake_tree.go):
     shielded_root        root (hex), tree_size, height        EndBlock
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
     identity_root        root (hex), tree_size, height        EndBlock
-    handle_*             handle_bound / handle_released today: a handle
-                         directory record changed; each carries owner
+    handle_*             handle_bound / handle_released / handle_moved: a
+                         handle directory record changed; each carries owner
                          (the handle-scope nullifier, hex). Matched by
-                         prefix, so a handle move event (moves were removed
-                         in the final-audit fixes and are to return behind
-                         a same-holder circuit) refreshes the directory
-                         under whatever name it takes. Attributes not read:
-                         the directory, owner included, is re-read whole
-                         from the Handles query (services/privacy/handles),
-                         which is checked there
+                         prefix. The directory, owner included, is re-read
+                         whole from the Handles query
+                         (services/privacy/handles), which is checked there.
+    handle_moved         handle, nullifier, owner, previous_owner (hex): a
+                         move (circuits/move) from an identity to its
+                         successor under the same passport. Checked: owner
+                         and previous_owner 32 bytes and different, nullifier
+                         = owner. Nothing about it is stored beyond the
+                         directory refresh.
+    move_caretaker       nullifier, previous_nullifier (caretaker-scope, hex),
+                         expires_at: a caretaker split's move along the same
+                         succession. Checked the same way; nothing is
+                         stored (the backend serves no caretaker directory).
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
@@ -152,8 +158,8 @@ from dataclasses import dataclass, field
 
 ZERO32 = bytes(32)
 # Every x/personhood handle directory event is "handle_<what>" (handle_bound,
-# handle_released; a move event when moves return). Any of them means the
-# directory changed; nothing else in the chain's events starts this way.
+# handle_released, handle_moved). Any of them means the directory changed;
+# nothing else in the chain's events starts this way.
 HANDLE_EVENT_PREFIX = "handle_"
 
 
@@ -358,6 +364,15 @@ def ordered_events(results: dict) -> list[dict]:
     return before + txs + after
 
 
+def _check_move(a: dict[str, str], what: str, new_key: str, old_key: str) -> None:
+    """A move event names two distinct 32-byte nullifiers: the successor's
+    (new_key) and the moved-out identity's (old_key)."""
+    new = _hex32(a.get(new_key, ""), f"{what} {new_key}")
+    old = _hex32(a.get(old_key, ""), f"{what} {old_key}")
+    if new == old:
+        raise EventError(f"{what}: {new_key} and {old_key} are the same")
+
+
 def parse_block(height: int, time: int, block_hash: str, results: dict) -> BlockDelta:
     if int(results.get("height", height)) != height:
         raise EventError(f"block_results for height {results.get('height')}, asked {height}")
@@ -439,8 +454,18 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             d.identity_root = Root(_hex32(a.get("root", ""), "identity_root"), _int(a.get("tree_size"), "identity_root tree_size"))
             if "height" in a and _int(a["height"], "identity_root height") != height:
                 raise EventError("identity_root height is not the block's")
+        elif t == "handle_moved":
+            a = _attrs(ev)
+            _check_move(a, t, "owner", "previous_owner")
+            if a.get("nullifier") != a.get("owner"):
+                raise EventError("handle_moved: nullifier is not owner")
+            d.handles_changed = True
         elif is_handle_event(t):
             d.handles_changed = True
+        elif t == "move_caretaker":
+            a = _attrs(ev)
+            _check_move(a, t, "nullifier", "previous_nullifier")
+            _int(a.get("expires_at"), "move_caretaker expires_at")
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))
         elif t == "shieldedstaking_stake_nullifier":
