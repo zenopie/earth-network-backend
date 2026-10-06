@@ -7,6 +7,7 @@ values must reach the provider and must not reach the repository:
 
     GAS_WALLET_MNEMONIC   the hot key the dust is sent from — spendable ERTH
     TUNNEL_TOKEN          anyone holding it can attach a replica to the tunnel
+    CHAIN_EDGE_TOKEN      the backend's pass past the node's Cloudflare allowlist
 
 Everything submitted reaches the provider regardless; that is what submitting
 means. What this avoids is them being committed.
@@ -18,6 +19,7 @@ for what cannot be written down.
     bin/build-sdl.py <repo> <out.yaml> <digest>
 """
 import os
+import re
 import sys
 
 repo, out, digest = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -57,6 +59,11 @@ assert len(mn.split()) in (12, 24), "GAS_WALLET_MNEMONIC missing or malformed"
 assert not any(c in mn for c in "\"'"), "mnemonic carries quote characters; BIP39 will reject it"
 assert mn == mn.strip(), "mnemonic has leading/trailing whitespace"
 s = s.replace(anchor, anchor + "      - GAS_WALLET_MNEMONIC=%s\n" % mn)
+# rpc.erth.network refuses JSON-RPC POSTs (gas-check) without it (services/edge).
+edge = env.get("CHAIN_EDGE_TOKEN", "")
+assert re.fullmatch(r"[A-Za-z0-9_-]{32,128}", edge), (
+    "CHAIN_EDGE_TOKEN missing or malformed (32-128 of [A-Za-z0-9_-]); see example.env")
+s = s.replace(anchor, anchor + "      - CHAIN_EDGE_TOKEN=%s\n" % edge)
 
 anchor = "    env: []\n"
 assert s.count(anchor) == 1, "cloudflared env anchor moved"
@@ -106,18 +113,23 @@ for i, arg in enumerate(cmd):
             "cloudflared --metrics %s is not loopback: it serves pprof and /config" % addr)
 
 # NO_LOGS: cloudflared at debug/trace logs every request's headers
-# (CF-Connecting-IP included).
+# (CF-Connecting-IP included). Every spelling cloudflared 2026.9.3 accepts
+# (cmd/cloudflared/cliutil/logger.go): --proto-loglevel is the old name of
+# --transport-loglevel; --trace-output writes a runtime trace to a file; a
+# --config file can set any of them where these checks cannot see.
+LEVEL_FLAGS = ("--loglevel", "--transport-loglevel", "--proto-loglevel")
+FILE_FLAGS = ("--logfile", "--log-directory", "--trace-output", "--config")
 for i, arg in enumerate(cmd):
-    if arg in ("--loglevel", "--transport-loglevel") or arg.startswith(("--loglevel=", "--transport-loglevel=")):
+    if arg in LEVEL_FLAGS or arg.startswith(tuple(f + "=" for f in LEVEL_FLAGS)):
         lvl = arg.split("=", 1)[1] if "=" in arg else (cmd[i + 1] if i + 1 < len(cmd) else "")
         assert lvl not in ("debug", "trace"), "cloudflared %s %s logs client requests" % (arg, lvl)
-    assert not (arg in ("--logfile", "--log-directory") or arg.startswith(("--logfile=", "--log-directory="))), (
-        "cloudflared %s writes logs to disk (NO_LOGS.md)" % arg)
+    assert not (arg in FILE_FLAGS or arg.startswith(tuple(f + "=" for f in FILE_FLAGS))), (
+        "cloudflared %s writes logs, traces or settings to or from disk (NO_LOGS.md)" % arg)
 # cloudflared also reads each flag from a TUNNEL_* env var, which the command
 # checks above never see; the command is the one place these are set.
 for k in sorted(envmap("cloudflared")):
-    assert k not in ("TUNNEL_LOGLEVEL", "TUNNEL_TRANSPORT_LOGLEVEL", "TUNNEL_LOGFILE", "TUNNEL_LOGDIRECTORY",
-                     "TUNNEL_METRICS"), (
+    assert k not in ("TUNNEL_LOGLEVEL", "TUNNEL_TRANSPORT_LOGLEVEL", "TUNNEL_PROTO_LOGLEVEL", "TUNNEL_LOGFILE",
+                     "TUNNEL_LOGDIRECTORY", "TUNNEL_TRACE_OUTPUT", "TUNNEL_METRICS"), (
         "cloudflared env %s is refused: set it in command, where it is checked" % k)
 
 assert a.get("EARTH_CHAIN_ID") == "earth-1"
@@ -131,7 +143,8 @@ print("daily cap:  ", a.get("REGISTER_GRANT_MAX_PER_DAY", "500"), "register gran
       " cf-ip:", a.get("TRUST_CF_CONNECTING_IP", "true"))
 print("passport:    nullifier/address/date index", a.get("PASSPORT_NULLIFIER_INDEX", "2"),
       a.get("PASSPORT_ADDRESS_INDEX", "1"), a.get("PASSPORT_CURRENT_DATE_INDEX", "0"))
-print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars)" % (len(mn.split()), len(tok)))
+print("secrets:     GAS_WALLET_MNEMONIC(%d words), TUNNEL_TOKEN(%d chars), CHAIN_EDGE_TOKEN(%d chars)"
+      % (len(mn.split()), len(tok), len(edge)))
 
 open(out, "w").write(s)
 print("wrote %s (%d bytes)" % (out, len(s)))
