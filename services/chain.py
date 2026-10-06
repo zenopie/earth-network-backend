@@ -40,7 +40,6 @@ def _network() -> NetworkConfig:
         fee_minimum_gas_price=config.EARTH_GAS_PRICE,
         fee_denomination=config.EARTH_DENOM,
         staking_denomination=config.EARTH_DENOM,
-        faucet_url=None,
     )
 
 
