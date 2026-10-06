@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import config
 from routers import privacy
+from services.privacy import events
 from services.privacy.indexer import Indexer
 from services.privacy.store import Store
 from tests.privacy_fixtures import BASE, ChainClient, FakeRPC, load, seed_chain, set_meta
@@ -148,6 +149,53 @@ def test_identity_leaves_and_zeroings(api):
     for h, idxs in z["blocks"]:
         for i in idxs:
             assert body["leaves"][i][3] == h
+
+
+def _fixture_idc(human: str, secret: int) -> int:
+    """x/personhood/testutil: IDC(Det("id/"+human, secret))."""
+    from services.zk import privacy as zk
+    return zk.idc(zk.H(zk.asset_id("personhood-fixture/id/" + human), secret))
+
+
+def test_identity_stream_carries_succession_leaves_and_rebuilds_the_chains_roots(api):
+    """A switch (A1 -> A2) and a re-entry (C1 -> C2) each append the
+    succession leaf H(TAG_SUCC, idc_old, idc_new) right after the new
+    identity leaf; it is never zeroed. A wallet rebuilding the identity tree
+    from the stream alone reaches the chain's root after every block."""
+    from services.zk import merkle
+    from services.zk import privacy as zk
+
+    body = api.get("/privacy/identity").json()
+    leaves = {l[0]: l for l in body["leaves"]}
+    blocks = load("TestPrivatePersonhood")["blocks"]
+    regs = {}
+    for b in blocks:
+        for ev in events.ordered_events(b["block_results"]):
+            if ev["type"] == "register":
+                a = {x["key"]: x["value"] for x in ev["attributes"]}
+                regs.setdefault(a["nullifier"], []).append(int(a["leaf_index"]))
+    succ = {}
+    for human in ("A", "C"):
+        want = zk.field_bytes(zk.succession_leaf(_fixture_idc(human, 1), _fixture_idc(human, 2))).hex()
+        at = [i for i, l in leaves.items() if l[2] == want]
+        assert len(at) == 1, human
+        succ[human] = at[0]
+        assert leaves[at[0]][3] is None, "a succession leaf is never zeroed"
+        # Right after the successor's identity leaf, in the same block.
+        assert any(at[0] - 1 in idxs[1:] for idxs in regs.values())
+        assert leaves[at[0] - 1][1] == leaves[at[0]][1]
+    assert set(succ.values()) == {4, 6}
+
+    for b in blocks:
+        h = b["height"]
+        t = merkle.SparseTree()
+        for i in sorted(leaves):
+            idx, height, leaf, zeroed_height, _ = leaves[i]
+            if height > h:
+                break
+            t.append(0 if zeroed_height is not None and zeroed_height <= h else int(leaf, 16))
+        if "identity_latest_root" in b:
+            assert zk.field_bytes(t.root()).hex() == b["identity_latest_root"], h
 
 
 def test_roots_latest_matches_the_chain(api):
