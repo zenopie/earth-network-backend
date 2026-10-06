@@ -28,7 +28,7 @@ code comments refer to it.
     routers/gas.py          POST /gas/register, GET /gas/pow
     routers/privacy.py      the /privacy streams
     routers/circuits.py     GET /circuits/<variant>.json.gz: the passport circuits the wallets do not bundle
-    circuits/               those circuits, gzipped (written by the mobile repo's circuits/tools/variants.py build)
+    circuits/               those circuits, gzipped (written by the mobile repo's circuits/tools/variants.py build), and SHA256SUMS
     services/
       bodylimit.py          request body cap (413 before parsing)
       chain.py              the hot wallet: MsgShield of the dust, broadcast resolved by tx hash
@@ -107,7 +107,8 @@ deploy tools read: `DSEQ`, `AKASH_API_KEY`, `TUNNEL_TOKEN`.
     POST /gas/register                     a fee note for a registration the chain would accept
     GET  /gas/pow                          the proof of work /gas/register needs now
     GET  /health                           hot wallet balance and grants remaining
-    GET  /circuits/<variant>.json.gz       a passport register circuit outside the wallets' bundle
+    GET  /circuits/<variant>.<sha256>.json.gz  a passport register circuit outside the wallets' bundle
+    GET  /circuits/<variant>.json.gz       the same, by its plain name (wallets up to mobile 355f4b2)
     GET  /privacy/status                   which chain the index holds, and its stream base
     GET  /privacy/<chain_id>/<genesis>/... the streams (below)
 
@@ -116,7 +117,13 @@ passport register circuits above the wallets' 2^18 tier (PASSPORT_COVERAGE.md
 in the mobile repo), byte for byte as `circuits/` holds them; the wallets
 inflate each one and refuse it unless it hashes to the sha256 their bundled
 `passport_variants.json` pins, so the server is trusted for availability
-only. FastAPI's `/docs` and
+only. The content-addressed name carries that same sha256 (of the inflated
+JSON) and is cached as immutable; it answers only when `circuits/SHA256SUMS`
+lists that hash for the variant. The plain name is cached for 5 minutes,
+because the next circuit change reuses it. After replacing `circuits/`,
+regenerate the sums: `cd circuits && for f in *.json.gz; do printf '%s  %s\n'
+"$(gzip -dc "$f" | shasum -a 256 | cut -d' ' -f1)" "${f%.gz}"; done > SHA256SUMS`
+(`tests/test_circuits.py` checks them). FastAPI's `/docs` and
 `/openapi.json` describe the request schemas.
 
 ### GET /health
