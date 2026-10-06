@@ -560,6 +560,13 @@ def stake_roots(response: Response, from_height: int = Query(0, ge=0, le=MAX_INT
     A wallet proves a stake note against any root still in the chain's window
     (stake_root_window_seconds) or, for a stake vote, against the proposal's
     snapshot root; this stream is every candidate, keyed by height alone.
+
+    The window runs from a root's supersession, not its time (chain
+    final-audit A-1, StakeRoot.superseded_at): a root expires at the next
+    row's time + stake_root_window_seconds, and the latest root (no next row)
+    never expires. superseded_at is not a column: the chain sets it in the
+    block that records the next root, so it is exactly the next row's time,
+    and a column would change a page already cached as immutable.
     """
     with _read() as c:
         n = _limit(limit)
