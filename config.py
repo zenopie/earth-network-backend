@@ -40,6 +40,15 @@ EARTHD_BIN = os.getenv("EARTHD_BIN", "earthd")
 EARTHD_HOME = os.getenv("EARTHD_HOME", "/tmp/earthd-home")
 EARTH_RPC_URL = os.getenv("EARTH_RPC_URL", "https://rpc.erth.network:443")
 GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
+# The backend's credential at Cloudflare in front of the node (services/edge):
+# sent as Basic auth to CHAIN_EDGE_HOSTS only, so the WAF lets gas-check's
+# JSON-RPC POSTs and the indexer's reads past the public allowlist and rate
+# limits. 32-128 characters of [A-Za-z0-9_-]; empty sends nothing, and then
+# gas-check is refused by rpc.erth.network's allowlist (HTTP 403).
+CHAIN_EDGE_TOKEN = os.getenv("CHAIN_EDGE_TOKEN", "")
+CHAIN_EDGE_HOSTS = frozenset(h.strip().lower() for h in
+                             os.getenv("CHAIN_EDGE_HOSTS", "rpc.erth.network,lcd.erth.network").split(",")
+                             if h.strip())
 # Checks run one at a time (memory); beyond this many waiting, refuse with 503.
 GAS_CHECK_MAX_WAITING = int(os.getenv("GAS_CHECK_MAX_WAITING", "20"))
 # Of those places, how many only a priority check may take: a new passport

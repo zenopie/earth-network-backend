@@ -96,6 +96,13 @@ services:
       - INDEXER_START_HEIGHT=0
       - INDEX_DB=/app/state/privacy_index.db
       #
+      # CHAIN_EDGE_TOKEN is NOT set here either: bin/build-sdl.py injects it
+      # from .env. It is the backend's credential at Cloudflare in front of the
+      # node (services/edge.py; the deploy repo's akash/README.md, rule 0):
+      # without it rpc.erth.network refuses gas-check's JSON-RPC POSTs and the
+      # indexer's /store/ reads. Not a spending key, but whoever holds it skips
+      # the public allowlist and rate limits, so it stays out of the repo.
+      #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic
       # handed to a third party, and this one holds spendable ERTH.

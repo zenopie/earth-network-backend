@@ -8,6 +8,8 @@ import datetime
 
 import httpx
 
+from services import edge
+
 
 class RPCError(Exception):
     """The node answered with an error, or not at all. Retryable."""
@@ -32,13 +34,17 @@ class CometRPC:
     def __init__(self, url: str, timeout: float = 20.0, client: httpx.AsyncClient | None = None):
         self.url = url.rstrip("/")
         self._client = client or httpx.AsyncClient(timeout=timeout)
+        # Our own node's hostnames take the backend's Cloudflare credential
+        # (services/edge); anyone else's node never sees it.
+        self._headers = edge.headers(self.url)
 
     async def close(self) -> None:
         await self._client.aclose()
 
     async def _call(self, method: str, **params) -> dict:
         try:
-            resp = await self._client.get(f"{self.url}/{method}", params={k: v for k, v in params.items() if v is not None})
+            resp = await self._client.get(f"{self.url}/{method}", headers=self._headers,
+                                          params={k: v for k, v in params.items() if v is not None})
         except httpx.HTTPError as exc:
             raise RPCError(f"{method}: {exc.__class__.__name__}") from exc
         try:

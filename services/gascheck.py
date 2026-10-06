@@ -25,6 +25,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 
 import config
+from services import edge
 
 
 class _PrioritySlot:
@@ -100,7 +101,7 @@ async def _run(args: list[str], stdin: bytes | None = None, priority: bool = Fal
         async with _slot.hold(priority):
             proc = await asyncio.create_subprocess_exec(
                 config.EARTHD_BIN, "gas-check", *args,
-                "--node", config.EARTH_RPC_URL, "--home", config.EARTHD_HOME,
+                "--node", edge.node_flag(config.EARTH_RPC_URL), "--home", config.EARTHD_HOME,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             try:

@@ -20,7 +20,7 @@ from cosmpy.aerial.tx_helpers import SubmittedTx
 from cosmpy.aerial.wallet import LocalWallet
 
 import config
-from services import shielded_msg
+from services import edge, shielded_msg
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,8 @@ def _bound_http(client: LedgerClient) -> None:
     if rest is None:
         return
     session = rest._session
+    # The backend's Cloudflare credential, for our own LCD only (services/edge).
+    session.headers.update(edge.headers(config.EARTH_NODE_URL))
     request = session.request
 
     def with_timeout(method, url, **kwargs):

@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 import config
 from routers import circuits, gas, privacy
-from services import chain, ratelimit
+from services import chain, edge, ratelimit
 from services.bodylimit import BodyLimit
 from services.privacygate import PrivacyGate
 
@@ -50,6 +50,7 @@ async def startup() -> None:
     # Drops IP-derived rate-limit keys on time even when no request comes
     # (NO_LOGS policy 3); /privacy uses the same tables, so always on.
     _ratelimit_task = asyncio.create_task(ratelimit.run(_stop))
+    edge.check()
     if config.GAS_ENABLED:
         chain.init()
         from services import health as health_mod, knowndsc
