@@ -2,8 +2,8 @@
 
 `deploy.yaml` is the SDL. `bin/create.py` makes a new lease, `bin/deploy.sh`
 updates one in place, and both submit the SDL `bin/build-sdl.py` builds:
-`deploy.yaml` with the image digest and the two secrets from `.env`
-(`GAS_WALLET_MNEMONIC`, `TUNNEL_TOKEN`) substituted in.
+`deploy.yaml` with the image digest and the three secrets from `.env`
+(`GAS_WALLET_MNEMONIC`, `TUNNEL_TOKEN`, `CHAIN_EDGE_TOKEN`) substituted in.
 
 ## Build the image first
 
@@ -31,12 +31,26 @@ wallet: it has nothing until it is sent ERTH after launch (each grant is
 `DUST_UERTH`, 0.1 ERTH; `/health` reports how many it holds). Do not reuse
 this key for anything else.
 
+## The edge token
+
+`CHAIN_EDGE_TOKEN` is the backend's pass past the Cloudflare allowlist and rate
+limits in front of the node (`services/edge.py`; the deploy repo's
+`akash/README.md`, "Public RPC and LCD limits", rule 0). Without it
+`rpc.erth.network` answers gas-check's JSON-RPC POSTs with 403 and every grant
+fails as unavailable. Generate it once
+(`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`), put it in
+`.env`, and put the Authorization value it yields in the Cloudflare rule:
+`printf 'earth-backend:%s' "$CHAIN_EDGE_TOKEN" | base64`, prefixed with
+`Basic `. It moves no funds; whoever holds it can only skip the public limits.
+To rotate, change the rule and `.env` together and redeploy in place.
+
 ## Endpoints
 
     GET  /health          hot wallet balance and grants remaining
     POST /gas/register    a shielded fee note for a registration the chain would accept
     GET  /gas/pow         the proof of work /gas/register needs now
-    GET  /circuits/<variant>.json.gz   a passport circuit the wallets do not bundle
+    GET  /circuits/<variant>.<sha256>.json.gz   a passport circuit the wallets do not bundle
+    GET  /circuits/<variant>.json.gz   the same by its plain name (5-minute cache)
     GET  /privacy/status  chain_id, genesis and `base` for the wallet streams
     GET  /privacy/<chain_id>/<genesis>/...   the streams (see ../../README.md)
 
