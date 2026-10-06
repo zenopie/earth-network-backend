@@ -357,7 +357,18 @@ _REFUSAL_KINDS = (
 # Refusals the registrant's own circumstances decide, which do not count
 # against their client (audit-6 M1): a signer or country at its daily cap.
 # The chain checks the cap only after the certificate has chained, so it is
-# not junk anyone mints with a made-up certificate. (An expired document
+# not junk anyone mints with a made-up certificate.
+#
+# 1127 and 1128 do count, deliberately (round-2 R2-BD-6). A real user who
+# retries a same-day switch does meet 1128 through no junk of their own, but
+# both are decided before the proof is verified, from public chain data (a
+# live registration's nullifier, signer and proof_date), so a script can
+# mint them with a bogus proof. Exempted, they would be refusals that hold
+# the single gas-check queue and never shed their sender to proof of work.
+# The cost to the real user is bounded and never a refusal: after
+# REGISTER_CLIENT_REFUSALS_PER_WINDOW refusals their client is queued only
+# with a proof of work for up to a window, and the 403 already tells them to
+# retry tomorrow (UTC). (An expired document
 # signer is the other such refusal; _precheck answers it 400 before the
 # queue, since the chain refuses it before anything else and a made-up
 # certificate would otherwise be a free refusal.)
