@@ -21,13 +21,10 @@ ordinary lane neither refuses nor delays a registration in the reserved one.
 """
 import asyncio
 import json
-import logging
 from collections import deque
 from contextlib import asynccontextmanager
 
 import config
-
-logger = logging.getLogger(__name__)
 
 
 class _PrioritySlot:
