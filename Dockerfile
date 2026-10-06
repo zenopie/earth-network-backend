@@ -24,13 +24,22 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r
 # what the release published. The tarball's lib/ holds libwasmvm and the C++
 # runtime the proof verifier needs; earthd finds them at ../lib.
 #
-# Bump EARTHD_VERSION with the chain, together with its checksum: a circuit or
-# parameter change the node has and this binary lacks means refusing proofs the
-# chain would take. It must be the release of the chain the service grants on
-# (privacy/orchard): v1.0.0 predates its MsgRegister (handles, the binding with
-# the chain id) and is bumped when that release is cut.
+# THE PIN is these two lines and nothing else (final audit BD-3): the tag and
+# the sha256 of its earthd_<tag>_linux_amd64.tar.gz from the release's
+# checksums.txt. Bump them together, with the chain: a circuit or parameter
+# change the node has and this binary lacks means refusing proofs the chain
+# would take. It must be the release of the chain the service grants on
+# (privacy/orchard; RELAUNCH.md in the deploy repo, section 4.1).
 ARG EARTHD_VERSION=v1.0.0
 ARG EARTHD_SHA256=16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db475
+# Releases that cannot check the relaunch chain's MsgRegister (they predate
+# handles, the chain-id binding and error 1127): every registration would be
+# refused, and new humans could never get a gas note. The image refuses to
+# build on one, so no backend release can ship before the launch tag exists.
+RUN case "${EARTHD_VERSION}" in \
+      v0.*|v1.0.0) echo "EARTHD_VERSION=${EARTHD_VERSION} predates the relaunch MsgRegister; bump it and EARTHD_SHA256 to the launch tag (deploy repo RELAUNCH.md 4.1)" >&2; exit 1 ;; \
+    esac \
+    && echo "${EARTHD_SHA256}" | grep -Eq '^[0-9a-f]{64}$'
 RUN python -c "import hashlib, sys, tarfile, urllib.request; \
 url = 'https://github.com/zenopie/earth-network-chain/releases/download/${EARTHD_VERSION}/earthd_${EARTHD_VERSION}_linux_amd64.tar.gz'; \
 data = urllib.request.urlopen(url, timeout=120).read(); \

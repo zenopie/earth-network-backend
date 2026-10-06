@@ -83,3 +83,17 @@ def test_create_redacts_console_errors():
     assert "eyJhIjoi" not in create.redact("not json: TUNNEL_TOKEN=eyJhIjoi trailing")
     out = create.redact(json.dumps({"error": f"env [GAS_WALLET_MNEMONIC={words}] refused"}))
     assert not any(w in out for w in words.split())
+
+
+def test_earthd_pin_is_one_version_and_sha_and_refuses_pre_relaunch():
+    """BD-3: one ARG pair is the pin, and the build refuses a release that
+    cannot check the relaunch MsgRegister."""
+    import re
+    docker = open(os.path.join(_ROOT, "Dockerfile")).read()
+    versions = re.findall(r"(?m)^ARG EARTHD_VERSION=(\S+)$", docker)
+    shas = re.findall(r"(?m)^ARG EARTHD_SHA256=(\S+)$", docker)
+    assert len(versions) == 1 and len(shas) == 1
+    assert re.fullmatch(r"[0-9a-f]{64}", shas[0])
+    assert "v0.*|v1.0.0)" in docker
+    # Nothing else hard-codes a version or a checksum.
+    assert docker.count("${EARTHD_VERSION}") >= 2 and docker.count("${EARTHD_SHA256}") >= 2
