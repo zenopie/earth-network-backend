@@ -31,9 +31,9 @@ services:
       - EARTH_CHAIN_ID=earth-1
       - EARTH_PREFIX=earth
       - EARTH_DENOM=uerth
-      # The chain runs --minimum-gas-prices 0uerth, but cosmpy still prices the
-      # fee it puts in the tx; leaving the default is harmless and survives the
-      # node later requiring a real minimum.
+      # The validator's floor is --minimum-gas-prices 0.005uerth (deploy repo
+      # akash/deploy.yaml MIN_GAS_PRICES); cosmpy prices the fee it puts in the
+      # tx at this, which clears it five times over.
       - EARTH_GAS_PRICE=0.025
       # What one /gas/register grant (a shielded fee note) is worth. Has to
       # cover a registration (6M gas limit at 0.005 uerth/gas = 30,000 uerth).
