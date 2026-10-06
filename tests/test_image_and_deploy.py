@@ -94,6 +94,23 @@ def test_earthd_pin_is_one_version_and_sha_and_refuses_pre_relaunch():
     shas = re.findall(r"(?m)^ARG EARTHD_SHA256=(\S+)$", docker)
     assert len(versions) == 1 and len(shas) == 1
     assert re.fullmatch(r"[0-9a-f]{64}", shas[0])
-    assert "v0.*|v1.0.0)" in docker
+    # The refusal itself, run as the build runs it: every v0.* by name, the
+    # never-run v1.0.0 by its sha256 (a re-cut under that tag name passes).
+    import subprocess
+    guard = re.search(r"(?ms)^RUN (case \"\$\{EARTHD_VERSION\}\".*?grep -Eq '\^\[0-9a-f\]\{64\}\$')$", docker)
+    assert guard, "the EARTHD_VERSION/EARTHD_SHA256 refusal moved"
+    script = guard.group(1).replace("\\\n", " ")
+    old_v100 = "16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db475"
+
+    def builds(version, sha):
+        env = {"PATH": os.environ.get("PATH", ""), "EARTHD_VERSION": version, "EARTHD_SHA256": sha}
+        return subprocess.run(["sh", "-c", script], env=env, capture_output=True).returncode == 0
+
+    assert not builds("v0.9.3", "a" * 64)
+    assert not builds("v1.0.0", old_v100)
+    assert not builds("v1.0.1", old_v100)
+    assert builds("v1.0.0", "b" * 64)
+    assert builds("v1.1.0", "c" * 64)
+    assert not builds("v1.1.0", "not-a-sha")
     # Nothing else hard-codes a version or a checksum.
     assert docker.count("${EARTHD_VERSION}") >= 2 and docker.count("${EARTHD_SHA256}") >= 2

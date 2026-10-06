@@ -36,8 +36,15 @@ ARG EARTHD_SHA256=16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db4
 # handles, the chain-id binding and error 1127): every registration would be
 # refused, and new humans could never get a gas note. The image refuses to
 # build on one, so no backend release can ship before the launch tag exists.
+# Every v0.* by name. v1.0.0 (never ran) by its tarball's sha256, not its
+# name, so a launch release re-cut under the tag v1.0.0 is not blocked: the
+# download below must match EARTHD_SHA256, so the old build cannot get past
+# under a new sha either.
 RUN case "${EARTHD_VERSION}" in \
-      v0.*|v1.0.0) echo "EARTHD_VERSION=${EARTHD_VERSION} predates the relaunch MsgRegister; bump it and EARTHD_SHA256 to the launch tag (deploy repo RELAUNCH.md 4.1)" >&2; exit 1 ;; \
+      v0.*) echo "EARTHD_VERSION=${EARTHD_VERSION} predates the relaunch MsgRegister; bump it and EARTHD_SHA256 to the launch tag (deploy repo RELAUNCH.md 4.1)" >&2; exit 1 ;; \
+    esac \
+    && case "${EARTHD_SHA256}" in \
+      16842a4579a6c88d7d57597a28b452f696e16d3e2b6483c6a820e491cc7db475) echo "EARTHD_SHA256 is the pre-relaunch v1.0.0 build; bump both ARGs to the launch tag (deploy repo RELAUNCH.md 4.1)" >&2; exit 1 ;; \
     esac \
     && echo "${EARTHD_SHA256}" | grep -Eq '^[0-9a-f]{64}$'
 RUN python -c "import hashlib, sys, tarfile, urllib.request; \
