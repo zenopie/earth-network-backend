@@ -55,6 +55,7 @@ the check off), and nothing under {base} is served while halted.
 """
 import asyncio
 import logging
+import re
 
 import config
 
@@ -70,8 +71,13 @@ from .verify import (DEBT_TREE_QUERY, IDENTITY_TREE_QUERY, NOTE_TREE_QUERY, STAK
 
 logger = logging.getLogger(__name__)
 
-# What a lease alert's log line shows: public chain data, bounded.
-_LEASE_ALERT_KEYS = ("stream", "lapser", "key", "expires_at", "retry_at", "lapse_seconds", "error")
+# What a lease alert's log line shows: public chain data, bounded, and no
+# address. The event's `key` (the voter's or validator's address) is left
+# out, and any bech32 address in its error text is masked: NO_LOGS policy 2
+# holds without exceptions (round-3 R3-BD-7). The height is in the line, so
+# an operator reads the full event from that block's results.
+_LEASE_ALERT_KEYS = ("stream", "lapser", "expires_at", "retry_at", "lapse_seconds", "error")
+_BECH32 = re.compile(r"\b[a-z]{1,83}1[02-9ac-hj-np-z]{6,}\b")
 
 
 def _log_lease_alerts(height: int, alerts) -> None:
@@ -79,7 +85,8 @@ def _log_lease_alerts(height: int, alerts) -> None:
     to retire or a held settle as errors (each means weight or emission is
     moving other than the lease rule says), a drained backlog as info."""
     for kind, attrs in alerts:
-        detail = " ".join(f"{k}={str(attrs[k])[:120]}" for k in _LEASE_ALERT_KEYS if k in attrs)
+        detail = " ".join(f"{k}={_BECH32.sub('<addr>', str(attrs[k]))[:120]}"
+                          for k in _LEASE_ALERT_KEYS if k in attrs)
         level = logging.INFO if kind == "lease_backlog_drained" else logging.ERROR
         logger.log(level, "chain lease alert at %d: %s %s", height, kind, detail)
 

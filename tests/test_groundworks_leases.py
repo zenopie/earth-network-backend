@@ -176,13 +176,14 @@ def test_well_formed_lease_events_parse():
 
 
 def test_lease_alerts_are_kept_for_the_log_and_never_halt(caplog):
+    OPER = "earthvaloper1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu"
     # x/allocation's alert events (chain 7033eac), with the BeginBlock mode
     # the sweep emits them under, and one missing every attribute: none is
     # checked, none changes the delta's state.
     begin = {"key": "mode", "value": "BeginBlock"}
     alerts = [
         _ev("lease_retire_failed", stream="STREAM_ID_GROUNDWORKS", lapser="positions", key=VAL,
-            expires_at=900, retry_at=900 + 86400, error="boom"),
+            expires_at=900, retry_at=900 + 86400, error=f"boom: validator {OPER} not found"),
         _ev("lease_settle_held", stream="STREAM_ID_GROUNDWORKS", expires_at=990),
         _ev("lease_backlog_drained", stream="STREAM_ID_GROUNDWORKS", lapse_seconds=1501),
         _ev("lease_settle_held"),
@@ -201,6 +202,10 @@ def test_lease_alerts_are_kept_for_the_log_and_never_halt(caplog):
     assert levels == [("ERROR", "lease_retire_failed"), ("ERROR", "lease_settle_held"),
                       ("INFO", "lease_backlog_drained"), ("ERROR", "lease_settle_held")]
     assert "retry_at=87300" in caplog.records[0].getMessage() and "lapser=positions" in caplog.records[0].getMessage()
+    # NO_LOGS policy 2: no address, neither the event's key nor one in its error.
+    assert "<addr>" in caplog.records[0].getMessage()
+    assert all(OPER not in r.getMessage() and VAL not in r.getMessage() and "key=" not in r.getMessage()
+               for r in caplog.records)
 
 
 def _apply(store, height, time, *changes):
