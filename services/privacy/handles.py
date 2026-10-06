@@ -25,7 +25,7 @@ consistent state:
 Status is the chain's at the block's time: live while time < expires_at
 (it resolves), renewal until renewal_until (owner only, does not resolve),
 then free until swept. A record changes only with an event
-(handle_bound, handle_moved, handle_released: the sweep emits the last),
+(a handle_* event: handle_bound, handle_released, which the sweep emits),
 and a status only with time, so the indexer refreshes after a block with
 one of those events, once the synced block time reaches the earliest
 expires_at / renewal_until in the snapshot, and at least every
@@ -43,8 +43,8 @@ characters or none, and a `next` that moves forward.
 
 owner is what a wallet compares with its own handle-scope nullifier to know
 a handle is its own; an entry merely naming its address is not. It is
-already public (the claiming bind's membership nullifier, a move's
-new_owner; the handle events carry it).
+already public (the claiming bind's membership nullifier; the handle
+events carry it).
 """
 import asyncio
 import re

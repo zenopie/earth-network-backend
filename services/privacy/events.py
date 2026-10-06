@@ -40,13 +40,16 @@ x/shieldedstaking/keeper/stake_tree.go):
     shielded_root        root (hex), tree_size, height        EndBlock
     identity_leaf        index, leaf (hex; 64 zeros when zeroed)
     identity_root        root (hex), tree_size, height        EndBlock
-    handle_bound / handle_moved / handle_released
-                         a handle directory record changed; each carries
-                         owner (the handle-scope nullifier, hex) and
-                         handle_moved also previous_owner. Attributes not
-                         read: the directory, owner included, is re-read
-                         whole from the Handles query
-                         (services/privacy/handles), which is checked there
+    handle_*             handle_bound / handle_released today: a handle
+                         directory record changed; each carries owner
+                         (the handle-scope nullifier, hex). Matched by
+                         prefix, so a handle move event (moves were removed
+                         in the final-audit fixes and are to return behind
+                         a same-holder circuit) refreshes the directory
+                         under whatever name it takes. Attributes not read:
+                         the directory, owner included, is re-read whole
+                         from the Handles query (services/privacy/handles),
+                         which is checked there
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
@@ -122,8 +125,8 @@ liquidity events name no provider), shieldedstaking_delegate / _undelegate
 (validator, derth, value, epoch, payout_id) / _position / _matured
 (validator, epoch, value, payout) / _unbond_payout_failed (payout_id,
 validator, epoch, attempts, retry_at, error: kept and retried, nothing
-minted) / _stake_vote (vote_nullifiers: the used slots' vote nullifiers,
-comma-separated hex; per proposal, they spend nothing and are in no tree) and
+minted) / _stake_vote (vote_nullifiers: both slots' vote nullifiers, a padded
+slot's included, comma-separated hex; per proposal, they spend nothing and are in no tree) and
 shieldedstaking_self_bond_compounded (an operator's own SDK self-bond grows;
 derth rates come from shieldedstaking_epoch_validator).
 
@@ -148,7 +151,14 @@ import re
 from dataclasses import dataclass, field
 
 ZERO32 = bytes(32)
-HANDLE_EVENTS = frozenset({"handle_bound", "handle_moved", "handle_released"})
+# Every x/personhood handle directory event is "handle_<what>" (handle_bound,
+# handle_released; a move event when moves return). Any of them means the
+# directory changed; nothing else in the chain's events starts this way.
+HANDLE_EVENT_PREFIX = "handle_"
+
+
+def is_handle_event(event_type: str) -> bool:
+    return event_type.startswith(HANDLE_EVENT_PREFIX)
 
 
 class EventError(Exception):
@@ -429,7 +439,7 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             d.identity_root = Root(_hex32(a.get("root", ""), "identity_root"), _int(a.get("tree_size"), "identity_root tree_size"))
             if "height" in a and _int(a["height"], "identity_root height") != height:
                 raise EventError("identity_root height is not the block's")
-        elif t in HANDLE_EVENTS:
+        elif is_handle_event(t):
             d.handles_changed = True
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))

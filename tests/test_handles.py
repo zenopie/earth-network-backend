@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 import config
 from routers import privacy
 from services.privacy import handles
-from services.privacy.events import HANDLE_EVENTS
+from services.privacy.events import is_handle_event
 from services.privacy.indexer import Indexer
 from services.privacy.rpc import proto_fields
 from services.privacy.store import Store
@@ -66,18 +66,19 @@ def test_every_recorded_page_is_well_formed():
 
 def test_recorded_owners_are_the_handle_events_owners():
     """Every claimed handle in the chain's directory names, as owner, the
-    owner its latest handle_bound / handle_moved event carried (chain audit
-    round 6); handle_moved's previous_owner is the owner before it."""
+    owner its latest handle_* event carried (chain audit round 6). An event
+    naming a previous_owner (a move, when moves return) names the owner
+    before it."""
     from services.privacy.events import ordered_events
 
     owners, seen = {}, 0
     for b in load(SCENARIO)["blocks"]:
         for ev in ordered_events(b["block_results"]):
-            if ev["type"] not in HANDLE_EVENTS:
+            if not is_handle_event(ev["type"]):
                 continue
             a = {x["key"]: x["value"] for x in ev["attributes"]}
             assert len(a["owner"]) == 64 and a["owner"] == a["owner"].lower()
-            if ev["type"] == "handle_moved":
+            if "previous_owner" in a:
                 assert a["previous_owner"] == owners[a["handle"]] != a["owner"]
             if ev["type"] == "handle_released":
                 owners.pop(a["handle"], None)
@@ -88,6 +89,20 @@ def test_recorded_owners_are_the_handle_events_owners():
                 assert e.owner == owners[e.handle], (b["height"], e.handle)
                 seen += 1
     assert seen
+
+
+@pytest.mark.parametrize("event_type,changed", [
+    ("handle_bound", True), ("handle_released", True),
+    # Moves were removed in the final-audit fixes and return behind a
+    # same-holder circuit; whatever its event is named, it refreshes.
+    ("handle_moved", True), ("handle_transferred", True),
+    ("set_caretaker", False), ("register", False),
+])
+def test_any_handle_event_marks_the_directory_changed(event_type, changed):
+    from services.privacy.events import parse_block
+    ev = {"type": event_type, "attributes": [{"key": "handle", "value": "bob"}, {"key": "owner", "value": "ab" * 32}]}
+    d = parse_block(7, 1000, "H", {"height": "7", "txs_results": [{"code": 0, "events": [ev]}]})
+    assert d.handles_changed is changed
 
 
 @pytest.mark.parametrize("bad", [
@@ -215,10 +230,11 @@ def test_the_snapshot_is_the_chains_directory_after_every_block(tmp_path):
         else:
             # Not re-read: nothing changed it since the snapshot's block.
             assert rows == want, (b["height"], height)
-    # Bound "alice", moved it, renewed it, changed it to "amy", changed the
-    # address, and the change to "amy-2" with D1 taking "amy" in one block.
+    # A1 bound "alice" and changed it to "amy" (kept, unchangeable, after
+    # A1 switched to A2: no moves since the final-audit fixes); D1 bound
+    # "dee", changed its address, then changed it to "dee-2".
     final = as_rows(recorded(snaps[-1][0]))
-    assert [r[0] for r in final] == ["amy", "amy-2"] and {r[2] for r in final} == {"live"}
+    assert [r[0] for r in final] == ["amy", "dee-2"] and {r[2] for r in final} == {"live"}
     assert changed < len(snaps), "re-read only when due, not every block"
     store.close()
 
@@ -230,9 +246,9 @@ def test_reread_after_a_handle_event_and_not_otherwise(tmp_path):
     reads = sorted({int(c.split()[-1]) for c in rpc.calls if c.startswith(f"abci_query {handles.HANDLES_QUERY}")})
     sc = load(SCENARIO)
     event_heights = {b["height"] for b in sc["blocks"]
-                     if any(e["type"] in HANDLE_EVENTS for tx in b["block_results"].get("txs_results") or []
+                     if any(is_handle_event(e["type"]) for tx in b["block_results"].get("txs_results") or []
                             for e in tx.get("events") or [])
-                     or any(e["type"] in HANDLE_EVENTS for e in b["block_results"].get("finalize_block_events") or [])}
+                     or any(is_handle_event(e["type"]) for e in b["block_results"].get("finalize_block_events") or [])}
     assert event_heights, "the scenario binds handles"
     first = sc["blocks"][0]["height"]
     # The first snapshot, then one after each block with a handle event
