@@ -193,3 +193,26 @@ fixes, 379 after round 5 formats, 393 after round 6 fixes, 405 after round
   not bundle, served byte for byte; the wallets pin their hashes (02367e4).
 
 The precheck and the reserved lane do not depend on the variant.
+
+## Pre-relaunch cleanup (2026-10-06)
+
+Feature freeze, no behaviour change a wallet sees.
+
+- The index's per-format migrations (refusals of three earlier chain
+  formats, an in-place drop of a handle directory without owners) are one
+  check: a table whose columns are not exactly SCHEMA's is refused, wipe
+  `INDEX_DB`. A pre-owner handle directory is now refused rather than
+  dropped; every such index is from a chain before the relaunch, which the
+  indexer halts on anyway.
+- Removed: tests asserting the removed grants stay removed, unused tree
+  accessors, `BodyLimit`'s unused `max_bytes`, two unused loggers,
+  cosmpy's default `faucet_url=None`.
+- Deduplicated: the chain's tree query paths (indexer and verify), the
+  protobuf varint encoder (handles and verify), the sliding-window bump
+  (refusal budgets and client refusals).
+- Docs: the launch genesis funds no gas wallet (it is funded after launch);
+  earth-1 is not a devnet; ten pinned DSC certificates; requirements.txt
+  describes the lock workflow.
+
+Test count: 476 after passport signature coverage; 470 after this (the six
+removed tests were the removed-grant checks).
