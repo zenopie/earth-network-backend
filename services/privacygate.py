@@ -41,7 +41,7 @@ another. A request from a local dev origin (http://localhost[:port],
 http://127.0.0.1[:port], when PRIVACY_CORS_LOCALHOST) gets its own origin
 back instead, with Cache-Control: no-store so no CDN keeps that copy
 (no Vary: Origin is needed, since a cacheable response never depends on
-Origin). No credentials, GET and HEAD only (an OPTIONS preflight is
+Origin). No credentials, GET only (an OPTIONS preflight is
 answered 204).
 Nothing outside /privacy has CORS headers.
 """
@@ -148,7 +148,7 @@ def _with_headers(send, extra: list, no_store: bool):
 
 async def _preflight(send) -> None:
     await send({"type": "http.response.start", "status": 204,
-                "headers": [(b"access-control-allow-methods", b"GET, HEAD"),
+                "headers": [(b"access-control-allow-methods", b"GET"),
                             (b"access-control-max-age", b"86400"), (b"cache-control", b"no-store")]})
     await send({"type": "http.response.body", "body": b""})
 

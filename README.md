@@ -386,7 +386,7 @@ first block. A relaunch keeps the chain id, and full pages are cached
   `Access-Control-Allow-Origin: PRIVACY_CORS_ORIGIN` whatever the Origin
   (fixed, so a CDN copy is right for everyone); a local dev origin
   (`http://localhost[:port]`, `http://127.0.0.1[:port]`) gets its own back
-  with `no-store`. GET and HEAD, no credentials; OPTIONS is 204.
+  with `no-store`. GET only (HEAD is 405), no credentials; OPTIONS is 204.
 - Integer parameters above 2^63-1 are 422.
 
 ### Status
