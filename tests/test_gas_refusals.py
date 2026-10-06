@@ -190,6 +190,8 @@ def test_client_refusals_age_out(monkeypatch):
     ("passport is already registered to this identity commitment", "replay"),  # 1123
     ("this registration has already been used", "binding used"),  # 1124
     ("identity switch must be proven under the live registration's document signer", "switch signer"),  # 1127
+    ("proof dated 1790000000, live registration proven 1790000000: identity switch must be proven on a later date "
+     "than the live registration", "switch stale"),  # 1128
 ])
 def test_refusal_kinds_of_the_new_codes(error, kind):
     from routers import gas
@@ -201,6 +203,17 @@ def test_a_switch_under_another_signer_counts_against_the_client():
     # live nullifier and any chaining DSC, so it is not user state.
     from routers import gas
     assert "switch signer" not in gas._USER_STATE_KINDS
+
+
+def test_a_same_day_switch_says_retry_tomorrow(client, chain):
+    # 1128 is checked before the proof too (a live nullifier, its public DSC
+    # and a junk proof dated no later mint it), so it counts against the
+    # client; the reply tells a real holder when to come back.
+    assert "switch stale" not in gas._USER_STATE_KINDS
+    chain["refuse"][902] = ("proof dated 1790000000, live registration proven 1790000000: identity switch must be "
+                            "proven on a later date than the live registration")
+    r = post(client, body(902))
+    assert r.status_code == 403 and "retry tomorrow (UTC)" in r.json()["message"]
 
 
 def test_refusal_logs_name_neither_affiliate_nor_country(client, chain, caplog):

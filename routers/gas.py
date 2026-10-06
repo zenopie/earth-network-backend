@@ -318,9 +318,10 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 # the detail can name the affiliate handle, the country, a nullifier.
 # Codes beside each are the chain's x/personhood ones; gas-check reports the
 # error text only. 1127 (a switch proven under another Document Signer than
-# the live registration's) is checked before the proof is verified, so it is
-# mintable from public chain data and counts against the client like the
-# rest.
+# the live registration's) and 1128 (a switch whose proof is not dated later
+# than the live registration's proof_date: one switch per passport per day)
+# are checked before the proof is verified, so they are mintable from public
+# chain data and count against the client like the rest.
 _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
@@ -330,6 +331,8 @@ _REFUSAL_KINDS = (
     ("passport is already registered to this identity commitment", "replay"),  # 1123 ErrRegistrationReplay
     ("identity switch must be proven under the live registration's document signer",
      "switch signer"),  # 1127 ErrSwitchSignerMismatch
+    ("identity switch must be proven on a later date than the live registration",
+     "switch stale"),  # 1128 ErrSwitchProofStale
     ("affiliate_handle is not a live handle", "affiliate"),  # 1121 ErrNoReferrer
     ("identity tree full", "tree full"),  # 1120 ErrIdentityTreeFull
     ("has been revoked", "revoked"),
@@ -548,7 +551,8 @@ async def register(request: Request):
         # is what the user needs, and it says nothing they did not send. The
         # log keeps only its kind: no nullifier, handle or country.
         logger.info("registration check refused: %s", kind)
-        return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}")
+        hint = "; this passport already switched identity today, retry tomorrow (UTC)" if kind == "switch stale" else ""
+        return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}{hint}")
     if verdict.get("nullifier") != nullifier:
         # gas-check read the nullifier from the chain's nullifier_index; ours
         # disagrees, so PASSPORT_NULLIFIER_INDEX does not match the chain.
