@@ -42,7 +42,7 @@ B64 = base64.b64encode(b"x").decode()
 
 
 # A real P-256 DSC certificate (tests/fixtures/dsc) and its chain commitment
-# (pinned against x/pki/certs.DscCommitmentOf in test_audit4): reg_body's
+# (pinned against x/pki/certs.DscCommitmentOf in test_gas_reserved_lane): reg_body's
 # dsc_der and public_signals[3] agree, as a real registration's do.
 _DSC_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "dsc")
 

@@ -287,7 +287,7 @@ failed refresh keeps the last set).
 The lane also needs `dsc_der` to be that signer: the backend recomputes the
 chain's DSC commitment from the certificate (`services/dsccommit`, the port
 of `x/pki/certs.DscCommitmentOf`, Brainpool and explicit-parameter curves
-included, pinned to the chain for seven certificates) in a worker thread,
+included, pinned to the chain for ten certificates) in a worker thread,
 one at a time, cached by key, for keys of at most 512 bytes (RSA 4096); a
 larger or unparseable key takes the ordinary lane unhashed. A mismatch is
 400. At most one priority check per DSC commitment waits or runs at a time;

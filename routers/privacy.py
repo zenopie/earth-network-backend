@@ -111,7 +111,8 @@ page-aligned cursor: from_pos / from_index a multiple of limit, else 400.
 Page k of size L is exactly [k*L, (k+1)*L). Every client asks for the same
 few URLs, so one CDN entry serves them all, and an uncached page is not a
 URL an attacker can mint at will. A wallet whose sync ends mid-page asks
-for the page containing its cursor and skips the rows it holds. Height-paged streams end at a block boundary, so their cursor
+for the page containing its cursor and skips the rows it holds.
+Height-paged streams end at a block boundary, so their cursor
 (next_height) cannot be aligned; their rows are small (32-byte values) and
 they share the limits on sizes, the per-client rate and the concurrency
 cap (services/privacygate) with the rest. The gate also refuses (400,
