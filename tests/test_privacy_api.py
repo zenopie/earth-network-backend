@@ -253,6 +253,7 @@ def test_no_per_user_lookups():
     assert paths == {"/privacy/status"} | {base + p for p in (
         "/status", "/notes", "/nullifiers", "/identity", "/identity/zeroed", "/roots/latest", "/rates",
         "/stake/notes", "/stake/nullifiers", "/stake/nullifier-tree", "/stake/roots", "/stake/snapshots",
+        "/stake/positions",  # every position; no path names one
         "/handles",  # the whole directory; no path names one handle
         "/debt_rows",  # every slash debt row; no path names one move
     )}

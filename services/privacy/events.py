@@ -56,6 +56,30 @@ x/shieldedstaking/keeper/stake_tree.go):
                          expires_at: a caretaker split's move along the same
                          succession. Checked the same way; nothing is
                          stored (the backend serves no caretaker directory).
+
+Groundworks position leases (chain 653e240, 654f698: every Groundworks
+split counts until groundworks_lease_seconds after it was cast or renewed):
+
+    shieldedstaking_position  action (lock, update, unlock, split_lapsed),
+                         position_id, validator, derth, weight,
+                         split_expires_at (unix seconds, 0 without a
+                         split): a position opened, re-split (an update
+                         with the same split renews its lease), closed, or
+                         its split's lease ended (BeginBlock, or whichever
+                         tx settled the stream first; the split is then
+                         cleared: split_expires_at 0). Stored per position
+                         (positions), so wallets learn their positions'
+                         lease ends from a whole stream instead of asking
+                         the chain about their own position ids. Checked:
+                         a lock takes exactly the next id, the others name
+                         an open position at the same validator, a lease
+                         end is after the block (0 for a lapse), and a
+                         lapse comes at or after the stored lease end.
+    split_lapsed         stream, voter (an account), expires_at: an
+                         operator's MsgSetAllocations split lapsed
+                         (x/allocation). Checked (expires_at at or before
+                         the block); nothing is stored: operator votes are
+                         public chain state (Query/Voter expires_at).
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
@@ -128,7 +152,7 @@ Not read, because they change no tree and no rate a wallet derives:
 shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
 (private LP shares are ordinary shielded_note events; add/remove/complete
 liquidity events name no provider), shieldedstaking_delegate / _undelegate
-(validator, derth, value, epoch, payout_id) / _position / _matured
+(validator, derth, value, epoch, payout_id) / _matured
 (validator, epoch, value, payout) / _unbond_payout_failed (payout_id,
 validator, epoch, attempts, retry_at, error: kept and retried, nothing
 minted) / _stake_vote (vote_nullifiers: both slots' vote nullifiers, a padded
@@ -262,6 +286,28 @@ class Rate:
     epoch: int | None = None
 
 
+POSITION_ACTIONS = ("lock", "update", "unlock", "split_lapsed")
+
+
+@dataclass
+class PositionChange:
+    """A shieldedstaking_position event: position `id` at `validator` was
+    locked, updated, unlocked or had its split lapse; split_expires_at is its
+    lease end after the change (0 without a split)."""
+    id: int
+    action: str
+    validator: str
+    split_expires_at: int
+
+
+@dataclass
+class SplitLapse:
+    """An x/allocation split_lapsed event: an operator's split lapsed."""
+    stream: str
+    voter: str
+    expires_at: int
+
+
 @dataclass
 class BlockDelta:
     height: int
@@ -287,6 +333,10 @@ class BlockDelta:
     payouts: list[UnbondPayout] = field(default_factory=list)
     # Slash debt tree writes, in order (BeginBlock).
     debt_rows: list[DebtRow] = field(default_factory=list)
+    # Groundworks position changes, in execution order.
+    positions: list[PositionChange] = field(default_factory=list)
+    # Operators' Groundworks splits that lapsed (checked, not stored).
+    split_lapses: list[SplitLapse] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -346,6 +396,34 @@ def _debt_row(a: dict[str, str]) -> DebtRow:
     if r.retained > MAX_NOTE_VALUE:
         raise EventError(f"{w}: retained {r.retained} above a note's maximum")
     return r
+
+
+def _position(a: dict[str, str], time: int) -> PositionChange:
+    w = "shieldedstaking_position"
+    action = a.get("action", "")
+    if action not in POSITION_ACTIONS:
+        raise EventError(f"{w}: action {action!r}")
+    if "split_expires_at" not in a:
+        raise EventError(f"{w}: no split_expires_at (a chain before the Groundworks lease, 653e240)")
+    p = PositionChange(_int(a.get("position_id"), f"{w} position_id"), action, a.get("validator", ""),
+                       _int(a["split_expires_at"], f"{w} split_expires_at"))
+    if not p.validator:
+        raise EventError(f"{w} {p.id}: no validator")
+    if action == "split_lapsed" and p.split_expires_at != 0:
+        raise EventError(f"{w} {p.id}: split_lapsed with a lease end ({p.split_expires_at})")
+    if action in ("lock", "update") and p.split_expires_at and p.split_expires_at <= time:
+        raise EventError(f"{w} {p.id}: {action} with a lease end ({p.split_expires_at}) not after the block ({time})")
+    return p
+
+
+def _split_lapse(a: dict[str, str], time: int) -> SplitLapse:
+    w = "split_lapsed"
+    s = SplitLapse(a.get("stream", ""), a.get("voter", ""), _int(a.get("expires_at"), f"{w} expires_at"))
+    if not s.stream or not s.voter:
+        raise EventError(f"{w}: no stream or voter")
+    if s.expires_at == 0 or s.expires_at > time:
+        raise EventError(f"{w} {s.voter}: expires_at {s.expires_at}, block at {time}")
+    return s
 
 
 def ordered_events(results: dict) -> list[dict]:
@@ -466,6 +544,10 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             a = _attrs(ev)
             _check_move(a, t, "nullifier", "previous_nullifier")
             _int(a.get("expires_at"), "move_caretaker expires_at")
+        elif t == "shieldedstaking_position":
+            d.positions.append(_position(_attrs(ev), time))
+        elif t == "split_lapsed":
+            d.split_lapses.append(_split_lapse(_attrs(ev), time))
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))
         elif t == "shieldedstaking_stake_nullifier":

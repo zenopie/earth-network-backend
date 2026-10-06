@@ -353,8 +353,8 @@ first block. A relaunch keeps the chain id, and full pages are cached
   values are lowercase hex, ciphertexts standard base64.
 - **Paging.** `limit` is one of `PRIVACY_PAGE_SIZES` (100 or 1000; default
   1000), anything else 400 `no-store`. Position- and index-paged streams
-  (`notes`, `identity`, `stake/notes`, `stake/nullifier-tree`, `handles`,
-  `debt_rows`) take only a page-aligned cursor: `from_pos` / `from_index` a
+  (`notes`, `identity`, `stake/notes`, `stake/nullifier-tree`,
+  `stake/positions`, `handles`, `debt_rows`) take only a page-aligned cursor: `from_pos` / `from_index` a
   multiple of `limit` (else 400 `no-store`), and page k is exactly positions
   `[k*limit, (k+1)*limit)`. A short page (`complete: false`) reaches the tip;
   its `next_*` is one past the last row, and to continue later ask for the page
@@ -370,8 +370,8 @@ first block. A relaunch keeps the chain id, and full pages are cached
 - **Caching.** A page that filled its limit covers a closed range and is
   `public, max-age=31536000, immutable`, once every height in it has passed
   the indexer's tree-size check; otherwise `max-age=2`. Identity leaves
-  (zeroable later) are `max-age=10` when full, `debt_rows` and `handles`
-  always `max-age=2`, rates 30 s (86400 for a closed epoch).
+  (zeroable later) are `max-age=10` when full, `debt_rows`,
+  `stake/positions` and `handles` always `max-age=2`, rates 30 s (86400 for a closed epoch).
 - **Halted index.** Every `{base}/*` answer is 503 `no-store`
   (`Retry-After: 60`); `/privacy/status` says why in `halted`.
 - **Admission** (`services/privacygate`, before any handler): only the
@@ -396,10 +396,11 @@ first block. A relaunch keeps the chain id, and full pages are cached
     {"chain_id", "genesis", "genesis_hash", "base", "synced_height", "synced_time",
      "start_height", "notes", "note_format": 2, "identity_leaves", "nullifiers",
      "stake_notes", "stake_nullifiers", "stake_nf_tree_size", "stake_note_format": 2,
-     "debt_tree_size", "handles", "handles_height", "handles_stale", "halted"}
+     "debt_tree_size", "positions", "handles", "handles_height", "handles_stale", "halted"}
 
 `notes`, `identity_leaves`, `stake_notes` are tree sizes; `stake_nf_tree_size`
-and `debt_tree_size` count the sentinel (0 when empty). `halted` is null or
+and `debt_tree_size` count the sentinel (0 when empty); `positions` is the
+number of Groundworks position ids indexed. `halted` is null or
 the reason the indexer stopped.
 
 ### Notes (format 2)
@@ -616,6 +617,31 @@ grows, so the one served is always safe to name; the label clears when
 current one. The chain's own `Query/DebtTree`
 (`/earth/shieldedstaking/v1/debt_tree`) answers the same.
 
+### Groundworks positions (split leases)
+
+Every Groundworks split counts for the chain's `groundworks_lease_seconds`
+(365 days by default) from when it was cast or last renewed, then stops
+counting and is cleared. A wallet knows its own position ids from its notes
+and owner tags; reading this whole stream instead of asking the chain for
+those ids keeps which positions are whose off the wire, and gives it each
+lease end to remind its owner before (renewal is manual: MsgUpdatePosition
+with the same split).
+
+    GET {base}/stake/positions?from_index=&limit=
+
+    {"format": 1,
+     "fields": ["id", "validator", "split_expires_at", "height", "updated_height", "closed_height"],
+     "synced_height", "size",          // size: ids indexed (0 .. size-1)
+     "from_index", "next_index", "complete",
+     "rows": [[id, validator, split_expires_at, height, updated_height, closed_height], ...]}
+
+`split_expires_at` is unix seconds, 0 without a split (never cast, cleared,
+or lapsed). `height` is the lock, `updated_height` the last change (update,
+lapse, unlock), `closed_height` the unlock (null while open; an unlocked
+position keeps its row). Rows change in place, so no page is immutable.
+Operators' votes (`Voter.expires_at`) are public chain state and not served
+here.
+
 ## The indexer
 
 `services/privacy/indexer.py` reads `block_results` over CometBFT RPC
@@ -646,8 +672,12 @@ at exactly the next leaf, a known key at its own, `retained` never rising),
 `shieldedstaking_redelegate` (`move_key` must be a stake nullifier of the
 block; `minted` refused; nothing stored), the handle events (only as a
 signal to re-read the directory; `handle_moved` must name distinct `owner`
-and `previous_owner`), and `move_caretaker` (distinct `nullifier` and
-`previous_nullifier`; nothing stored).
+and `previous_owner`), `move_caretaker` (distinct `nullifier` and
+`previous_nullifier`; nothing stored), `shieldedstaking_position` (`lock`
+takes exactly the next id; `update`, `split_lapsed` and `unlock` name an
+open position at the same validator; a lease end after the block, 0 for a
+lapse, and a lapse at or after the stored lease end), and `split_lapsed`
+(an operator's lapse: `expires_at` at or before the block; nothing stored).
 
 **Not read**, because they change no tree and no rate: dex LP events,
 `shielded_unshield` and the other per-msg pool events,
@@ -768,9 +798,12 @@ scenario tests (real proofs, the launch genesis path) recorded as RPC
 nullifier tree sizes and roots after each block, the slash debt tree's size,
 root and `Query/DebtTree` answer, and the chain's `Query/Handles` answer in
 pages of one. The chain's redelegation tests move funds outside blocks, so
-the recorder adds its own scenario, `TestRecordRedelegateSlashDebt`
-(`bin/chainrec/zz_record_scenarios_test.go`), with its proofs in
-`bin/chainrec/proofs`. `zk_vectors.json` comes from the chain's Go zk
+the recorder adds its own scenarios, `TestRecordRedelegateSlashDebt` and
+`TestRecordGroundworksLease` (a position's split renewed, then lapsing, and
+an operator's vote lapsing, at a one-day lease;
+`bin/chainrec/zz_record_scenarios_test.go`), with their proofs in
+`bin/chainrec/proofs`. Each block also carries the keeper's Groundworks
+positions (id, validator, split_expires_at). `zk_vectors.json` comes from the chain's Go zk
 packages. Both regenerate from a chain checkout without touching it:
 
     bin/record-chain-fixtures.sh ../earth-network-chain [ref] [../earth-network-mobile/circuits]

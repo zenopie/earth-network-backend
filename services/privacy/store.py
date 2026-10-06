@@ -27,6 +27,12 @@ with the root the chain emitted after it): a new move key must take exactly
 the next leaf (1, 2, ...), a known one its own leaf, and a row's retained
 never rises.
 
+Groundworks positions (shieldedstaking_position) are kept one row each,
+with the lease end of their split: a lock takes exactly the next id (0, 1,
+2, ...), an update, lapse or unlock names an open position at the same
+validator, and a lapse comes at or after the stored lease end. An unlocked
+position keeps its row (closed_height), so ids stay dense for paging.
+
 The handle directory is not built from events: it is a snapshot of the
 chain's Handles query at one height (services/privacy/handles), replaced
 whole by replace_handles. A block with a handle event records its height
@@ -161,6 +167,18 @@ CREATE TABLE IF NOT EXISTS debt_writes (
     height   INTEGER NOT NULL,
     root     BLOB NOT NULL
 );
+-- Groundworks positions, one row per id (x/shieldedstaking PositionSeq: 0,
+-- 1, 2, ...). split_expires_at: its split's lease end (unix seconds), 0
+-- without a split. height: the lock; updated_height: the last change (lock,
+-- update, lapse, unlock); closed_height: the unlock, NULL while open.
+CREATE TABLE IF NOT EXISTS positions (
+    id               INTEGER PRIMARY KEY,
+    validator        TEXT NOT NULL,
+    split_expires_at INTEGER NOT NULL,
+    height           INTEGER NOT NULL,
+    updated_height   INTEGER NOT NULL,
+    closed_height    INTEGER
+);
 CREATE TABLE IF NOT EXISTS stake_roots (
     height    INTEGER PRIMARY KEY,
     root      BLOB NOT NULL,
@@ -224,6 +242,15 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
             conn.close()
             raise RuntimeError(f"{path}: table {table} is from an earlier index format; "
                                f"wipe INDEX_DB and index again")
+    # An index built before a table existed is missing that table's
+    # history (the positions of blocks it applied without reading them).
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "meta" in tables and conn.execute("SELECT 1 FROM meta WHERE key = 'last_height'").fetchone():
+        missing = sorted(set(_COLUMNS) - tables)
+        if missing:
+            conn.close()
+            raise RuntimeError(f"{path}: no {', '.join(missing)} table (an earlier index format); "
+                               f"wipe INDEX_DB and index again")
     # Readers create the schema too, so an API started before the indexer
     # serves empty streams rather than errors.
     conn.executescript(SCHEMA)
@@ -250,6 +277,12 @@ def debt_size(c: sqlite3.Connection) -> int:
     """The slash debt tree's leaf count as the chain reports it: the rows plus
     the sentinel, 0 before the first row."""
     (n,) = c.execute("SELECT COALESCE(MAX(idx) + 1, 0) FROM debt_rows").fetchone()
+    return n
+
+
+def positions_size(c: sqlite3.Connection) -> int:
+    """Groundworks position ids indexed (every position ever locked)."""
+    (n,) = c.execute("SELECT COALESCE(MAX(id) + 1, 0) FROM positions").fetchone()
     return n
 
 
@@ -462,6 +495,30 @@ class Store:
                               (r.retained, d.height, r.index))
                 c.execute("INSERT INTO debt_writes (idx, key, retained, height, root) VALUES (?, ?, ?, ?, ?)",
                           (r.index, r.key, r.retained, d.height, r.root))
+
+            (pos_next,) = c.execute("SELECT COALESCE(MAX(id) + 1, 0) FROM positions").fetchone()
+            for p in d.positions:
+                if p.action == "lock":
+                    if p.id != pos_next:
+                        raise Inconsistent(
+                            f"block {d.height}: position {p.id} locked, expected id {pos_next}"
+                            + (" (history before the start height is missing)" if not last and pos_next == 0 else ""))
+                    c.execute("INSERT INTO positions (id, validator, split_expires_at, height, updated_height)"
+                              " VALUES (?, ?, ?, ?, ?)", (p.id, p.validator, p.split_expires_at, d.height, d.height))
+                    pos_next += 1
+                    continue
+                row = c.execute("SELECT validator, split_expires_at FROM positions WHERE id = ? AND closed_height IS NULL",
+                                (p.id,)).fetchone()
+                if row is None:
+                    raise Inconsistent(f"block {d.height}: {p.action} of position {p.id}, not an open position"
+                                       + (" (history before the start height is missing)" if not last else ""))
+                if row[0] != p.validator:
+                    raise Inconsistent(f"block {d.height}: {p.action} of position {p.id} at {p.validator}, indexed at {row[0]}")
+                if p.action == "split_lapsed" and not 0 < row[1] <= d.time:
+                    raise Inconsistent(f"block {d.height}: position {p.id} lapsed at {d.time}, its lease ends at {row[1]}")
+                closed = d.height if p.action == "unlock" else None
+                c.execute("UPDATE positions SET split_expires_at = ?, updated_height = ?, closed_height = ? WHERE id = ?",
+                          (0 if closed else p.split_expires_at, d.height, closed, p.id))
 
             if d.stake_root is not None:
                 if d.stake_root.tree_size != stakes:
