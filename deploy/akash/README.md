@@ -40,7 +40,7 @@ limits in front of the node (`services/edge.py`; the deploy repo's
 fails as unavailable. Generate it once
 (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`), put it in
 `.env`, and put the Authorization value it yields in the Cloudflare rule:
-`printf 'earth-backend:%s' "$CHAIN_EDGE_TOKEN" | base64`, prefixed with
+`printf 'earth-backend:%s' "$CHAIN_EDGE_TOKEN" | base64 | tr -d '\n'`, prefixed with
 `Basic `. It moves no funds; whoever holds it can only skip the public limits.
 To rotate, change the rule and `.env` together and redeploy in place.
 
