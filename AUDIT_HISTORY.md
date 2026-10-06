@@ -241,3 +241,28 @@ Chain privacy/orchard b9f840e, genesis 723549a8 (R2-B1, R2-B2, CD-1..CD-4).
   changed (an `id_secret` input, an `idc` output), so all 17 must be
   replaced from mobile's `circuits/tools/variants.py build --downloads
   <backend>/circuits`, and the wallets' manifest pins the new hashes.
+
+## Round-3 backend/deploy fixes (2026-10-06)
+
+Audit round3-backend-deploy.md (R3-BD-1, R3-BD-3, R3-BD-4, R3-BD-6, R3-BD-7).
+
+- `GET /gas/pow` is `async`: as a sync route it ran in Starlette's
+  threadpool and pruned the ratelimit OrderedDicts concurrently with the
+  loop. `ratelimit.run` survives a failing sweep and logs only the
+  exception class (a message could hold an IP-derived key).
+- `CHAIN_EDGE_TOKEN` (`services/edge.py`): the backend's Basic-auth
+  credential at Cloudflare, sent only to `CHAIN_EDGE_HOSTS` (CometRPC and
+  the cosmpy session as a header, gas-check's `--node` as userinfo). The
+  deploy repo's rule 0 skips the RPC allowlist and the rate limits for it;
+  `rpc.erth.network` otherwise refuses gas-check's JSON-RPC POSTs.
+  `build-sdl.py` injects it from `.env` and requires it.
+- `/circuits/<variant>.<sha256>.json.gz` is the only immutable name, served
+  only when `circuits/SHA256SUMS` lists that hash; the plain name gets a
+  5-minute cache. Wallet change to adopt it: see the fix report.
+- Lease alert log lines drop the event's address and mask bech32 in the
+  error (NO_LOGS policy 2 without exceptions).
+- `build-sdl.py` also refuses cloudflared's `--proto-loglevel`,
+  `--trace-output`, `--config` and `TUNNEL_PROTO_LOGLEVEL` /
+  `TUNNEL_TRACE_OUTPUT`.
+
+Test count: 555 (+1 skipped).
