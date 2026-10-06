@@ -198,5 +198,5 @@ def test_an_index_from_before_open_notes_is_refused(tmp_path):
               " height INTEGER NOT NULL, amount TEXT)")
     c.commit()
     c.close()
-    with pytest.raises(RuntimeError, match="predates open notes"):
+    with pytest.raises(RuntimeError, match="table notes is from an earlier index format"):
         store_mod.connect(path)

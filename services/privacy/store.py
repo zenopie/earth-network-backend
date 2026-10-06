@@ -194,6 +194,19 @@ CREATE INDEX IF NOT EXISTS rates_by_validator ON rates (validator, height);
 """
 
 
+def _columns() -> dict[str, list[str]]:
+    """Each SCHEMA table's columns, in order."""
+    mem = sqlite3.connect(":memory:")
+    mem.executescript(SCHEMA)
+    tables = [r[0] for r in mem.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    out = {t: [r[1] for r in mem.execute(f"PRAGMA table_info({t})")] for t in tables}
+    mem.close()
+    return out
+
+
+_COLUMNS = _columns()
+
+
 class Inconsistent(Exception):
     """A block contradicts what is indexed. The index stops rather than diverge."""
 
@@ -203,32 +216,14 @@ def connect(path: str, *, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
-    # An index written for an earlier chain format cannot be served or
-    # extended: refused, to be wiped. The handle directory is a snapshot,
-    # not history, so one without owners is dropped and read again.
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(stake_nullifiers)")]
-    if cols and "idx" not in cols:
-        conn.close()
-        raise RuntimeError(f"{path} predates the stake nullifier tree (stake nullifiers without leaf indexes, "
-                           f"from a chain before it): wipe INDEX_DB and index again")
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(notes)")]
-    if cols and "owner_pk" not in cols:
-        conn.close()
-        raise RuntimeError(f"{path} predates open notes (note rows without owner_pk/rho/rcm, from a chain "
-                           f"before audit round 5): wipe INDEX_DB and index again")
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(stake_notes)")]
-    if cols and "spc" in cols:
-        conn.close()
-        raise RuntimeError(f"{path} predates chain dff3a9b (stake note rows with denom/amount/spc, from a chain "
-                           f"that minted stake notes): wipe INDEX_DB and index again")
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(handles)")]
-    if cols and "owner" not in cols:
-        # handles_due then finds no snapshot and the indexer reads it whole.
-        with conn:
-            conn.execute("DROP TABLE IF EXISTS handles")
-            conn.execute("DROP TABLE IF EXISTS handles_staging")
-            conn.execute("DELETE FROM meta WHERE key IN ('handles_height', 'handles_time', 'handles_size',"
-                         " 'handles_next_change', 'handles_pending_height')")
+    # An index written for an earlier format cannot be served or extended:
+    # refused, to be wiped.
+    for table, want in _COLUMNS.items():
+        have = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if have and have != want:
+            conn.close()
+            raise RuntimeError(f"{path}: table {table} is from an earlier index format; "
+                               f"wipe INDEX_DB and index again")
     # Readers create the schema too, so an API started before the indexer
     # serves empty streams rather than errors.
     conn.executescript(SCHEMA)

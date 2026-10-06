@@ -357,7 +357,7 @@ def test_empty_stake_streams(tmp_path, monkeypatch):
 
 
 def test_an_index_with_minted_stake_note_columns_is_refused(tmp_path):
-    """An index from before dff3a9b (stake rows with denom, amount, spc): wipe it."""
+    """Stake rows with denom, amount, spc (an earlier format): wipe it."""
     import sqlite3
 
     path = str(tmp_path / "old.db")
@@ -366,7 +366,7 @@ def test_an_index_with_minted_stake_note_columns_is_refused(tmp_path):
                 " ciphertext BLOB, denom TEXT, amount TEXT, spc BLOB)")
     old.commit()
     old.close()
-    with pytest.raises(RuntimeError, match="predates chain dff3a9b"):
+    with pytest.raises(RuntimeError, match="table stake_notes is from an earlier index format"):
         Store(path)
 
 
@@ -378,5 +378,5 @@ def test_an_index_from_before_the_nullifier_tree_is_refused(tmp_path):
     old.execute("CREATE TABLE stake_nullifiers (seq INTEGER PRIMARY KEY, nf BLOB NOT NULL UNIQUE, height INTEGER NOT NULL)")
     old.commit()
     old.close()
-    with pytest.raises(RuntimeError, match="wipe INDEX_DB"):
+    with pytest.raises(RuntimeError, match="table stake_nullifiers .* wipe INDEX_DB"):
         Store(path)

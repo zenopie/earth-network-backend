@@ -681,8 +681,8 @@ each tx result's deterministic fields and not `finalize_block_events`, where
 mints, roots and rates are. The tree-size check and `bin/verify-trees.py`
 bound a lying RPC; point `INDEXER_RPC_URL` at a node you run or trust.
 
-An index file written for an earlier chain format is refused at open (wipe
-`INDEX_DB`); the handle directory, a snapshot, is simply read again.
+An index file whose tables do not have exactly the current columns (one
+written for an earlier format) is refused at open: wipe `INDEX_DB`.
 
 ### Verifying the trees
 
