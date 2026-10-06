@@ -194,8 +194,10 @@ def test_a_reordered_stake_nullifier_tree_is_caught(voted):
 def test_a_snapshot_past_the_indexed_nullifier_tree_is_refused(tmp_path):
     sc = copy.deepcopy(scenario(VOTE_SCENARIO))
     snap = next(_stake_events(sc, "shieldedstaking_snapshot"))
-    next(a for a in snap["attributes"] if a["key"] == "nf_size")["value"] = "9"
-    with pytest.raises(Halted, match="snapshot at nullifier tree size 9"):
+    nf_size = next(a for a in snap["attributes"] if a["key"] == "nf_size")
+    past = int(nf_size["value"]) + 1000  # well past every nullifier the scenario indexes by then
+    nf_size["value"] = str(past)
+    with pytest.raises(Halted, match=f"snapshot at nullifier tree size {past}"):
         sync(Indexer(Store(str(tmp_path / "i.db")), FakeRPC(sc)))
 
 

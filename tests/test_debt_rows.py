@@ -111,10 +111,12 @@ def test_slash_events_agree_with_their_rows():
 
 def test_stake_notes_of_redelegations_and_padding_spends_are_indexed(indexed):
     """No chain-minted stake note: every stake note is a proof output with a
-    201-byte ciphertext. A first delegation spends a padding nullifier; a
-    redelegation spends two (lane A's note and the credit lane's padding)
-    and creates two notes (the change and the labelled credit), its move_key
-    the credit nullifier."""
+    201-byte ciphertext. Lane A always publishes two nullifiers (chain
+    final-audit fixes, circuits C-2: slot 1 pads with its own nullifier when
+    one note is spent). A first delegation spends two padding nullifiers; a
+    redelegation spends three (lane A's note, lane A's slot-1 padding and the
+    credit lane's padding) and creates two notes (the change and the labelled
+    credit), its move_key the credit nullifier, published last."""
     store, _ = indexed
     sc = scenario(DEBT_SCENARIO)
     shapes = []
@@ -138,10 +140,10 @@ def test_stake_notes_of_redelegations_and_padding_spends_are_indexed(indexed):
         if "shieldedstaking_redelegate" in kinds:
             (rd,) = [_attrs(e) for e in evs if e["type"] == "shieldedstaking_redelegate"]
             assert "minted" not in rd and int(rd["credited"]) > 0 and int(rd["move_time"]) > 0
-            assert (len(nfs), len(notes)) == (2, 2) and rd["move_key"] == nfs[1]
+            assert (len(nfs), len(notes)) == (3, 2) and rd["move_key"] == nfs[-1]
         shapes.append((tuple(kinds), len(nfs), len(notes)))
-    assert shapes[0] == (("shieldedstaking_delegate",), 1, 1), "the first delegation pads its spend"
-    assert [s for s in shapes if s[0] == ("shieldedstaking_redelegate",)] == [(("shieldedstaking_redelegate",), 2, 2)] * 2
+    assert shapes[0] == (("shieldedstaking_delegate",), 2, 1), "the first delegation pads both slots"
+    assert [s for s in shapes if s[0] == ("shieldedstaking_redelegate",)] == [(("shieldedstaking_redelegate",), 3, 2)] * 2
     assert any(s[0] == () for s in shapes), "the restake that clears the label"
     assert store.stake_counts()[0] == sc["blocks"][-1]["stake_tree_size"]
 

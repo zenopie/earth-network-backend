@@ -195,13 +195,13 @@ def test_a_failed_payout_changes_nothing():
 
 # --- two-slot stake votes ---------------------------------------------------------
 
-def test_a_two_note_vote_lists_its_used_slots_only():
-    """The event's vote_nullifiers are the used slots (1..2), not the msg's
-    two with zeros: a one-note vote lists one."""
+def test_every_note_vote_lists_two_vote_nullifiers():
+    """Every note vote carries two non-zero vote nullifiers (a one-note vote
+    pads its second slot), so the event lists two, whatever was spent."""
     counts = {len(a["vote_nullifiers"].split(","))
               for name in (MANY_NOTES, VOTE_SCENARIO) for _, a in _events(load(name), "shieldedstaking_stake_vote")
               if "vote_nullifiers" in a}
-    assert {1, 2} == counts
+    assert {2} == counts
 
 
 @pytest.mark.parametrize("name", [MANY_NOTES, VOTE_SCENARIO])
