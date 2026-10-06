@@ -50,7 +50,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 
-from .rpc import proto_fields
+from .rpc import proto_fields, varint
 
 HANDLES_QUERY = "/earth.personhood.v1.Query/Handles"
 STATUSES = ("live", "renewal", "free")
@@ -81,26 +81,14 @@ class Entry:
     owner: str = ""
 
 
-def _varint(v: int) -> bytes:
-    out = bytearray()
-    while True:
-        b = v & 0x7F
-        v >>= 7
-        if v:
-            out.append(b | 0x80)
-        else:
-            out.append(b)
-            return bytes(out)
-
-
 def request(start: str, limit: int) -> bytes:
     """QueryHandlesRequest{start, limit}, canonical protobuf."""
     out = b""
     if start:
         s = start.encode()
-        out += b"\x0a" + _varint(len(s)) + s
+        out += b"\x0a" + varint(len(s)) + s
     if limit:
-        out += b"\x10" + _varint(limit)
+        out += b"\x10" + varint(limit)
     return out
 
 

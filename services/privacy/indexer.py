@@ -65,20 +65,13 @@ from services.zk.debt import EMPTY_ROOT as DEBT_EMPTY_ROOT
 
 from .rpc import CometRPC, RPCError, proto_fields, varint_field
 from .store import Inconsistent, Store
+from .verify import (DEBT_TREE_QUERY, IDENTITY_TREE_QUERY, NOTE_TREE_QUERY, STAKE_NF_TREE_QUERY,
+                     STAKE_NF_TREE_REQUEST, STAKE_TREE_QUERY, debt_request)
 
 logger = logging.getLogger(__name__)
 
-NOTE_TREE_QUERY = "/earth.shielded.v1.Query/Tree"  # QueryTreeResponse.tree_size = 1
-IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"  # QueryIdentityTreeResponse.size = 1
-STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"  # QueryStakeTreeResponse.size = 1
-# QueryStakeNullifierTreeResponse.size = 2 (sentinel included). Asked with
-# limit 1 (request field 2), so the answer carries one value, not 1,000.
-STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
-STAKE_NF_TREE_REQUEST = b"\x10\x01"
-# QueryDebtTreeResponse {rows 1, size 2, root 3, window_seconds 4,
-# clear_before 5}, asked with limit 1 (request field 2): one row, not 1,000.
-DEBT_TREE_QUERY = "/earth.shieldedstaking.v1.Query/DebtTree"
-DEBT_TREE_REQUEST = b"\x10\x01"
+# Asked with limit 1: one row, not 1,000.
+DEBT_TREE_REQUEST = debt_request(0, 1)
 
 
 class Halted(Exception):

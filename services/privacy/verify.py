@@ -41,13 +41,17 @@ from services.zk.debt import DebtTree
 from services.zk.indexed import IndexedTree
 from services.zk.merkle import SparseTree
 
-from .rpc import CometRPC, proto_fields
+from .rpc import CometRPC, proto_fields, varint
 
-NOTE_TREE_QUERY = "/earth.shielded.v1.Query/Tree"
-IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"
-STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"
+# The chain's tree queries (the indexer's size check asks them too).
+NOTE_TREE_QUERY = "/earth.shielded.v1.Query/Tree"  # {tree_size 1, root 2 (hex), latest anchor 3}
+IDENTITY_TREE_QUERY = "/earth.personhood.v1.Query/IdentityTree"  # {size 1, root 2}
+STAKE_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeTree"  # {size 1, root 2}
+# QueryStakeNullifierTreeResponse {..., size 2 (sentinel included), root 3},
+# asked with limit 1 (request field 2): one value, not 1,000.
 STAKE_NF_TREE_QUERY = "/earth.shieldedstaking.v1.Query/StakeNullifierTree"
-STAKE_NF_TREE_REQUEST = b"\x10\x01"  # limit 1: only size and roots are read
+STAKE_NF_TREE_REQUEST = b"\x10\x01"
+# QueryDebtTreeResponse {rows 1, size 2, root 3, window_seconds 4, clear_before 5}.
 DEBT_TREE_QUERY = "/earth.shieldedstaking.v1.Query/DebtTree"
 DEBT_PAGE = 1000  # Query/DebtTree's own cap
 _COIN = re.compile(r"([0-9]+)([a-zA-Z][a-zA-Z0-9/:._-]*)")
@@ -286,15 +290,8 @@ async def check_chain(rep: Report, rpc: CometRPC, conn: sqlite3.Connection | Non
     await check_debt_rows(rep, rpc, conn)
 
 
-def _debt_request(start: int, limit: int) -> bytes:
+def debt_request(start: int, limit: int) -> bytes:
     """QueryDebtTreeRequest {start 1, limit 2}: rows from leaf start+1."""
-    def varint(v: int) -> bytes:
-        out = bytearray()
-        while True:
-            b, v = v & 0x7F, v >> 7
-            out.append(b | 0x80 if v else b)
-            if not v:
-                return bytes(out)
     return (b"\x08" + varint(start) if start else b"") + b"\x10" + varint(limit)
 
 
@@ -302,7 +299,7 @@ async def check_debt_rows(rep: Report, rpc: CometRPC, conn: sqlite3.Connection |
     """Query/DebtTree at the synced height: size and root against the rebuilt
     tree, and (with conn) every row, in leaf order, against the index's."""
     h = rep.synced_height
-    first = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, _debt_request(0, DEBT_PAGE), height=h))
+    first = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, debt_request(0, DEBT_PAGE), height=h))
     size = (first.get(2) or [0])[-1]
     root = (first.get(3) or [b""])[-1]
     if size != rep.debt_size:
@@ -320,7 +317,7 @@ async def check_debt_rows(rep: Report, rpc: CometRPC, conn: sqlite3.Connection |
             chain_rows.append(((f.get(1) or [b""])[-1], (f.get(2) or [0])[-1]))
         if len(rows) < DEBT_PAGE or len(chain_rows) >= max(size - 1, 0):
             break
-        page = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, _debt_request(len(chain_rows), DEBT_PAGE), height=h))
+        page = proto_fields(await rpc.abci_query(DEBT_TREE_QUERY, debt_request(len(chain_rows), DEBT_PAGE), height=h))
     have = [(k, r) for k, r in conn.execute("SELECT key, retained FROM debt_rows ORDER BY idx")]
     if chain_rows != have:
         for i, (c, x) in enumerate(zip(chain_rows, have)):

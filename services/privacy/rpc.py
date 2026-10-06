@@ -132,6 +132,16 @@ def proto_fields(message: bytes) -> dict[int, list]:
     return out
 
 
+def varint(v: int) -> bytes:
+    """A protobuf varint."""
+    out = bytearray()
+    while True:
+        b, v = v & 0x7F, v >> 7
+        out.append(b | 0x80 if v else b)
+        if not v:
+            return bytes(out)
+
+
 def varint_field(message: bytes, number: int) -> int:
     """The value of a varint field in a protobuf message (0 if absent)."""
     v = proto_fields(message).get(number)
