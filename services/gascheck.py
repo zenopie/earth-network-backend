@@ -75,6 +75,19 @@ class Unavailable(Exception):
     """The check could not be made (node unreachable, timed out, busy) — not a refusal."""
 
 
+async def _reap(proc) -> None:
+    """Kill a still-running earthd and wait for it, even if we are being cancelled."""
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.shield(proc.wait())
+    except asyncio.CancelledError:
+        pass  # killed already; the shielded wait still reaps it
+
+
 async def _run(args: list[str], stdin: bytes | None = None, priority: bool = False) -> dict:
     global _waiting
     places = config.GAS_CHECK_MAX_WAITING
@@ -93,9 +106,15 @@ async def _run(args: list[str], stdin: bytes | None = None, priority: bool = Fal
             try:
                 out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=config.GAS_CHECK_TIMEOUT)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _reap(proc)
                 raise Unavailable("gas-check timed out")
+            except BaseException:
+                # Cancelled (shutdown, reload, a cancelled task): the slot is
+                # released on the way out, so the process must die with it, or
+                # the next check starts a second ~120 MB earthd beside an orphan
+                # on a 256 MiB lease (final audit BD-7).
+                await _reap(proc)
+                raise
     except FileNotFoundError as exc:
         raise Unavailable(f"{config.EARTHD_BIN} is not installed") from exc
     finally:
@@ -104,7 +123,8 @@ async def _run(args: list[str], stdin: bytes | None = None, priority: bool = Fal
     if proc.returncode != 0:
         # A non-zero exit is the command failing to ask, never the chain saying
         # no; the chain's refusals come back as {"ok": false} with exit 0.
-        raise Unavailable(err.decode("utf-8", "replace").strip().splitlines()[-1:] or "gas-check failed")
+        last = err.decode("utf-8", "replace").strip().splitlines()[-1:]
+        raise Unavailable(last[0] if last else "gas-check failed")
     try:
         return json.loads(out.decode().strip().splitlines()[-1])
     except (ValueError, IndexError) as exc:
