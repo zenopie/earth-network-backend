@@ -240,3 +240,45 @@ def test_sweep_timer_runs_and_stops(monkeypatch):
 
     asyncio.run(go())
     assert len(calls) >= 2
+
+
+def test_a_failed_sweep_does_not_end_the_timer(monkeypatch, caplog):
+    """R3-BD-4: one exception in sweep() used to kill the task silently, and
+    the 10 s expiry NO_LOGS policy 3 promises stopped for the process's life.
+    The error line names the exception class, never a key."""
+    import asyncio
+    import logging
+
+    monkeypatch.setattr(ratelimit, "SWEEP_INTERVAL_SECONDS", 0.01)
+    calls = []
+
+    def flaky(now=None):
+        calls.append(now)
+        if len(calls) == 1:
+            raise KeyError(3232235777)  # what a racing popitem would raise: a key
+
+    monkeypatch.setattr(ratelimit, "sweep", flaky)
+
+    async def go():
+        stop = asyncio.Event()
+        task = asyncio.create_task(ratelimit.run(stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(task, 1)
+
+    with caplog.at_level(logging.ERROR, logger="services.ratelimit"):
+        asyncio.run(go())
+    assert len(calls) >= 2
+    assert "ratelimit sweep failed: KeyError" in caplog.text
+    assert "3232235777" not in caplog.text
+
+
+def test_routes_reaching_the_tables_run_on_the_loop():
+    """R3-BD-4: a sync route runs in Starlette's threadpool, where its prune
+    would race the loop's. Every route that calls into ratelimit is async."""
+    import inspect
+
+    from routers import gas
+
+    for fn in (gas.pow_params, gas.register):
+        assert inspect.iscoroutinefunction(fn), fn.__name__

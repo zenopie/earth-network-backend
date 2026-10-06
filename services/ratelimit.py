@@ -15,6 +15,10 @@ ever reaches its table again. No entry holds a passport
 nullifier, handle or address beside the client key (NO_LOGS.md in the deploy
 repo).
 
+Event loop only. Every call, reads included, prunes the shared OrderedDicts,
+so a caller must run on the loop: an async route or middleware, never a sync
+`def` route, which Starlette runs in a worker thread (round-3 R3-BD-4).
+
 The client is a network, not an address: an IPv4 /32, or the IPv6 prefix of
 REGISTER_IPV6_PREFIX bits (default /48: a VPS host routinely hands one
 customer a /48, and keyed by /64 that customer held 65536 budgets; /56 or
@@ -77,6 +81,7 @@ address says nothing). Off (the default), it is the TCP peer. Anywhere else a
 client chooses its own header and the limit is per-request.
 """
 import ipaddress
+import logging
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -186,7 +191,13 @@ async def run(stop) -> None:
     import asyncio
 
     while not stop.is_set():
-        sweep()
+        # One failed sweep must not end the timer NO_LOGS policy 3 relies on.
+        # The log line names the exception class only: a message could carry
+        # a table key, which is derived from a client IP.
+        try:
+            sweep()
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).error("ratelimit sweep failed: %s", exc.__class__.__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=SWEEP_INTERVAL_SECONDS)
         except asyncio.TimeoutError:

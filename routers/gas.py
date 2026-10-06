@@ -419,7 +419,10 @@ def _pow_needed(bits: int, message: str) -> JSONResponse:
 
 
 @router.get("/pow", summary="The proof of work /gas/register needs right now")
-def pow_params(request: Request):
+async def pow_params(request: Request):
+    # async, not def: a sync route runs in Starlette's threadpool, and the
+    # ratelimit tables are OrderedDicts every read also prunes. They are only
+    # safe touched from the event loop (round-3 R3-BD-4). Nothing here awaits.
     # The network's state, or this client's when it is over its refusal
     # budget (audit-6 M1): either way its requests need the shedding bits.
     shed = ratelimit.shedding() is not None or \
