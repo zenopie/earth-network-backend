@@ -3,7 +3,8 @@
 // hooks it into the app test envs' block helpers; each recorded test then
 // writes every FinalizeBlock response, as CometBFT RPC block_results JSON,
 // with the trees' sizes and roots after the block (note, identity, stake,
-// stake nullifier, slash debt) and the x/personhood Handles query's answer at the block
+// stake nullifier, slash debt), the Groundworks positions (id, validator,
+// split_expires_at) and the x/personhood Handles query's answer at the block
 // (QueryHandlesResponse, protobuf, hex: the handle directory as the chain
 // serves it, statuses at the block's time), to $RECORD_DIR.
 
@@ -52,6 +53,15 @@ type recBlock struct {
 	DebtSize     uint64          `json:"debt_tree_size"`
 	DebtRoot     string          `json:"debt_current_root"`
 	DebtTree     string          `json:"debt_tree"`
+	Positions    []recPosition   `json:"positions"`
+}
+
+// recPosition is a Groundworks position as the keeper stores it after the
+// block: what the indexer's positions table mirrors.
+type recPosition struct {
+	ID             uint64 `json:"id"`
+	Validator      string `json:"validator"`
+	SplitExpiresAt int64  `json:"split_expires_at"`
 }
 
 type cmtjsonRaw []byte
@@ -113,6 +123,13 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 	if err != nil {
 		t.Fatal(err)
 	}
+	positions := []recPosition{}
+	if err := app.ShieldedStakingKeeper.Positions.Walk(ctx, nil, func(id uint64, p sstypes.Position) (bool, error) {
+		positions = append(positions, recPosition{ID: id, Validator: p.Validator, SplitExpiresAt: p.SplitExpiresAt})
+		return false, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	br := &coretypes.ResultBlockResults{
 		Height: height, TxsResults: res.TxResults, FinalizeBlockEvents: res.Events,
 		ValidatorUpdates: res.ValidatorUpdates, ConsensusParamUpdates: res.ConsensusParamUpdates, AppHash: res.AppHash,
@@ -130,6 +147,7 @@ func recordBlock(t *testing.T, app *App, height int64, now time.Time, chainID st
 		NfSize: nfsize, NfRoot: hex.EncodeToString(nfroot), NfAnchor: hex.EncodeToString(nfanchor),
 		Handles: handles,
 		DebtSize: dsize, DebtRoot: hex.EncodeToString(droot), DebtTree: hex.EncodeToString(dbz),
+		Positions: positions,
 	}
 	recMu.Lock()
 	defer recMu.Unlock()

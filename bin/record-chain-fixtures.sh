@@ -5,9 +5,11 @@
 #
 # Exports the chain at ref (default HEAD) to a temporary directory, adds
 # bin/chainrec's recorder, hooks it into the shielded and staking test envs'
-# block helpers, and runs nine scenario tests with real proofs: eight of the
+# block helpers, and runs eleven scenario tests with real proofs: nine of the
 # chain's and bin/chainrec's own TestRecordRedelegateSlashDebt (the chain's
-# redelegation tests fund and move outside blocks). The recorded
+# redelegation tests fund and move outside blocks) and
+# TestRecordGroundworksLease (the chain's lease tests fake their position
+# msgs). The recorded
 # block_results are exactly what a node's RPC would serve for those blocks.
 # Nothing in the chain repo is touched.
 #
@@ -48,7 +50,7 @@ hook("app/shieldedstaking_env_test.go",
      "recordBlock(e.t, e.app, e.height, e.now, ssChainID, res)")
 PY
 (cd "$TMP/chain" && RECORD_DIR="$TMP/rec" EARTH_CIRCUITS="$CIRCUITS" GOFLAGS=-mod=mod go test ./app -count=1 -timeout 60m \
-    -run 'TestPrivatePersonhood$|TestShieldedPoolEndToEnd$|TestPrivateStakingLifecycle$|TestStakeNotesOwnerLocked$|TestSelfBondCompounds$|TestDexAnmlPoolLiquidity$|TestStakeVoteConcurrentProposals$|TestStakeVoteManyNotesOneWeight$|TestRecordRedelegateSlashDebt$')
+    -run 'TestPrivatePersonhood$|TestShieldedPoolEndToEnd$|TestPrivateStakingLifecycle$|TestStakeNotesOwnerLocked$|TestSelfBondCompounds$|TestDexAnmlPoolLiquidity$|TestStakeVoteConcurrentProposals$|TestStakeVoteManyNotesOneWeight$|TestGroundworksPositions$|TestRecordRedelegateSlashDebt$|TestRecordGroundworksLease$')
 if [ -n "$CIRCUITS" ]; then
     rm -rf "$HERE/bin/chainrec/proofs"
     mkdir "$HERE/bin/chainrec/proofs"

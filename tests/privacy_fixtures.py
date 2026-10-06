@@ -6,8 +6,9 @@ bin/record-chain-fixtures.sh as the RPC's block_results JSON, each with the
 note, identity, stake and stake nullifier trees' sizes and roots after the
 block as the keepers reported them (a field a scenario lacks reads as an
 empty tree), the slash debt tree's size, root and whole Query/DebtTree
-answer, and the chain's Handles query answer at the block (pages of one,
-hex QueryHandlesResponse).
+answer, the Groundworks positions (id, validator, split_expires_at), and the
+chain's Handles query answer at the block (pages of one, hex
+QueryHandlesResponse).
 """
 import gzip
 import json
