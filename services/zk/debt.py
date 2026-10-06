@@ -38,9 +38,6 @@ class DebtTree:
         """Leaf count, the sentinel included (0 before the first row)."""
         return self.tree.size
 
-    def __contains__(self, key: int) -> bool:
-        return key in self._index
-
     def _leaf(self, key: int) -> int:
         """key's full leaf (0: the sentinel) from the current order."""
         pos = bisect.bisect_right(self._sorted, key)

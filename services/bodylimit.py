@@ -37,14 +37,13 @@ async def _send_413(send) -> None:
 
 
 class BodyLimit:
-    def __init__(self, app, max_bytes: int | None = None):
+    def __init__(self, app):
         self.app = app
-        self.max_bytes = max_bytes
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        limit = self.max_bytes if self.max_bytes is not None else config.MAX_BODY_BYTES
+        limit = config.MAX_BODY_BYTES
         for name, value in scope.get("headers") or []:
             if name == b"content-length":
                 try:

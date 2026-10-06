@@ -42,9 +42,6 @@ class SparseTree:
         self.levels[0][index] = leaf
         self._dirty.add(index)
 
-    def leaf(self, index: int) -> int:
-        return self._node(0, index)
-
     def root(self) -> int:
         dirty = self._dirty
         for lvl in range(DEPTH):

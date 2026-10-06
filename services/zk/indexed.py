@@ -35,9 +35,6 @@ class IndexedTree:
         """Leaf count, the sentinel included (0 before the first insert)."""
         return self.tree.size
 
-    def __contains__(self, v: int) -> bool:
-        return v in self._index
-
     def _leaf(self, value: int, succ_pos: int) -> int:
         if succ_pos < len(self._sorted):
             nv = self._sorted[succ_pos]
