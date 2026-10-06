@@ -1,20 +1,20 @@
 # Pinned exactly. This service holds a hot wallet mnemonic, so an unpinned
-# dependency is a key that anyone who can push to any of six packages gets a
-# turn at. Bump deliberately, not by rebuilding.
+# dependency is a key that anyone who can push to any of these packages gets
+# a turn at. Bump deliberately, not by rebuilding.
 #
 # The image installs requirements.lock, this file's whole tree with every
 # file's sha256 (--require-hashes; audit-5 L12): after changing a pin here,
 # run bin/lock-requirements.py and commit both.
 #
-# Regenerate the whole set with `pip install -U <pkg>` in a clean venv, then
-# `pip freeze`, rather than editing one line — cosmpy pulls a large transitive
-# tree and pinning the leaves against a moved trunk is how the build breaks in
-# CI rather than locally.
+# This file pins what the service imports, plus the crypto cosmpy signs
+# with; the lock resolves everything else (cosmpy's tree is large) for the
+# image's platform.
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 python-dotenv==1.2.3
 # Also the privacy indexer's CometBFT RPC client (services/privacy/rpc.py).
 httpx==0.28.1
+# cosmpy's signer (transitive): the hot key's secp256k1 signatures.
 ecdsa==0.19.2
 cosmpy==0.12.2
 # A transitive dependency (google-auth, under cosmpy), pinned so the crypto
