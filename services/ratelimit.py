@@ -172,10 +172,10 @@ def allow_privacy(key, now: float | None = None) -> bool:
                   config.REGISTER_IP_MAX_TRACKED)
 
 
-def _bump(table: OrderedDict, key, now: float, window: float) -> None:
+def _bump(table: OrderedDict, key, now: float, window: float, tracked: int) -> None:
     idx, prev, cur = _count(table.pop(key, 0), now, window)
     table[key] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
-    while len(table) > config.REGISTER_REFUSAL_KEYS_TRACKED:
+    while len(table) > tracked:
         table.popitem(last=False)
 
 
@@ -199,16 +199,13 @@ def note_refusal(dsc: bytes | None = None, country: str | None = None, now: floa
     """Counts one verification failure against the network's, the signer's and the country's budgets."""
     now = time.monotonic() if now is None else now
     for key, _ in _budgets(dsc, country):
-        _bump(_refusals, key, now, 60.0)
+        _bump(_refusals, key, now, 60.0, config.REGISTER_REFUSAL_KEYS_TRACKED)
 
 
 def note_client_refusal(client, now: float | None = None) -> None:
     """Counts one gas-check refusal (either lane) against the client (refusal_key) that sent it."""
     now = time.monotonic() if now is None else now
-    idx, prev, cur = _count(_client_refusals.pop(client, 0), now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS)
-    _client_refusals[client] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
-    while len(_client_refusals) > config.REGISTER_IP_MAX_TRACKED:
-        _client_refusals.popitem(last=False)
+    _bump(_client_refusals, client, now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS, config.REGISTER_IP_MAX_TRACKED)
 
 
 def client_refused_out(client, now: float | None = None) -> bool:
