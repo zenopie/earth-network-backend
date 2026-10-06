@@ -469,6 +469,13 @@ seconds) of `height`, `zeroed_height` the block that zeroed the leaf (a zeroed
 leaf is 0 in the tree) or null. A wallet that holds a range follows
 `/identity/zeroed` rather than re-reading leaves.
 
+The stream holds every leaf the chain writes, succession leaves included:
+when a passport last registered to `idc_old` registers to `idc_new` (a
+switch or a re-entry), the chain appends `H(TAG_SUCC, idc_old, idc_new)`
+right after the new identity leaf, in the same block, and never zeroes it
+(the path a move proof runs along). Rebuilt from the stream alone, the tree
+reaches the chain's identity root after every block.
+
 ### Roots and rates
 
     GET {base}/roots/latest
@@ -637,8 +644,10 @@ at exactly the next leaf, a known key at its own, `retained` never rising),
 `shieldedstaking_move_slashed` (must follow its row), `shieldedstaking_slash_debt`
 (must name its moves' validators and at most their summed debt),
 `shieldedstaking_redelegate` (`move_key` must be a stake nullifier of the
-block; `minted` refused; nothing stored), and the handle events (only as a
-signal to re-read the directory).
+block; `minted` refused; nothing stored), the handle events (only as a
+signal to re-read the directory; `handle_moved` must name distinct `owner`
+and `previous_owner`), and `move_caretaker` (distinct `nullifier` and
+`previous_nullifier`; nothing stored).
 
 **Not read**, because they change no tree and no rate: dex LP events,
 `shielded_unshield` and the other per-msg pool events,
