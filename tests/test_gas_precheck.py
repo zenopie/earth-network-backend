@@ -166,7 +166,9 @@ def test_the_removed_fields_are_not_in_the_published_schema(client):
     assert "affiliate_pc" not in props and "affiliate_ciphertext" not in props
 
 
-@pytest.mark.parametrize("date", [today_yymmdd(-3), today_yymmdd(3), 261332, 260100, 1000000])
+# +4, not +3: a date is 00:00 UTC, so late in a UTC day today+3 is only just
+# over 2 days ahead, inside the 2-day skew plus slack, and was accepted.
+@pytest.mark.parametrize("date", [today_yymmdd(-3), today_yymmdd(4), 261332, 260100, 1000000])
 def test_a_stale_or_malformed_date_is_refused_before_asking(client, shields, chain_says, date):
     body = reg_body()
     body["public_signals"][0] = str(date)
