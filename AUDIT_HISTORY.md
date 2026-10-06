@@ -216,3 +216,28 @@ Feature freeze, no behaviour change a wallet sees.
 
 Test count: 476 after passport signature coverage; 470 after this (the six
 removed tests were the removed-grant checks).
+
+## Round-2 chain adoption: idc proofs, used idcs, lease sweep (2026-10-06)
+
+Chain privacy/orchard b9f840e, genesis 723549a8 (R2-B1, R2-B2, CD-1..CD-4).
+
+- `/gas/register` takes the register proof's five public inputs
+  `[current_date, address, nullifier, dsc_key, idc]`; `PASSPORT_IDC_INDEX`
+  (4). After the binding, `public_signals[4]` must equal `idc` → 400 (the
+  chain's 1103: the circuit computes idc from the prover's `id_secret`).
+- Refusal kinds `idc used` (1130 ErrIdcUsed) and `idc mismatch` (1103's
+  idc detail). Both count against the client, like 1127/1128: decided
+  before the proof from public chain data, and no honest wallet meets
+  either (it registers a fresh identity each time; an honest idc mismatch
+  is refused 400 first). 1130's 403 says to switch to a new wallet; a chain
+  idc mismatch logs `PASSPORT_IDC_INDEX` as the likely misconfiguration.
+- The indexer logs x/allocation's lease alerts (`lease_retire_failed`,
+  `lease_settle_held` as errors, `lease_backlog_drained` as info), never
+  checks or stores them. Genesis `used_idcs` and `params.idc_index` change
+  nothing here: the index reads no genesis state and no idcs.
+- Fixtures re-recorded from b9f840e (no event-shape change).
+- Not yet done: `circuits/` still holds the 17 pre-R2-B1 download
+  circuits (they hash to the old `variants.json`). The register circuits
+  changed (an `id_secret` input, an `idc` output), so all 17 must be
+  replaced from mobile's `circuits/tools/variants.py build --downloads
+  <backend>/circuits`, and the wallets' manifest pins the new hashes.
