@@ -192,10 +192,19 @@ def test_client_refusals_age_out(monkeypatch):
     ("identity switch must be proven under the live registration's document signer", "switch signer"),  # 1127
     ("proof dated 1790000000, live registration proven 1790000000: identity switch must be proven on a later date "
      "than the live registration", "switch stale"),  # 1128
+    ("verification failed: invalid move proof", "move"),  # 1129
+    ("this identity moved its handle away", "move"),  # 1125
+    ("this identity moved its caretaker split away", "move"),  # 1126
 ])
 def test_refusal_kinds_of_the_new_codes(error, kind):
     from routers import gas
     assert gas._refusal_kind(error) == kind
+
+
+def test_a_move_refusal_is_not_an_invalid_registration_proof_nor_user_state():
+    from routers import gas
+    assert gas._refusal_kind("invalid move proof") != gas._refusal_kind("invalid registration proof")
+    assert "move" not in gas._USER_STATE_KINDS
 
 
 def test_a_switch_under_another_signer_counts_against_the_client():

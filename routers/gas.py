@@ -321,7 +321,12 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 # the live registration's) and 1128 (a switch whose proof is not dated later
 # than the live registration's proof_date: one switch per passport per day)
 # are checked before the proof is verified, so they are mintable from public
-# chain data and count against the client like the rest.
+# chain data and count against the client like the rest. 1125, 1126 (an
+# identity that moved its handle or split away) and 1129 (an invalid move
+# proof) belong to MsgMoveHandle / MsgMoveCaretaker, which carry no
+# registration: gas-check's registration question never answers them. They
+# are named so a stray one is logged as a move refusal, not "other", and it
+# counts against the client like any refusal that is not user state.
 _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
@@ -333,6 +338,9 @@ _REFUSAL_KINDS = (
      "switch signer"),  # 1127 ErrSwitchSignerMismatch
     ("identity switch must be proven on a later date than the live registration",
      "switch stale"),  # 1128 ErrSwitchProofStale
+    ("invalid move proof", "move"),  # 1129 ErrInvalidMove
+    ("this identity moved its handle away", "move"),  # 1125 ErrHandleMovedOut
+    ("this identity moved its caretaker split away", "move"),  # 1126 ErrCaretakerMovedOut
     ("affiliate_handle is not a live handle", "affiliate"),  # 1121 ErrNoReferrer
     ("identity tree full", "tree full"),  # 1120 ErrIdentityTreeFull
     ("has been revoked", "revoked"),
