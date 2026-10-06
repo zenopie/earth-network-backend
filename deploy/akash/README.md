@@ -1,4 +1,4 @@
-# Akash deployment — earth gas grants
+# Akash deployment — earth network backend
 
 `deploy.yaml` is the SDL. `bin/create.py` makes a new lease, `bin/deploy.sh`
 updates one in place, and both submit the SDL `bin/build-sdl.py` builds:
@@ -26,14 +26,17 @@ third party; leaving it out avoids the first of those, not the second.
 It lives in the gitignored `.env`; `bin/build-sdl.py` substitutes it into the
 SDL that is submitted, never into the file that is committed.
 
-Treat the balance as the blast radius. It is seeded with 10,000 ERTH in the
-chain's genesis — enough for 100,000 grants at `DUST_UERTH=100000`, and worth
-nothing outside the devnet. Do not reuse this key for anything that is.
+Treat the balance as the blast radius. The chain's genesis funds no gas
+wallet: it has nothing until it is sent ERTH after launch (each grant is
+`DUST_UERTH`, 0.1 ERTH; `/health` reports how many it holds). Do not reuse
+this key for anything else.
 
 ## Endpoints
 
     GET  /health          hot wallet balance and grants remaining
     POST /gas/register    a shielded fee note for a registration the chain would accept
+    GET  /gas/pow         the proof of work /gas/register needs now
+    GET  /circuits/<variant>.json.gz   a passport circuit the wallets do not bundle
     GET  /privacy/status  chain_id, genesis and `base` for the wallet streams
     GET  /privacy/<chain_id>/<genesis>/...   the streams (see ../../README.md)
 
