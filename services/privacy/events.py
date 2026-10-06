@@ -65,8 +65,9 @@ split counts until groundworks_lease_seconds after it was cast or renewed):
                          split_expires_at (unix seconds, 0 without a
                          split): a position opened, re-split (an update
                          with the same split renews its lease), closed, or
-                         its split's lease ended (BeginBlock, or whichever
-                         tx settled the stream first; the split is then
+                         its split's lease ended (x/allocation's BeginBlock
+                         sweep only, since chain 7033eac; a lapse that
+                         failed is retried a day later; the split is then
                          cleared: split_expires_at 0). Stored per position
                          (positions), so wallets learn their positions'
                          lease ends from a whole stream instead of asking
@@ -80,6 +81,19 @@ split counts until groundworks_lease_seconds after it was cast or renewed):
                          (x/allocation). Checked (expires_at at or before
                          the block); nothing is stored: operator votes are
                          public chain state (Query/Voter expires_at).
+
+Lease alerts (x/allocation/types/events.go, chain 7033eac; none halts the
+chain, none changes anything this index stores). Logged, never checked, so
+an attribute the chain adds or drops cannot halt the indexer:
+
+    lease_retire_failed  stream, lapser (account | positions), key,
+                         expires_at, retry_at, error: a lease due could
+                         not be retired; its weight counts until retry_at
+                         (a day later). Logged as an error: page on it.
+    lease_settle_held    stream, expires_at: a settle outside the sweep
+                         found a lease due (should never happen). Error.
+    lease_backlog_drained  stream, lapse_seconds: one sweep drained a
+                         halt's backlog (a slow block). Info.
     shieldedstaking_epoch_validator  validator, rewards, delegated,
                                      undelegated, rate, supply   EndBlock
     shieldedstaking_epoch            epoch (the one that just ended)
@@ -185,6 +199,9 @@ ZERO32 = bytes(32)
 # handle_released, handle_moved). Any of them means the directory changed;
 # nothing else in the chain's events starts this way.
 HANDLE_EVENT_PREFIX = "handle_"
+
+# x/allocation lease alerts: logged by the indexer, never stored or checked.
+LEASE_ALERTS = ("lease_retire_failed", "lease_settle_held", "lease_backlog_drained")
 
 
 def is_handle_event(event_type: str) -> bool:
@@ -337,6 +354,8 @@ class BlockDelta:
     positions: list[PositionChange] = field(default_factory=list)
     # Operators' Groundworks splits that lapsed (checked, not stored).
     split_lapses: list[SplitLapse] = field(default_factory=list)
+    # Lease alerts (event type, attributes), for the log only.
+    lease_alerts: list[tuple[str, dict[str, str]]] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -548,6 +567,8 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             d.positions.append(_position(_attrs(ev), time))
         elif t == "split_lapsed":
             d.split_lapses.append(_split_lapse(_attrs(ev), time))
+        elif t in LEASE_ALERTS:
+            d.lease_alerts.append((t, _attrs(ev)))
         elif t == "shieldedstaking_stake_note":
             d.stake_notes.append(_stake_note(_attrs(ev)))
         elif t == "shieldedstaking_stake_nullifier":

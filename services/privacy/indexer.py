@@ -70,6 +70,19 @@ from .verify import (DEBT_TREE_QUERY, IDENTITY_TREE_QUERY, NOTE_TREE_QUERY, STAK
 
 logger = logging.getLogger(__name__)
 
+# What a lease alert's log line shows: public chain data, bounded.
+_LEASE_ALERT_KEYS = ("stream", "lapser", "key", "expires_at", "retry_at", "lapse_seconds", "error")
+
+
+def _log_lease_alerts(height: int, alerts) -> None:
+    """Logs x/allocation's lease alerts (chain 7033eac): a lease that failed
+    to retire or a held settle as errors (each means weight or emission is
+    moving other than the lease rule says), a drained backlog as info."""
+    for kind, attrs in alerts:
+        detail = " ".join(f"{k}={str(attrs[k])[:120]}" for k in _LEASE_ALERT_KEYS if k in attrs)
+        level = logging.INFO if kind == "lease_backlog_drained" else logging.ERROR
+        logger.log(level, "chain lease alert at %d: %s %s", height, kind, detail)
+
 # Asked with limit 1: one row, not 1,000.
 DEBT_TREE_REQUEST = debt_request(0, 1)
 
@@ -223,6 +236,7 @@ class Indexer:
                 await asyncio.to_thread(self.store.apply, delta)
             except (EventError, Inconsistent) as exc:
                 self._halt(f"block {h}: {exc}")
+            _log_lease_alerts(h, delta.lease_alerts)
             self.next_height = h + 1
             self.prev_hash = block_hash
             applied += 1

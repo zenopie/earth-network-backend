@@ -175,6 +175,34 @@ def test_well_formed_lease_events_parse():
     assert d.split_lapses == [events.SplitLapse("STREAM_ID_GROUNDWORKS", "earth1x", 1000)]
 
 
+def test_lease_alerts_are_kept_for_the_log_and_never_halt(caplog):
+    # x/allocation's alert events (chain 7033eac), with the BeginBlock mode
+    # the sweep emits them under, and one missing every attribute: none is
+    # checked, none changes the delta's state.
+    begin = {"key": "mode", "value": "BeginBlock"}
+    alerts = [
+        _ev("lease_retire_failed", stream="STREAM_ID_GROUNDWORKS", lapser="positions", key=VAL,
+            expires_at=900, retry_at=900 + 86400, error="boom"),
+        _ev("lease_settle_held", stream="STREAM_ID_GROUNDWORKS", expires_at=990),
+        _ev("lease_backlog_drained", stream="STREAM_ID_GROUNDWORKS", lapse_seconds=1501),
+        _ev("lease_settle_held"),
+    ]
+    for a in alerts:
+        a["attributes"].append(begin)
+    d = events.parse_block(5, 1000, "H", {"height": "5", "finalize_block_events": alerts})
+    assert [k for k, _ in d.lease_alerts] == ["lease_retire_failed", "lease_settle_held", "lease_backlog_drained",
+                                             "lease_settle_held"]
+    assert d.positions == [] and d.split_lapses == []
+
+    from services.privacy import indexer
+    caplog.set_level("INFO", logger=indexer.logger.name)
+    indexer._log_lease_alerts(5, d.lease_alerts)
+    levels = [(r.levelname, r.getMessage().split(": ", 1)[1].split()[0]) for r in caplog.records]
+    assert levels == [("ERROR", "lease_retire_failed"), ("ERROR", "lease_settle_held"),
+                      ("INFO", "lease_backlog_drained"), ("ERROR", "lease_settle_held")]
+    assert "retry_at=87300" in caplog.records[0].getMessage() and "lapser=positions" in caplog.records[0].getMessage()
+
+
 def _apply(store, height, time, *changes):
     store.apply(events.BlockDelta(height=height, time=time, hash=f"H{height}", positions=list(changes)))
 
