@@ -256,9 +256,8 @@ def test_the_snapshot_is_the_chains_directory_after_every_block(tmp_path):
         else:
             # Not re-read: nothing changed it since the snapshot's block.
             assert rows == want, (b["height"], height)
-    # A1 bound "alice" and changed it to "amy" (kept, unchangeable, after
-    # A1 switched to A2: no moves since the final-audit fixes); D1 bound
-    # "dee", changed its address, then changed it to "dee-2".
+    # A1 bound "alice" and changed it to "amy", which moved to A2 after the
+    # switch; D1 bound "dee", changed its address, then changed it to "dee-2".
     final = as_rows(recorded(snaps[-1][0]))
     assert [r[0] for r in final] == ["amy", "dee-2"] and {r[2] for r in final} == {"live"}
     assert changed < len(snaps), "re-read only when due, not every block"
