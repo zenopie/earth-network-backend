@@ -62,7 +62,8 @@ def test_every_ciphertext_is_required(client, shields, chain_says, field):
 
 @pytest.mark.parametrize("sigs", [
     lambda s: s[:2],               # too few for nullifier_index 2
-    lambda s: s + ["0"] * 13,      # 17 > 16
+    lambda s: s[:4],               # too few for idc_index 4
+    lambda s: s + ["0"] * 12,      # 17 > 16
     lambda s: [],
     lambda s: s[:3] + ["0x07"],    # not decimal
     lambda s: s[:3] + ["+7"],
@@ -86,6 +87,31 @@ def test_a_proof_bound_to_other_notes_is_refused_before_asking(client, shields, 
     resp = client.post("/gas/register", json=reg_body(**over))
     assert resp.status_code == 400 and "bound" in resp.json()["message"]
     assert chain_says["asked"] == []
+
+
+@pytest.mark.parametrize("idc_signal", [
+    "99",                     # an identity whose secret the prover holds, not the one named
+    "0",
+    str(11 + 2 ** 128),
+])
+def test_a_proof_of_another_identity_is_refused_before_asking(client, shields, chain_says, idc_signal):
+    # The binding commits to idc 11 (a seller naming a buyer's identity), but
+    # the circuit's idc output is H(TAG_ID, id_secret) of the prover's own
+    # secret: the chain refuses the mismatch (1103), so this backend does too.
+    body = reg_body()
+    body["public_signals"][4] = idc_signal
+    resp = client.post("/gas/register", json=body)
+    assert resp.status_code == 400 and "identity commitment" in resp.json()["message"]
+    assert chain_says["asked"] == []
+
+
+def test_the_idc_signal_is_read_at_the_configured_index(client, shields, chain_says, monkeypatch):
+    import config
+    body = reg_body()
+    body["public_signals"] = body["public_signals"][:4] + ["7", body["public_signals"][4]]
+    assert client.post("/gas/register", json=body).status_code == 400
+    monkeypatch.setattr(config, "PASSPORT_IDC_INDEX", 5)
+    assert client.post("/gas/register", json=body).status_code == 200
 
 
 @pytest.mark.parametrize("swap", [

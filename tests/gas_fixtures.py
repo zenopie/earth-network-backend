@@ -98,9 +98,9 @@ def affiliate_of(over: dict) -> int:
 
 def signals(nf: int = NF, date: int | None = None, idc=11, pc_anml=12, pc_erth=13, aff: int = 0,
             ct_anml: bytes = CT_ANML, ct_erth: bytes = CT_ERTH) -> list[str]:
-    """[current_date, binding, nullifier, dsc_key], the earth-1 lean_poa layout."""
+    """[current_date, binding, nullifier, dsc_key, idc], the earth-1 lean_poa layout."""
     binding = privacy.registration_binding(config.EARTH_CHAIN_ID, idc, pc_anml, ct_anml, pc_erth, ct_erth, aff)
-    return [str(today_yymmdd() if date is None else date), str(binding), str(nf), str(DSC_KEY)]
+    return [str(today_yymmdd() if date is None else date), str(binding), str(nf), str(DSC_KEY), str(idc)]
 
 
 def reg_body(gas_pc: bytes = PC_GAS, nf: int = NF, **over):

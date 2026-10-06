@@ -49,8 +49,8 @@ GAS_CHECK_RESERVED_WAITING = int(os.getenv("GAS_CHECK_RESERVED_WAITING", "5"))
 KNOWN_DSC_REFRESH_SECONDS = float(os.getenv("KNOWN_DSC_REFRESH_SECONDS", "600"))
 
 # Where MsgRegister's passport proof keeps its public inputs: personhood params
-# nullifier_index, address_index and current_date_index (earth-1 genesis: 2, 1,
-# 0), and current_date_max_skew_seconds (172800). /gas/register reads them to
+# nullifier_index, address_index, current_date_index and idc_index (earth-1
+# genesis: 2, 1, 0, 4), and current_date_max_skew_seconds (172800). /gas/register reads them to
 # refuse a replay, a proof bound to other notes, or a stale date before it
 # spends a gas-check on the request. They must match the chain's params: a
 # wrong index only makes this backend refuse or mis-key, never the chain
@@ -60,6 +60,10 @@ PASSPORT_ADDRESS_INDEX = int(os.getenv("PASSPORT_ADDRESS_INDEX", "1"))
 PASSPORT_CURRENT_DATE_INDEX = int(os.getenv("PASSPORT_CURRENT_DATE_INDEX", "0"))
 # dsc_key_index (earth-1: 3): the DSC commitment the reserved lane looks up.
 PASSPORT_DSC_KEY_INDEX = int(os.getenv("PASSPORT_DSC_KEY_INDEX", "3"))
+# idc_index (earth-1: 4): the identity commitment the circuit computes from the
+# prover's id_secret. The chain refuses a proof whose idc input is not
+# MsgRegister.idc (ErrBadPublicInputs 1103); /gas/register refuses it 400 first.
+PASSPORT_IDC_INDEX = int(os.getenv("PASSPORT_IDC_INDEX", "4"))
 PASSPORT_DATE_MAX_SKEW_SECONDS = int(os.getenv("PASSPORT_DATE_MAX_SKEW_SECONDS", "172800"))
 
 # Per-client limits on /gas/register (services/ratelimit): requests per sliding

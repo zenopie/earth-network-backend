@@ -86,7 +86,7 @@ def test_the_largest_real_registration_fits(client, monkeypatch):
                     dsc_der=base64.b64encode(b"\x02" * 8 * 1024).decode(),
                     **REFERRAL)
     body["affiliate_handle"] = "h" * 32  # the longest handle
-    body["public_signals"] = reg_body(**{**REFERRAL, "affiliate_handle": "h" * 32})["public_signals"] + ["7"] * 12
+    body["public_signals"] = reg_body(**{**REFERRAL, "affiliate_handle": "h" * 32})["public_signals"] + ["7"] * 11
     assert len(json.dumps(body)) < config.MAX_BODY_BYTES
     assert client.post("/gas/register", json=body).status_code == 403  # reached gas-check
 

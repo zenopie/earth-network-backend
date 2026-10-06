@@ -241,7 +241,8 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None
         signals = [_signal(x) for x in body.public_signals]
     except ValueError:
         raise _Refuse(400, "public signals must be canonical decimal field elements")
-    if max(config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX) >= n:
+    if max(config.PASSPORT_NULLIFIER_INDEX, config.PASSPORT_ADDRESS_INDEX, config.PASSPORT_CURRENT_DATE_INDEX,
+           config.PASSPORT_IDC_INDEX) >= n:
         raise _Refuse(400, "too few public signals for a passport proof")
 
     # The binding: the proof's address input must be this chain's id and
@@ -251,6 +252,14 @@ def _precheck(body: RegisterGrant) -> tuple[str, str, bytes, bytes, bytes | None
     if signals[config.PASSPORT_ADDRESS_INDEX] != privacy.registration_binding(
             config.EARTH_CHAIN_ID, idc, pc_anml, ciphertexts[0], pc_erth, ciphertexts[1], affiliate_field):
         raise _Refuse(400, "proof is bound to a different identity and notes than this registration names")
+    # The identity commitment is the circuit's own output, H(TAG_ID,
+    # id_secret): the proof registers the passport only to an identity whose
+    # secret its prover holds. The binding above commits to idc too but says
+    # nothing about who knows its secret; the chain checks this next
+    # (ErrBadPublicInputs 1103), so it is refused here before a gas-check.
+    if signals[config.PASSPORT_IDC_INDEX] != idc:
+        raise _Refuse(400, "the proof's identity commitment is not this registration's idc: "
+                           "prove again with the secret of the identity you register")
 
     try:
         proof_unix = _yymmdd_unix(signals[config.PASSPORT_CURRENT_DATE_INDEX])
@@ -321,7 +330,9 @@ def _dsc_country(dsc_der: bytes) -> str | None:
 # the live registration's) and 1128 (a switch whose proof is not dated later
 # than the live registration's proof_date: one switch per passport per day)
 # are checked before the proof is verified, so they are mintable from public
-# chain data and count against the client like the rest. 1125, 1126 (an
+# chain data and count against the client like the rest. So is 1130 (an idc
+# registered before, by any passport): every landed MsgRegister's idc is
+# public, and the chain refuses a used one before the proof. 1125, 1126 (an
 # identity that moved its handle or split away) and 1129 (an invalid move
 # proof) belong to MsgMoveHandle / MsgMoveCaretaker, which carry no
 # registration: gas-check's registration question never answers them. They
@@ -331,9 +342,15 @@ _PROOF_REFUSAL = "invalid registration proof"
 _REFUSAL_KINDS = (
     (_PROOF_REFUSAL, "invalid proof"),
     ("daily registration limit reached for this document signer or country", "rate cap"),
+    # 1103 for an idc input that is not MsgRegister.idc: _precheck compares
+    # public_signals[PASSPORT_IDC_INDEX] first, so the chain naming it means
+    # the chain's idc_index is not ours (or a proof crafted for our index
+    # alone). Matched on its detail, ahead of 1103's generic kind.
+    ("proof's identity commitment is not this msg's idc", "idc mismatch"),
     ("proof public inputs do not match", "public inputs"),
     ("this registration has already been used", "binding used"),  # 1124 ErrBindingUsed
     ("passport is already registered to this identity commitment", "replay"),  # 1123 ErrRegistrationReplay
+    ("identity commitment has been registered before; register a fresh identity", "idc used"),  # 1130 ErrIdcUsed
     ("identity switch must be proven under the live registration's document signer",
      "switch signer"),  # 1127 ErrSwitchSignerMismatch
     ("identity switch must be proven on a later date than the live registration",
@@ -359,26 +376,40 @@ _REFUSAL_KINDS = (
 # The chain checks the cap only after the certificate has chained, so it is
 # not junk anyone mints with a made-up certificate.
 #
-# 1127 and 1128 do count, deliberately (round-2 R2-BD-6). A real user who
-# retries a same-day switch does meet 1128 through no junk of their own, but
-# both are decided before the proof is verified, from public chain data (a
-# live registration's nullifier, signer and proof_date), so a script can
-# mint them with a bogus proof. Exempted, they would be refusals that hold
+# 1127, 1128 and 1130 do count, deliberately (round-2 R2-BD-6). A real
+# user who retries a same-day switch does meet 1128 through no junk of their
+# own, but all three are decided before the proof is verified, from public
+# chain data (a live registration's nullifier, signer and proof_date; any
+# landed registration's idc), so a script can mint them with a bogus proof. Exempted, they would be refusals that hold
 # the single gas-check queue and never shed their sender to proof of work.
 # The cost to the real user is bounded and never a refusal: after
 # REGISTER_CLIENT_REFUSALS_PER_WINDOW refusals their client is queued only
 # with a proof of work for up to a window, and the 403 already tells them to
-# retry tomorrow (UTC). (An expired document
-# signer is the other such refusal; _precheck answers it 400 before the
+# retry tomorrow (UTC). 1130 is not even a real user's circumstance: a
+# wallet registers a fresh identity every time, so meeting it is a wallet
+# bug (or a switch back to a retired wallet), and the 403 says to switch to
+# a new wallet. The idc mismatch (1103) is junk too: _precheck refuses an
+# honest one 400 before the queue. (An expired document signer is the other
+# user-state refusal; _precheck answers it 400 before the
 # queue, since the chain refuses it before anything else and a made-up
 # certificate would otherwise be a free refusal.)
 _USER_STATE_KINDS = frozenset({"rate cap"})
+
+# What the user can do about a refusal, after the chain's own reason.
+_REFUSAL_HINTS = {
+    "switch stale": "; this passport already switched identity today, retry tomorrow (UTC)",
+    "idc used": "; this identity has been registered before: switch to a new wallet",
+}
+
+
+# Bases matched anywhere in the text: a detail rather than an error's base.
+_MATCHED_ANYWHERE = frozenset({"has been revoked", "proof's identity commitment is not this msg's idc"})
 
 
 def _refusal_kind(error) -> str:
     text = str(error or "").strip()
     for base, kind in _REFUSAL_KINDS:
-        if text == base or text.endswith(": " + base) or (base == "has been revoked" and base in text):
+        if text == base or text.endswith(": " + base) or (base in _MATCHED_ANYWHERE and base in text):
             return kind
     return "other"
 
@@ -570,7 +601,10 @@ async def register(request: Request):
         # is what the user needs, and it says nothing they did not send. The
         # log keeps only its kind: no nullifier, handle or country.
         logger.info("registration check refused: %s", kind)
-        hint = "; this passport already switched identity today, retry tomorrow (UTC)" if kind == "switch stale" else ""
+        if kind == "idc mismatch":
+            logger.error("chain refused an idc that public_signals[%d] matched; check PASSPORT_IDC_INDEX",
+                         config.PASSPORT_IDC_INDEX)
+        hint = _REFUSAL_HINTS.get(kind, "")
         return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}{hint}")
     if verdict.get("nullifier") != nullifier:
         # gas-check read the nullifier from the chain's nullifier_index; ours

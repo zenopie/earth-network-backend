@@ -195,6 +195,11 @@ def test_client_refusals_age_out(monkeypatch):
     ("verification failed: invalid move proof", "move"),  # 1129
     ("this identity moved its handle away", "move"),  # 1125
     ("this identity moved its caretaker split away", "move"),  # 1126
+    ("identity commitment has been registered before; register a fresh identity", "idc used"),  # 1130
+    ("proof's identity commitment is not this msg's idc: the prover must hold the idc's secret: "
+     "proof public inputs do not match", "idc mismatch"),  # 1103, the idc detail
+    ("proof is bound to a different identity and notes than this msg names: proof public inputs do not match",
+     "public inputs"),  # 1103, any other detail
 ])
 def test_refusal_kinds_of_the_new_codes(error, kind):
     from routers import gas
@@ -223,6 +228,27 @@ def test_a_same_day_switch_says_retry_tomorrow(client, chain):
                             "proven on a later date than the live registration")
     r = post(client, body(902))
     assert r.status_code == 403 and "retry tomorrow (UTC)" in r.json()["message"]
+
+
+def test_a_used_idc_counts_against_the_client_and_says_switch_wallet(client, chain):
+    # 1130 is decided before the proof from public chain data (every landed
+    # registration's idc), so it counts like 1127/1128; a real wallet never
+    # reuses an identity, and the reply says what to do if it did.
+    assert "idc used" not in gas._USER_STATE_KINDS
+    chain["refuse"][903] = "identity commitment has been registered before; register a fresh identity"
+    r = post_as(client, body(903), "10.9.9.3")
+    assert r.status_code == 403 and "switch to a new wallet" in r.json()["message"]
+    assert ratelimit.refusal_key("10.9.9.3") in ratelimit._client_refusals
+
+
+def test_an_idc_mismatch_from_the_chain_counts_and_names_the_index(client, chain, caplog):
+    # The precheck passed, so the chain's idc_index is not PASSPORT_IDC_INDEX.
+    assert "idc mismatch" not in gas._USER_STATE_KINDS
+    caplog.set_level(logging.ERROR)
+    chain["refuse"][904] = ("proof's identity commitment is not this msg's idc: the prover must hold the idc's "
+                            "secret: proof public inputs do not match")
+    assert post(client, body(904)).status_code == 403
+    assert "PASSPORT_IDC_INDEX" in caplog.text
 
 
 def test_refusal_logs_name_neither_affiliate_nor_country(client, chain, caplog):

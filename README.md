@@ -87,7 +87,7 @@ its default. The only secret the service reads is `GAS_WALLET_MNEMONIC`.
 | chain | `EARTH_NODE_URL` (cosmpy URL, `rest+https://...`), `EARTH_CHAIN_ID` (`earth-1`), `EARTH_PREFIX`, `EARTH_DENOM` (`uerth`), `EARTH_GAS_PRICE`, `CHAIN_HTTP_TIMEOUT` (15 s) |
 | hot wallet | `GAS_WALLET_MNEMONIC` (required when `GAS_ENABLED`), `DUST_UERTH` (100000), `HEALTH_REFRESH_SECONDS` (30) |
 | gas-check | `EARTHD_BIN`, `EARTHD_HOME`, `EARTH_RPC_URL` (CometBFT RPC), `GAS_CHECK_TIMEOUT` (60 s), `GAS_CHECK_MAX_WAITING` (20), `GAS_CHECK_RESERVED_WAITING` (5), `KNOWN_DSC_REFRESH_SECONDS` (600) |
-| personhood params | `PASSPORT_NULLIFIER_INDEX` (2), `PASSPORT_ADDRESS_INDEX` (1), `PASSPORT_CURRENT_DATE_INDEX` (0), `PASSPORT_DSC_KEY_INDEX` (3), `PASSPORT_DATE_MAX_SKEW_SECONDS` (172800); the chain's genesis values, mirrored |
+| personhood params | `PASSPORT_NULLIFIER_INDEX` (2), `PASSPORT_ADDRESS_INDEX` (1), `PASSPORT_CURRENT_DATE_INDEX` (0), `PASSPORT_DSC_KEY_INDEX` (3), `PASSPORT_IDC_INDEX` (4), `PASSPORT_DATE_MAX_SKEW_SECONDS` (172800); the chain's genesis values, mirrored |
 | per-client limits | `TRUST_CF_CONNECTING_IP` (false), `REGISTER_IP_MAX_PER_WINDOW` (10), `REGISTER_IP_WINDOW_SECONDS` (3600), `REGISTER_IPV6_PREFIX` (48), `REGISTER_IP_MAX_TRACKED` (20000) |
 | refusal budgets | `REGISTER_REFUSALS_PER_DSC_PER_MINUTE` (3), `REGISTER_REFUSALS_PER_COUNTRY_PER_MINUTE` (4), `REGISTER_REFUSALS_PER_MINUTE` (5), `REGISTER_REFUSAL_KEYS_TRACKED` (10000), `REGISTER_CLIENT_REFUSALS_PER_WINDOW` (3), `REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS` (3600), `REGISTER_CLIENT_REFUSAL_IPV6_PREFIX` (64) |
 | proof of work | `POW_RESERVED_BITS` (16), `POW_SHED_BITS` (20), `POW_LOAD_EXTRA_BITS` (2), `POW_MAX_BITS` (22), `POW_MAX_AGE_SECONDS` (600), `POW_MAX_TRACKED` (100000) |
@@ -233,7 +233,10 @@ everything that can refuse a request without one runs first:
    pc_erth, Bytes(ciphertext_erth), affiliate)`, affiliate 0 or
    `H(TAG_AFFILIATE, Bytes(affiliate_handle))` (`services/zk/privacy`, pinned
    to the chain's Go vectors) → 400. Someone else's proof with notes of one's
-   own, or a proof for another chain, stops here.
+   own, or a proof for another chain, stops here. Then
+   `public_signals[PASSPORT_IDC_INDEX]`, the idc the circuit computes from
+   the prover's `id_secret`, must equal `idc` → 400 (the chain's 1103:
+   a passport registers only to an identity whose secret its prover holds).
 6. **Date**: `public_signals[PASSPORT_CURRENT_DATE_INDEX]` (YYMMDD, a real
    calendar date) within `PASSPORT_DATE_MAX_SKEW_SECONDS` + 10 min of now →
    400.

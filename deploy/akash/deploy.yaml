@@ -75,11 +75,12 @@ services:
       - GAS_CHECK_RESERVED_WAITING=5
       # personhood params the cheap pre-checks read (earth-1 genesis:
       # nullifier_index 2, address_index 1, current_date_index 0,
-      # dsc_key_index 3, current_date_max_skew_seconds 172800). Change with the chain's.
+      # dsc_key_index 3, idc_index 4, current_date_max_skew_seconds 172800). Change with the chain's.
       - PASSPORT_NULLIFIER_INDEX=2
       - PASSPORT_ADDRESS_INDEX=1
       - PASSPORT_CURRENT_DATE_INDEX=0
       - PASSPORT_DSC_KEY_INDEX=3
+      - PASSPORT_IDC_INDEX=4
       - PASSPORT_DATE_MAX_SKEW_SECONDS=172800
       # The privacy indexer (services/privacy): follows the chain over CometBFT
       # RPC into /app/state/privacy_index.db and serves /privacy/status and
