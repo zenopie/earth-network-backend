@@ -8,7 +8,10 @@ written to disk or logged, and pruned: a client's entry (keyed by its IPv4
 address or IPv6 prefix) is dropped two windows after its last request, so at
 most 2 h for /gas/register (REGISTER_IP_WINDOW_SECONDS,
 REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS) and 2 min for /privacy
-(PRIVACY_IP_WINDOW_SECONDS) at the defaults. No entry holds a passport
+(PRIVACY_IP_WINDOW_SECONDS) at the defaults, plus at most
+SWEEP_INTERVAL_SECONDS. Every table is swept on every call into this module
+and by run() on a timer, so an entry expires on time even when no request
+ever reaches its table again. No entry holds a passport
 nullifier, handle or address beside the client key (NO_LOGS.md in the deploy
 repo).
 
@@ -163,9 +166,37 @@ def _prune(table: OrderedDict, now: float, window: float) -> None:
         table.popitem(last=False)
 
 
+SWEEP_INTERVAL_SECONDS = 10.0
+
+
+def sweep(now: float | None = None) -> None:
+    """Prunes every table to its own window (NO_LOGS policy 3). Called on every
+    entry into this module and every SWEEP_INTERVAL_SECONDS by run(), so an
+    IP-derived key never outlives two windows on a quiet service. Each prune
+    stops at the first live entry, so a sweep costs O(expired entries)."""
+    now = time.monotonic() if now is None else now
+    _prune(_windows, now, config.REGISTER_IP_WINDOW_SECONDS)
+    _prune(_privacy_windows, now, config.PRIVACY_IP_WINDOW_SECONDS)
+    _prune(_client_refusals, now, config.REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS)
+    _prune(_refusals, now, 60.0)
+
+
+async def run(stop) -> None:
+    """Sweeps every SWEEP_INTERVAL_SECONDS until stop (an asyncio.Event) is set."""
+    import asyncio
+
+    while not stop.is_set():
+        sweep()
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=SWEEP_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _allow(table: OrderedDict, key, now: float | None, limit: int, window: float, tracked: int) -> bool:
     now = time.monotonic() if now is None else now
     _prune(table, now, window)
+    sweep(now)
     entry = table.pop(key, 0)
     idx, prev, cur = _count(entry, now, window)
     ok = _estimate(prev, cur, now, window) < limit
@@ -195,6 +226,7 @@ def allow_privacy(key, now: float | None = None) -> bool:
 
 def _bump(table: OrderedDict, key, now: float, window: float, tracked: int) -> None:
     _prune(table, now, window)
+    sweep(now)
     idx, prev, cur = _count(table.pop(key, 0), now, window)
     table[key] = idx << 32 | prev << 16 | min(cur + 1, 0xFFFF)
     while len(table) > tracked:
@@ -202,6 +234,8 @@ def _bump(table: OrderedDict, key, now: float, window: float, tracked: int) -> N
 
 
 def _rate(table: OrderedDict, key, now: float, window: float) -> float:
+    _prune(table, now, window)
+    sweep(now)
     if key not in table:
         return 0.0
     _, prev, cur = _count(table[key], now, window)

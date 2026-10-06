@@ -188,3 +188,55 @@ def test_a_body_that_fails_the_schema_counts_against_the_client(client, monkeypa
     codes = [client.post("/gas/register", content=raw, headers={"content-type": "application/json"}).status_code
              for _ in range(3)]
     assert codes == [422, 422, 429]
+
+
+def test_quiet_tables_are_swept_within_two_windows(monkeypatch):
+    """R2-BD-2 / NO_LOGS policy 3: an IP-derived key is gone two windows after
+    its client's last request even if that table never sees another request;
+    a sweep (timer or any other table's call) drops it."""
+    monkeypatch.setattr(config, "REGISTER_IP_WINDOW_SECONDS", 100.0)
+    monkeypatch.setattr(config, "PRIVACY_IP_WINDOW_SECONDS", 10.0)
+    monkeypatch.setattr(config, "REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS", 100.0)
+    ip = ratelimit.client_key("198.51.100.7")
+    t0 = 1000.0  # the start of register window 10 and privacy window 100
+    ratelimit.allow(ip, now=t0)
+    ratelimit.allow_privacy(ip, now=t0)
+    ratelimit.note_client_refusal(ip, now=t0)
+    # Within two windows, a sweep keeps each live entry.
+    ratelimit.sweep(now=t0 + 19.9)
+    assert ip in ratelimit._privacy_windows
+    ratelimit.sweep(now=t0 + 199.9)
+    assert ip in ratelimit._windows and ip in ratelimit._client_refusals
+    assert ip not in ratelimit._privacy_windows  # 2 privacy windows passed
+    ratelimit.sweep(now=t0 + 200.0)
+    assert not ratelimit._windows and not ratelimit._client_refusals
+
+
+def test_a_read_of_one_table_prunes_the_others(monkeypatch):
+    """A refusal-budget read (client_refused_out) used to prune nothing; now
+    every entry point sweeps every table."""
+    monkeypatch.setattr(config, "REGISTER_IP_WINDOW_SECONDS", 100.0)
+    monkeypatch.setattr(config, "REGISTER_CLIENT_REFUSAL_WINDOW_SECONDS", 100.0)
+    a, b = ratelimit.client_key("198.51.100.8"), ratelimit.client_key("198.51.100.9")
+    ratelimit.note_client_refusal(a, now=1000.0)
+    ratelimit.allow(a, now=1000.0)
+    assert not ratelimit.client_refused_out(b, now=1250.0)
+    assert a not in ratelimit._client_refusals and a not in ratelimit._windows
+
+
+def test_sweep_timer_runs_and_stops(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(ratelimit, "SWEEP_INTERVAL_SECONDS", 0.01)
+    calls = []
+    monkeypatch.setattr(ratelimit, "sweep", lambda now=None: calls.append(now))
+
+    async def go():
+        stop = asyncio.Event()
+        task = asyncio.create_task(ratelimit.run(stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(task, 1)
+
+    asyncio.run(go())
+    assert len(calls) >= 2
