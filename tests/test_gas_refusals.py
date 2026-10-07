@@ -230,14 +230,16 @@ def test_a_same_day_switch_says_retry_tomorrow(client, chain):
     assert r.status_code == 403 and "retry tomorrow (UTC)" in r.json()["message"]
 
 
-def test_a_used_idc_counts_against_the_client_and_says_switch_wallet(client, chain):
+def test_a_used_idc_counts_against_the_client_and_names_its_kind(client, chain):
     # 1130 is decided before the proof from public chain data (every landed
     # registration's idc), so it counts like 1127/1128; a real wallet never
     # reuses an identity, and the reply says what to do if it did.
     assert "idc used" not in gas._USER_STATE_KINDS
     chain["refuse"][903] = "identity commitment has been registered before; register a fresh identity"
     r = post_as(client, body(903), "10.9.9.3")
-    assert r.status_code == 403 and "switch to a new wallet" in r.json()["message"]
+    assert r.status_code == 403 and "next identity" in r.json()["message"]
+    # Structured: the wallet moves its identity generation on this, never on text.
+    assert r.json()["kind"] == "idc used"
     assert ratelimit.refusal_key("10.9.9.3") in ratelimit._client_refusals
 
 

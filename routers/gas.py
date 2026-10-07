@@ -387,8 +387,8 @@ _REFUSAL_KINDS = (
 # with a proof of work for up to a window, and the 403 already tells them to
 # retry tomorrow (UTC). 1130 is not even a real user's circumstance: a
 # wallet registers a fresh identity every time, so meeting it is a wallet
-# bug (or a switch back to a retired wallet), and the 403 says to switch to
-# a new wallet. The idc mismatch (1103) is junk too: _precheck refuses an
+# bug (or a switch back to a retired identity), and the 403 says to register
+# the wallet's next identity and carries kind "idc used" for the wallet. The idc mismatch (1103) is junk too: _precheck refuses an
 # honest one 400 before the queue. (An expired document signer is the other
 # user-state refusal; _precheck answers it 400 before the
 # queue, since the chain refuses it before anything else and a made-up
@@ -398,7 +398,7 @@ _USER_STATE_KINDS = frozenset({"rate cap"})
 # What the user can do about a refusal, after the chain's own reason.
 _REFUSAL_HINTS = {
     "switch stale": "; this passport already switched identity today, retry tomorrow (UTC)",
-    "idc used": "; this identity has been registered before: switch to a new wallet",
+    "idc used": "; this identity has been registered before: register the wallet's next identity",
 }
 
 
@@ -608,7 +608,10 @@ async def register(request: Request):
             logger.error("chain refused an idc that public_signals[%d] matched; check PASSPORT_IDC_INDEX",
                          config.PASSPORT_IDC_INDEX)
         hint = _REFUSAL_HINTS.get(kind, "")
-        return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}{hint}")
+        # kind is structured so a wallet acts on it rather than on the text:
+        # "idc used" moves its identity generation on (PRIVACY_FORMATS §19).
+        return _reply(403, "error", f"the chain would not accept this registration: {verdict.get('error')}{hint}",
+                      kind=kind)
     if verdict.get("nullifier") != nullifier:
         # gas-check read the nullifier from the chain's nullifier_index; ours
         # disagrees, so PASSPORT_NULLIFIER_INDEX does not match the chain.
