@@ -4,15 +4,27 @@ The node's public RPC and LCD sit behind earth-edge, a request filter in the
 validator's lease that serves an allowlist to everyone (the deploy repo's
 akash/README.md, "Public RPC and LCD"). Every call the backend makes is in
 it: gas-check's JSON-RPC POSTs and store reads, the indexer's ranges, the
-known-DSC refresh. The filter reads no credential and strips Authorization.
+known-DSC refresh.
 
-What the backend still needs is to skip Cloudflare's per-IP rate limits: one
-address does every user's grants and a full re-index from height 1. So it
-presents a shared secret, CHAIN_EDGE_TOKEN, as HTTP Basic credentials
-(`earth-backend:<token>`), and a WAF rule that matches that exact
-Authorization header skips the rate limiting rules and nothing else (rule 0
-there, round-4 R4-E-6). A leaked token buys an address the backend's rate,
-not a way past the filter.
+The backend presents a shared secret, CHAIN_EDGE_TOKEN, as HTTP Basic
+credentials (`earth-backend:<token>`), and two places recognise that exact
+Authorization header:
+
+- Cloudflare: a WAF rule that matches it skips the per-IP rate limiting rules
+  and nothing else (rule 0 there, round-4 R4-E-6). One address does every
+  user's grants and a full re-index from height 1.
+- earth-edge: it compares the header's SHA-256, in constant time, with the
+  hash the SDL holds (round-5 R5-E-7). A match may use the few backend-reserved
+  slots of each cost class and a separate request-body budget, so a public
+  flood cannot starve gas grants or the indexer, and the backend's answers have
+  no size ceiling (the indexer must read every height). It is the same
+  allowlist: the credential admits no call the public cannot make. The filter
+  strips the header before forwarding; the node never sees it.
+
+gas-check sends the same bytes: CometBFT's HTTP client turns the userinfo of
+`node_flag`'s address into this Basic header (SetBasicAuth), so it gets the
+reserve too. A leaked token buys an address the backend's rate and its
+reserved slots, not a way past the filter.
 
 A secret, not the provider's egress address: the address is shared with the
 provider's other tenants and changes with the lease; the token is neither.
