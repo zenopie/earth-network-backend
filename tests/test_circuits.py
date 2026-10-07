@@ -79,3 +79,23 @@ def test_sums_match_the_inflated_circuits():
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         assert h.hexdigest() == digest, variant
+
+
+def test_a_file_not_matching_its_sum_is_not_immutable(tmp_path, monkeypatch):
+    """R4-E-7: circuits/ replaced without regenerating SHA256SUMS. The sums
+    still name the old hash; the file is another build. Its content-addressed
+    name must not be served (immutable for a year), the plain name still is."""
+    _repo(tmp_path, monkeypatch)
+    other = b'{"bytecode":"B"}'
+    (tmp_path / "lean_poa_bp512_sha512.json.gz").write_bytes(gzip.compress(other, mtime=0))
+    c = TestClient(main.app)
+    assert c.get(f"/circuits/lean_poa_bp512_sha512.{SHA}.json.gz").status_code == 404
+    other_sha = hashlib.sha256(other).hexdigest()
+    assert c.get(f"/circuits/lean_poa_bp512_sha512.{other_sha}.json.gz").status_code == 404
+    r = c.get("/circuits/lean_poa_bp512_sha512.json.gz")
+    assert r.status_code == 200 and r.headers["cache-control"] == circuits.SHORT
+    assert circuits.verify(str(tmp_path)) == ["lean_poa_bp512_sha512"]
+
+
+def test_verify_passes_on_the_repo():
+    assert circuits.verify() == []

@@ -51,6 +51,8 @@ async def startup() -> None:
     # (NO_LOGS policy 3); /privacy uses the same tables, so always on.
     _ratelimit_task = asyncio.create_task(ratelimit.run(_stop))
     edge.check()
+    # Hash the served circuits once, off the event loop (R4-E-7).
+    await asyncio.to_thread(circuits.verify)
     if config.GAS_ENABLED:
         chain.init()
         from services import health as health_mod, knowndsc
