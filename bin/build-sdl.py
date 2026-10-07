@@ -7,7 +7,7 @@ values must reach the provider and must not reach the repository:
 
     GAS_WALLET_MNEMONIC   the hot key the dust is sent from — spendable ERTH
     TUNNEL_TOKEN          anyone holding it can attach a replica to the tunnel
-    CHAIN_EDGE_TOKEN      the backend's pass past the node's Cloudflare allowlist
+    CHAIN_EDGE_TOKEN      the backend's skip of Cloudflare's per-IP rate limits
 
 Everything submitted reaches the provider regardless; that is what submitting
 means. What this avoids is them being committed.

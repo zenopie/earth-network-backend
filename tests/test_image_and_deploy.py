@@ -83,6 +83,19 @@ def test_create_redacts_console_errors():
     assert "eyJhIjoi" not in create.redact("not json: TUNNEL_TOKEN=eyJhIjoi trailing")
     out = create.redact(json.dumps({"error": f"env [GAS_WALLET_MNEMONIC={words}] refused"}))
     assert not any(w in out for w in words.split())
+    # R4-E-4: the edge token too, in JSON and in a non-JSON body.
+    edge_tok = "Zq3" + "x" * 40
+    assert edge_tok not in create.redact(json.dumps({"message": f"CHAIN_EDGE_TOKEN={edge_tok}"}))
+    assert edge_tok not in create.redact(f"not json: CHAIN_EDGE_TOKEN={edge_tok} trailing")
+
+
+def test_deploy_sh_redacts_the_edge_token():
+    """bin/deploy.sh's inline redaction covers every *TOKEN* (R4-E-4)."""
+    import re
+    src = open(os.path.join(_ROOT, "bin", "deploy.sh")).read()
+    assert "(?:MNEMONIC|TOKEN|API_KEY)" in src
+    pat = re.compile(r'((?:MNEMONIC|TOKEN|API_KEY)[^\s",]*=)[^"\\,\]\n]+')
+    assert "secretvalue" not in pat.sub(r"\1<redacted>", "CHAIN_EDGE_TOKEN=secretvalue")
 
 
 def test_earthd_pin_is_one_version_and_sha_and_refuses_pre_relaunch():

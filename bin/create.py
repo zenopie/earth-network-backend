@@ -46,14 +46,15 @@ def env() -> dict:
 
 # A value runs to a quote, backslash, comma, bracket or line end, not to a
 # space: a mnemonic is twelve or more words.
-_SECRET = re.compile(r'((?:MNEMONIC|TUNNEL_TOKEN|API_KEY)[^\s",]*=)[^"\\,\]\n]+')
+_SECRET = re.compile(r'((?:MNEMONIC|TOKEN|API_KEY)[^\s",]*=)[^"\\,\]\n]+')
 
 
 def redact(raw: str) -> str:
     """An error body with the secrets cut out, as deploy.sh prints it (audit-5 L9).
 
     The Console API echoes the SDL and manifest in its errors, and both
-    carry the injected GAS_WALLET_MNEMONIC and TUNNEL_TOKEN.
+    carry the injected GAS_WALLET_MNEMONIC, TUNNEL_TOKEN and CHAIN_EDGE_TOKEN
+    (R4-E-4: any *TOKEN*= is cut).
     """
     raw = _SECRET.sub(r"\1<redacted>", raw)
     try:

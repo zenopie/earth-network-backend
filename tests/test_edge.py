@@ -1,4 +1,4 @@
-"""services/edge: the backend's Cloudflare credential, sent to our hosts only."""
+"""services/edge: the backend's Cloudflare credential, sent to our hosts only, over https only."""
 import asyncio
 import base64
 
@@ -26,6 +26,28 @@ def test_header_is_basic_auth_for_our_hosts_only(token):
     # An operator's own node, or a look-alike host, never sees it.
     for url in ("https://rpc.example.org", "https://rpc.erth.network.evil.test", "http://localhost:26657"):
         assert edge.headers(url) == {}, url
+
+
+def test_never_over_plain_http(token):
+    """R4-E-5: an http:// URL to one of our hosts would carry the token in the
+    clear to whatever answers port 80."""
+    for url in ("http://rpc.erth.network", "rest+http://lcd.erth.network", "http://rpc.erth.network:443"):
+        assert edge.headers(url) == {}, url
+        assert edge.node_flag(url) == url, url
+
+
+def test_plain_http_to_our_host_with_a_token_stops_startup(token, monkeypatch):
+    monkeypatch.setattr(config, "EARTH_RPC_URL", "http://rpc.erth.network")
+    with pytest.raises(RuntimeError) as e:
+        edge.check()
+    assert "EARTH_RPC_URL" in str(e.value) and TOK not in str(e.value)
+
+
+def test_https_to_our_hosts_starts(token, monkeypatch):
+    monkeypatch.setattr(config, "EARTH_RPC_URL", "https://rpc.erth.network:443")
+    monkeypatch.setattr(config, "INDEXER_RPC_URL", "https://rpc.erth.network:443")
+    monkeypatch.setattr(config, "EARTH_NODE_URL", "rest+https://lcd.erth.network")
+    edge.check()
 
 
 def test_no_token_sends_nothing(monkeypatch):

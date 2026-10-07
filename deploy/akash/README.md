@@ -33,16 +33,22 @@ this key for anything else.
 
 ## The edge token
 
-`CHAIN_EDGE_TOKEN` is the backend's pass past the Cloudflare allowlist and rate
-limits in front of the node (`services/edge.py`; the deploy repo's
-`akash/README.md`, "Public RPC and LCD limits", rule 0). Without it
-`rpc.erth.network` answers gas-check's JSON-RPC POSTs with 403 and every grant
-fails as unavailable. Generate it once
+`CHAIN_EDGE_TOKEN` lets the backend skip Cloudflare's **per-IP rate limits** in
+front of the node (`services/edge.py`; the deploy repo's `akash/README.md`,
+"Public RPC and LCD", rule 0). It opens nothing else: the node's RPC and LCD sit
+behind earth-edge, a request filter that serves every call the backend makes
+(gas-check's JSON-RPC POSTs and store reads, the indexer, the known-DSC refresh) to
+everyone, and reads no credential. Without the token the backend still works but
+one address doing every user's grants and a full re-index meets the per-IP limits
+(429). Generate it once
 (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`), put it in
 `.env`, and put the Authorization value it yields in the Cloudflare rule:
 `printf 'earth-backend:%s' "$CHAIN_EDGE_TOKEN" | base64 | tr -d '\n'`, prefixed with
-`Basic `. It moves no funds; whoever holds it can only skip the public limits.
-To rotate, change the rule and `.env` together and redeploy in place.
+`Basic `. It is sent only over https, only to `CHAIN_EDGE_HOSTS` (startup refuses
+an `http://` URL to one of them while the token is set), and the Console error
+redaction cuts it like the other secrets. It moves no funds; a holder gets the
+backend's rate limit exemption and nothing past the filter. To rotate, change the
+rule and `.env` together and redeploy in place.
 
 ## Endpoints
 

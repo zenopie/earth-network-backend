@@ -98,10 +98,12 @@ services:
       #
       # CHAIN_EDGE_TOKEN is NOT set here either: bin/build-sdl.py injects it
       # from .env. It is the backend's credential at Cloudflare in front of the
-      # node (services/edge.py; the deploy repo's akash/README.md, rule 0):
-      # without it rpc.erth.network refuses gas-check's JSON-RPC POSTs and the
-      # indexer's /store/ reads. Not a spending key, but whoever holds it skips
-      # the public allowlist and rate limits, so it stays out of the repo.
+      # node (services/edge.py; the deploy repo's akash/README.md, rule 0): it
+      # skips the per-IP rate limits, which one address doing every user's
+      # grants and a full re-index would otherwise meet. The node's edge filter
+      # serves the backend's calls to everyone and reads no credential. Not a
+      # spending key, but whoever holds it gets the backend's exemption, so it
+      # stays out of the repo.
       #
       # GAS_WALLET_MNEMONIC is NOT set here. Everything in this file is sent to
       # the provider hosting the lease, so a mnemonic written here is a mnemonic

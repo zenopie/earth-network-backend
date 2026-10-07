@@ -1,22 +1,26 @@
 """The backend's credential at Cloudflare for rpc.erth.network and lcd.erth.network.
 
-The node's public hostnames sit behind a Cloudflare allowlist: rpc. answers
-only a few GET routes and no JSON-RPC POST, and both hostnames are rate
-limited per client address (the deploy repo's akash/README.md, "Public RPC
-and LCD limits"). The backend needs more than the public gets: `earthd
-gas-check` speaks JSON-RPC over POST (CometBFT's HTTP client, abci_query with
-prove=true), the indexer and the known-DSC refresh read /store/ subspaces,
-and one address does every user's grants and a full re-index. So it presents
-a shared secret, CHAIN_EDGE_TOKEN, as HTTP Basic credentials
-(`earth-backend:<token>`), and a WAF custom rule that matches that exact
-Authorization header skips the allowlist and the rate limits (rule 0 there).
+The node's public RPC and LCD sit behind earth-edge, a request filter in the
+validator's lease that serves an allowlist to everyone (the deploy repo's
+akash/README.md, "Public RPC and LCD"). Every call the backend makes is in
+it: gas-check's JSON-RPC POSTs and store reads, the indexer's ranges, the
+known-DSC refresh. The filter reads no credential and strips Authorization.
+
+What the backend still needs is to skip Cloudflare's per-IP rate limits: one
+address does every user's grants and a full re-index from height 1. So it
+presents a shared secret, CHAIN_EDGE_TOKEN, as HTTP Basic credentials
+(`earth-backend:<token>`), and a WAF rule that matches that exact
+Authorization header skips the rate limiting rules and nothing else (rule 0
+there, round-4 R4-E-6). A leaked token buys an address the backend's rate,
+not a way past the filter.
 
 A secret, not the provider's egress address: the address is shared with the
 provider's other tenants and changes with the lease; the token is neither.
-It is sent only to CHAIN_EDGE_HOSTS, never to an operator's own node set in
-EARTH_RPC_URL/INDEXER_RPC_URL, and it never appears in a log line: the
-header is set on the request, and CometBFT's client strips the userinfo
-from every address it prints.
+It is sent only over HTTPS to CHAIN_EDGE_HOSTS (R4-E-5: an http:// URL would
+send it in the clear to whatever answers port 80), never to an operator's
+own node set in EARTH_RPC_URL/INDEXER_RPC_URL, and it never appears in a log
+line: the header is set on the request, and CometBFT's client strips the
+userinfo from every address it prints.
 """
 import base64
 import logging
@@ -31,13 +35,19 @@ USER = "earth-backend"
 TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 
 
+def _split(url: str):
+    return urlsplit(url.removeprefix("rest+").removeprefix("grpc+"))
+
+
 def _host(url: str) -> str:
-    return (urlsplit(url.removeprefix("rest+").removeprefix("grpc+")).hostname or "").lower()
+    return (_split(url).hostname or "").lower()
 
 
 def applies(url: str) -> bool:
-    """Whether requests to url carry the token: it is set, and url is one of ours."""
-    return bool(config.CHAIN_EDGE_TOKEN) and _host(url) in config.CHAIN_EDGE_HOSTS
+    """Whether requests to url carry the token: it is set, url is one of ours,
+    and the connection is TLS."""
+    return (bool(config.CHAIN_EDGE_TOKEN) and _host(url) in config.CHAIN_EDGE_HOSTS
+            and _split(url).scheme.lower() == "https")
 
 
 def _token() -> str:
@@ -66,17 +76,23 @@ def node_flag(url: str) -> str:
     return urlunsplit((p.scheme, f"{USER}:{_token()}@{netloc}", p.path, p.query, p.fragment))
 
 
+_URLS = ("EARTH_RPC_URL", "INDEXER_RPC_URL", "EARTH_NODE_URL")
+
+
 def check() -> None:
-    """At startup: a malformed token stops the service; a missing one where
-    it is needed is a warning (gas-check and the indexer's reads will be
-    refused by the allowlist). Names hosts and settings, never the token."""
+    """At startup: a malformed token, or one of our hosts configured over
+    plain http while a token is set, stops the service; a missing token where
+    it would be used is a warning (the backend works, but meets the per-IP
+    rate limits). Names hosts and settings, never the token."""
+    ours = [(name, getattr(config, name)) for name in _URLS
+            if _host(getattr(config, name)) in config.CHAIN_EDGE_HOSTS]
     if config.CHAIN_EDGE_TOKEN:
         _token()
+        plain = [name for name, url in ours if _split(url).scheme.lower() != "https"]
+        if plain:
+            raise RuntimeError("%s point at %s over plain http: CHAIN_EDGE_TOKEN is sent only "
+                               "over https" % (", ".join(plain), "/".join(sorted(config.CHAIN_EDGE_HOSTS))))
         return
-    wanted = [name for name, url in (("EARTH_RPC_URL", config.EARTH_RPC_URL),
-                                     ("INDEXER_RPC_URL", config.INDEXER_RPC_URL),
-                                     ("EARTH_NODE_URL", config.EARTH_NODE_URL))
-              if _host(url) in config.CHAIN_EDGE_HOSTS]
-    if wanted:
-        logger.warning("CHAIN_EDGE_TOKEN is unset, so %s reach Cloudflare's public allowlist: "
-                       "gas-check's JSON-RPC POSTs are refused there", ", ".join(wanted))
+    if ours:
+        logger.warning("CHAIN_EDGE_TOKEN is unset, so %s meet Cloudflare's per-IP rate limits "
+                       "(re-index and grant bursts may see 429)", ", ".join(n for n, _ in ours))

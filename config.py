@@ -41,10 +41,12 @@ EARTHD_HOME = os.getenv("EARTHD_HOME", "/tmp/earthd-home")
 EARTH_RPC_URL = os.getenv("EARTH_RPC_URL", "https://rpc.erth.network:443")
 GAS_CHECK_TIMEOUT = float(os.getenv("GAS_CHECK_TIMEOUT", "60"))
 # The backend's credential at Cloudflare in front of the node (services/edge):
-# sent as Basic auth to CHAIN_EDGE_HOSTS only, so the WAF lets gas-check's
-# JSON-RPC POSTs and the indexer's reads past the public allowlist and rate
-# limits. 32-128 characters of [A-Za-z0-9_-]; empty sends nothing, and then
-# gas-check is refused by rpc.erth.network's allowlist (HTTP 403).
+# sent as Basic auth, over https only, to CHAIN_EDGE_HOSTS only, so the WAF
+# skips the per-IP rate limits for the backend (one address doing every
+# user's grants and a full re-index). It opens nothing else: the node's edge
+# filter serves the backend's calls to everyone. 32-128 characters of
+# [A-Za-z0-9_-]; empty sends nothing, and the backend then meets the rate
+# limits.
 CHAIN_EDGE_TOKEN = os.getenv("CHAIN_EDGE_TOKEN", "")
 CHAIN_EDGE_HOSTS = frozenset(h.strip().lower() for h in
                              os.getenv("CHAIN_EDGE_HOSTS", "rpc.erth.network,lcd.erth.network").split(",")
