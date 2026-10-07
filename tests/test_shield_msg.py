@@ -22,3 +22,16 @@ def test_packs_under_the_chains_type_url():
 
 def test_reimport_reuses_the_registered_type():
     assert shielded_msg._message_class() is shielded_msg.MsgShield
+
+
+def test_shield_response_parses_from_simulate_json():
+    # A simulate answer carries MsgShieldResponse in msg_responses; cosmpy
+    # parses it by type URL, which failed on earth-1 at launch.
+    from google.protobuf import json_format
+    from cosmpy.protos.cosmos.tx.v1beta1 import service_pb2
+    body = {"gas_info": {"gas_wanted": "0", "gas_used": "1"},
+            "result": {"data": "", "log": "", "events": [],
+                       "msg_responses": [{"@type": "/earth.shielded.v1.MsgShieldResponse",
+                                          "position": "3", "commitment": "AA=="}]}}
+    resp = json_format.ParseDict(body, service_pb2.SimulateResponse())
+    assert resp.result.msg_responses[0].type_url == "/earth.shielded.v1.MsgShieldResponse"

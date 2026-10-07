@@ -15,6 +15,10 @@ Mirrors proto/earth/shielded/v1/tx.proto:
       bytes pc = 3;          // H(TAG_PC, owner_pk, rho, rcm), 32 bytes
       bytes ciphertext = 4;  // required, the note's amount-blind v2 ciphertext, 177 bytes
     }
+    message MsgShieldResponse {
+      uint64 position = 1;
+      bytes commitment = 2;
+    }
 
 tests/test_shield_msg.py checks the encoding byte for byte against the chain's
 own gogoproto Marshal.
@@ -50,6 +54,13 @@ def _message_class():
                   type_name=".cosmos.base.v1beta1.Coin", json_name="amount")
     msg.field.add(name="pc", number=3, type=F.TYPE_BYTES, label=F.LABEL_OPTIONAL, json_name="pc")
     msg.field.add(name="ciphertext", number=4, type=F.TYPE_BYTES, label=F.LABEL_OPTIONAL, json_name="ciphertext")
+    # The chain answers a simulate (and a tx) with MsgShieldResponse in
+    # msg_responses; cosmpy parses that JSON Any by type URL, so it must be
+    # in the pool too, or every shield fails at simulation with
+    # "Can not find message descriptor by type_url".
+    resp = fdp.message_type.add(name="MsgShieldResponse")
+    resp.field.add(name="position", number=1, type=F.TYPE_UINT64, label=F.LABEL_OPTIONAL, json_name="position")
+    resp.field.add(name="commitment", number=2, type=F.TYPE_BYTES, label=F.LABEL_OPTIONAL, json_name="commitment")
     pool.Add(fdp)
     return message_factory.GetMessageClass(pool.FindMessageTypeByName(_FULL_NAME))
 
