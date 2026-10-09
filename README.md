@@ -628,10 +628,10 @@ current one. The chain's own `Query/DebtTree`
 
 ### Groundworks votes
 
-Not served here. Since chain v1.2.0 a Groundworks vote rides on a stake note
+Not served here. Since chain v1.2.1 a Groundworks vote rides on a stake note
 (keyed by its Groundworks tag) and wallets read the chain's whole list
 (`/earth/shieldedstaking/v1/groundworks_votes`), never a query about one
-tag. Blocks from before v1.2.0 carry `shieldedstaking_position` events of the
+tag. Blocks from before v1.2.1 carry `shieldedstaking_position` events of the
 retired positions; the indexer passes over them.
 
 ## The indexer
