@@ -24,7 +24,6 @@ and, under base = /privacy/<chain_id>/<genesis>:
     GET {base}/stake/nullifier-tree?from_index=&limit=  [index, nf, height]
     GET {base}/stake/roots?from_height=&limit=       [height, root, tree_size, time]
     GET {base}/stake/snapshots?from_height=&limit=   [height, proposal_id, root, tree_size, nf_root, nf_size]
-    GET {base}/stake/positions?from_index=&limit=    [id, validator, split_expires_at, height, updated_height, closed_height]
     GET {base}/handles?from_index=&limit=            [handle, address, status, expires_at, renewal_until, owner]
     GET {base}/debt_rows?from_index=&limit=          [index, key, retained, height, updated_height]
 
@@ -71,18 +70,6 @@ row can be rewritten (a later slash: retained falls), so no page is
 immutable; a wallet whose rebuilt root differs from `root` reads every page
 again.
 
-The Groundworks positions (x/shieldedstaking) are served whole by id, like
-the debt rows: every position ever locked, with its split's lease end
-(split_expires_at, unix seconds, 0 without a split; chain
-groundworks_lease_seconds, a year by default, from when it was cast or
-renewed). A wallet knows its own position ids from its notes and owner
-tags; reading every page instead of asking the chain about those ids keeps
-which positions are whose off the wire, and tells it when to remind its
-owner to renew (MsgUpdatePosition with the same split; never automatic).
-At the lease end the chain clears the split (split_expires_at 0 from that
-block on). An unlocked position keeps its row with closed_height set. Rows
-change in place, so every page is short-lived.
-
 The handle directory (x/personhood handles, services/privacy/handles) is
 served whole, like every other stream: there is no endpoint for one handle,
 so a wallet paying a handle does not tell this server which. It is a
@@ -119,7 +106,7 @@ verified_height), and while the index is halted every {base}/* answer is
 
 Paging (audit-4 B3): limit is one of PRIVACY_PAGE_SIZES (100, 1000) and
 nothing else, and a position- or index-paged stream (notes, identity,
-stake/notes, stake/nullifier-tree, stake/positions, debt_rows, handles) takes only a
+stake/notes, stake/nullifier-tree, debt_rows, handles) takes only a
 page-aligned cursor: from_pos / from_index a multiple of limit, else 400.
 Page k of size L is exactly [k*L, (k+1)*L). Every client asks for the same
 few URLs, so one CDN entry serves them all, and an uncached page is not a
@@ -303,7 +290,6 @@ NOTE_FIELDS = ["position", "height", "cm", "ciphertext", "amount", "owner_pk", "
 STAKE_NOTE_FORMAT = 2
 STAKE_NOTE_FIELDS = ["position", "height", "cm", "ciphertext"]
 DEBT_ROW_FIELDS = ["index", "key", "retained", "height", "updated_height"]
-POSITION_FIELDS = ["id", "validator", "split_expires_at", "height", "updated_height", "closed_height"]
 
 
 @router.get("/privacy/status")
@@ -332,7 +318,6 @@ def status(response: Response):
             "stake_nf_tree_size": store_mod.stake_nf_size(c),
             "stake_note_format": STAKE_NOTE_FORMAT,
             "debt_tree_size": store_mod.debt_size(c),
-            "positions": store_mod.positions_size(c),
             "handles": _handles_size(c),
             "handles_height": int(_meta(c, "handles_height") or 0) or None,
             "handles_stale": store_mod.handles_stale(c, config.HANDLES_STALE_BLOCKS),
@@ -645,35 +630,6 @@ def debt_rows(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
             "next_index": rows[-1][0] + 1 if rows else max(from_index, 1),
             "complete": bool(rows) and rows[-1][0] == last,
             "rows": [[i, k.hex(), r, h, u] for i, k, r, h, u in rows],
-        }
-
-
-@chain.get("/stake/positions")
-def stake_positions(response: Response, from_index: int = Query(0, ge=0, le=MAX_INT),
-                    limit: int | None = Query(None, ge=1, le=MAX_INT)):
-    """Every Groundworks position by id, with its split's lease end.
-
-    size is the number of ids indexed (positions ever locked: ids 0 ..
-    size-1); a wallet reads pages 0 .. size-1. Short-lived: an update, a
-    lapse or an unlock rewrites a row in place.
-    """
-    _, last = _aligned(from_index, limit, "from_index")
-    with _read() as c:
-        rows = c.execute(
-            "SELECT id, validator, split_expires_at, height, updated_height, closed_height FROM positions"
-            " WHERE id BETWEEN ? AND ? ORDER BY id",
-            (from_index, last),
-        ).fetchall()
-        response.headers["Cache-Control"] = TIP
-        return {
-            "format": 1,
-            "fields": POSITION_FIELDS,
-            "synced_height": _synced(c),
-            "size": store_mod.positions_size(c),
-            "from_index": from_index,
-            "next_index": rows[-1][0] + 1 if rows else from_index,
-            "complete": bool(rows) and rows[-1][0] == last,
-            "rows": [list(r) for r in rows],
         }
 
 

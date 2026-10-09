@@ -57,25 +57,11 @@ x/shieldedstaking/keeper/stake_tree.go):
                          succession. Checked the same way; nothing is
                          stored (the backend serves no caretaker directory).
 
-Groundworks position leases (chain 653e240, 654f698: every Groundworks
-split counts until groundworks_lease_seconds after it was cast or renewed):
+Groundworks (chain v1.2.0: votes by stake note, read by wallets from the
+chain's own Query/GroundworksVotes; nothing here is stored). Blocks from
+before v1.2.0 carry shieldedstaking_position events of the retired
+positions: ignored.
 
-    shieldedstaking_position  action (lock, update, unlock, split_lapsed),
-                         position_id, validator, derth, weight,
-                         split_expires_at (unix seconds, 0 without a
-                         split): a position opened, re-split (an update
-                         with the same split renews its lease), closed, or
-                         its split's lease ended (x/allocation's BeginBlock
-                         sweep only, since chain 7033eac; a lapse that
-                         failed is retried a day later; the split is then
-                         cleared: split_expires_at 0). Stored per position
-                         (positions), so wallets learn their positions'
-                         lease ends from a whole stream instead of asking
-                         the chain about their own position ids. Checked:
-                         a lock takes exactly the next id, the others name
-                         an open position at the same validator, a lease
-                         end is after the block (0 for a lapse), and a
-                         lapse comes at or after the stored lease end.
     split_lapsed         stream, voter (an account), expires_at: an
                          operator's MsgSetAllocations split lapsed
                          (x/allocation). Checked (expires_at at or before
@@ -86,7 +72,7 @@ Lease alerts (x/allocation/types/events.go, chain 7033eac; none halts the
 chain, none changes anything this index stores). Logged, never checked, so
 an attribute the chain adds or drops cannot halt the indexer:
 
-    lease_retire_failed  stream, lapser (account | positions), key,
+    lease_retire_failed  stream, lapser (account | groundworks_votes), key,
                          expires_at, retry_at, error: a lease due could
                          not be retired; its weight counts until retry_at
                          (a day later). Logged as an error: page on it.
@@ -303,20 +289,6 @@ class Rate:
     epoch: int | None = None
 
 
-POSITION_ACTIONS = ("lock", "update", "unlock", "split_lapsed")
-
-
-@dataclass
-class PositionChange:
-    """A shieldedstaking_position event: position `id` at `validator` was
-    locked, updated, unlocked or had its split lapse; split_expires_at is its
-    lease end after the change (0 without a split)."""
-    id: int
-    action: str
-    validator: str
-    split_expires_at: int
-
-
 @dataclass
 class SplitLapse:
     """An x/allocation split_lapsed event: an operator's split lapsed."""
@@ -350,8 +322,6 @@ class BlockDelta:
     payouts: list[UnbondPayout] = field(default_factory=list)
     # Slash debt tree writes, in order (BeginBlock).
     debt_rows: list[DebtRow] = field(default_factory=list)
-    # Groundworks position changes, in execution order.
-    positions: list[PositionChange] = field(default_factory=list)
     # Operators' Groundworks splits that lapsed (checked, not stored).
     split_lapses: list[SplitLapse] = field(default_factory=list)
     # Lease alerts (event type, attributes), for the log only.
@@ -415,24 +385,6 @@ def _debt_row(a: dict[str, str]) -> DebtRow:
     if r.retained > MAX_NOTE_VALUE:
         raise EventError(f"{w}: retained {r.retained} above a note's maximum")
     return r
-
-
-def _position(a: dict[str, str], time: int) -> PositionChange:
-    w = "shieldedstaking_position"
-    action = a.get("action", "")
-    if action not in POSITION_ACTIONS:
-        raise EventError(f"{w}: action {action!r}")
-    if "split_expires_at" not in a:
-        raise EventError(f"{w}: no split_expires_at (a chain before the Groundworks lease, 653e240)")
-    p = PositionChange(_int(a.get("position_id"), f"{w} position_id"), action, a.get("validator", ""),
-                       _int(a["split_expires_at"], f"{w} split_expires_at"))
-    if not p.validator:
-        raise EventError(f"{w} {p.id}: no validator")
-    if action == "split_lapsed" and p.split_expires_at != 0:
-        raise EventError(f"{w} {p.id}: split_lapsed with a lease end ({p.split_expires_at})")
-    if action in ("lock", "update") and p.split_expires_at and p.split_expires_at <= time:
-        raise EventError(f"{w} {p.id}: {action} with a lease end ({p.split_expires_at}) not after the block ({time})")
-    return p
 
 
 def _split_lapse(a: dict[str, str], time: int) -> SplitLapse:
@@ -563,8 +515,6 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             a = _attrs(ev)
             _check_move(a, t, "nullifier", "previous_nullifier")
             _int(a.get("expires_at"), "move_caretaker expires_at")
-        elif t == "shieldedstaking_position":
-            d.positions.append(_position(_attrs(ev), time))
         elif t == "split_lapsed":
             d.split_lapses.append(_split_lapse(_attrs(ev), time))
         elif t in LEASE_ALERTS:

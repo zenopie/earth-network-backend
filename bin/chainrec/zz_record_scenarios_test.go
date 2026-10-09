@@ -70,19 +70,21 @@ func TestRecordRedelegateSlashDebt(t *testing.T) {
 	e.invariants()
 }
 
-// TestRecordGroundworksLease: the Groundworks split lease (chain 654f698,
-// 653e240) in blocks, at the shortest lease (one day). A position locked
-// with a split, renewed with MsgUpdatePosition halfway through its lease,
-// standing past its first lease end and lapsing at its renewed one
-// (shieldedstaking_position, action split_lapsed, in BeginBlock); and an
-// operator's MsgSetAllocations vote lapsing the same way (x/allocation
-// split_lapsed).
+// TestRecordGroundworksLease: the Groundworks vote lease (chain 654f698,
+// 653e240; votes by stake note since v1.2.0) in blocks, at the shortest
+// lease (one day). A stake note voting a split (MsgRestake), renewed by a
+// restake voting the same split halfway through its lease, standing past
+// its first lease end and lapsing at its renewed one (the vote deleted, in
+// BeginBlock); and an operator's MsgSetAllocations vote lapsing the same way
+// (x/allocation split_lapsed).
 func TestRecordGroundworksLease(t *testing.T) {
 	e := initStakeEnv(t)
 	vB, opKey := e.createValidator(1000 * ssErth)
 	e.next(5 * time.Second)
 	e.shield(uint64(3_000 * ssErth))
-	e.shield(uint64(100 * ssErth))
+	for range 4 {
+		e.shield(uint64(100 * ssErth))
+	}
 	gw := allocationtypes.STREAM_ID_GROUNDWORKS
 	ak := e.app.AllocationKeeper
 	gov := authtypes.NewModuleAddress("gov")
@@ -98,25 +100,27 @@ func TestRecordGroundworksLease(t *testing.T) {
 	lease := int64(allocationtypes.MinGroundworksLeaseSeconds)
 	e.next(5 * time.Second)
 	opt := []allocationtypes.AllocationWeight{{OptionId: 1, Percent: 100}}
+	votes := func() []sstypes.GroundworksVote {
+		var out []sstypes.GroundworksVote
+		require.NoError(t, e.app.ShieldedStakingKeeper.GwVotes.Walk(e.ctx(), nil, func(_ uint64, v sstypes.GroundworksVote) (bool, error) {
+			out = append(out, v)
+			return false, nil
+		}))
+		return out
+	}
 
 	dn := e.delegate(vB, uint64(1_000*ssErth))
 	e.days(2)
-	key := positionKey(1)
-	id := e.lock(dn, uint64(500*ssErth), key, opt)
-	exp := e.position(id).SplitExpiresAt
+	voting := e.restakeVote([]*snote{dn}, false, opt)
+	require.Len(t, votes(), 1)
+	exp := votes()[0].SplitExpiresAt
 	require.Equal(t, e.now.Unix()+lease, exp)
 
-	// Renewed halfway: the same split again.
+	// Renewed halfway: the note respent onto itself with the same split.
 	e.next(12 * time.Hour)
-	pt := e.feeOnly()
-	sp := e.ownerProof(key)
-	um := &sstypes.MsgUpdatePosition{Bundle: pt.b, PositionId: id, Splits: opt, Stake: sp.proof}
-	e.prove(um, pt)
-	e.proveStake(um, sp)
-	fb := e.run(e.privateTx(um))
-	require.Equal(t, uint32(0), fb.Code, fb.Log)
-	e.settle(pt)
-	renewed := e.position(id).SplitExpiresAt
+	e.restakeVote([]*snote{voting}, false, opt)
+	require.Len(t, votes(), 1)
+	renewed := votes()[0].SplitExpiresAt
 	require.Equal(t, e.now.Unix()+lease, renewed)
 
 	// The operator votes its self-bond.
@@ -130,14 +134,13 @@ func TestRecordGroundworksLease(t *testing.T) {
 	opExp := voter.ExpiresAt
 	require.Equal(t, e.now.Unix()+lease, opExp)
 
-	// Past the first lease end the renewed split stands.
+	// Past the first lease end the renewed vote stands.
 	e.atUnix(exp + 60)
-	require.NotEmpty(t, e.position(id).Splits)
+	require.Len(t, votes(), 1)
 	// At the renewed end it lapses (BeginBlock), then the operator's vote.
-	fbk := e.next(time.Duration(renewed-e.now.Unix()) * time.Second)
-	require.Empty(t, e.position(id).Splits)
-	require.Len(t, eventsOf(fbk.Events, sstypes.EventTypePosition), 1)
-	fbk = e.next(time.Duration(opExp-e.now.Unix()+5) * time.Second)
+	e.next(time.Duration(renewed-e.now.Unix()) * time.Second)
+	require.Empty(t, votes())
+	fbk := e.next(time.Duration(opExp-e.now.Unix()+5) * time.Second)
 	require.Len(t, eventsOf(fbk.Events, "split_lapsed"), 1)
 	_, err = ak.Voters.Get(e.ctx(), collections.Join(uint32(gw), []byte(op)))
 	require.ErrorIs(t, err, collections.ErrNotFound)

@@ -67,7 +67,6 @@ ENDPOINTS: dict[str, frozenset[str]] = {
     "stake/nullifier-tree": frozenset({"from_index", "limit"}),
     "stake/roots": frozenset({"from_height", "limit"}),
     "stake/snapshots": frozenset({"from_height", "limit"}),
-    "stake/positions": frozenset({"from_index", "limit"}),
     "handles": frozenset({"from_index", "limit"}),
     "debt_rows": frozenset({"from_index", "limit"}),
 }
