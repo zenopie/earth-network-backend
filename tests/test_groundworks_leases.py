@@ -2,11 +2,12 @@
 events and the lease alerts. Groundworks votes themselves (chain v1.2.0,
 by stake note) are not indexed: wallets read the chain's whole list.
 
-TestRecordGroundworksLease (bin/chainrec's own scenario, recorded before
-v1.2.0 retired positions): its shieldedstaking_position events are history
-the indexer passes over; the operator's MsgSetAllocations vote lapsing
-(x/allocation split_lapsed) is checked. Refusals are synthetic, in the
-chain's event shape.
+TestRecordGroundworksLease (bin/chainrec's own scenario, recorded from chain
+v1.3.0): a stake note's vote has no lease (split_expires_at 0, v1.3.0) and
+stands past one; the operator's MsgSetAllocations vote lapsing
+(x/allocation split_lapsed) is checked. shieldedstaking_position events
+(before v1.2.0) are history the indexer passes over. Refusals are
+synthetic, in the chain's event shape.
 """
 import asyncio
 import sqlite3
@@ -43,6 +44,16 @@ def test_the_lease_scenario_indexes_and_the_operator_vote_lapses(tmp_path):
     h, s = lapses[0]
     assert s.stream == "STREAM_ID_GROUNDWORKS" and s.voter.startswith("earth1")
     assert 0 < s.expires_at <= parse_time(by_h[h]["time"])
+    # The stake vote is unleased and never lapses (v1.3.0): cast, re-cast
+    # (the first cancelled by its note's spend), and still standing at the end.
+    votes = [{a["key"]: a["value"] for a in e["attributes"]}
+             for b in sc["blocks"] for tx in b["block_results"].get("txs_results") or []
+             for e in tx.get("events") or [] if e["type"] == "shieldedstaking_groundworks_vote"]
+    votes += [{a["key"]: a["value"] for a in e["attributes"]}
+              for b in sc["blocks"] for e in b["block_results"].get("finalize_block_events") or []
+              if e["type"] == "shieldedstaking_groundworks_vote"]
+    assert sorted(v["action"] for v in votes) == ["cancelled", "cast", "cast"]
+    assert all(v["split_expires_at"] == "0" and v["vintage"] for v in votes)
 
 
 def _ev(type_, **attrs):

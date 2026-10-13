@@ -505,8 +505,8 @@ belongs to.
 
 ### Stake notes (format 2)
 
-x/shieldedstaking's stake note tree (owner-locked `derth/<valoper>` notes,
-one per validator a wallet stakes with), served like the pool's.
+x/shieldedstaking's stake note tree (owner-locked derth notes, one per
+validator and stake vintage a wallet stakes with), served like the pool's.
 
     GET {base}/stake/notes?from_pos=&limit=
 
@@ -518,13 +518,34 @@ one per validator a wallet stakes with), served like the pool's.
 |---|---|
 | `position` | leaf position in the stake note tree |
 | `height` | block that appended it |
-| `cm` | `H(TAG_STAKE, AssetID(derth/<valoper>), amount, spc, label)`, label 0 or `H(TAG_SLABEL, move_key, move_time, exposed)` |
+| `cm` | `H(TAG_STAKE, AssetID(denom), amount, spc, label)`, label 0 or `H(TAG_SLABEL, move_key, move_time, exposed)`; `denom` below |
 | `ciphertext` | base64, never null: the wallet stake ciphertext, exactly 201 bytes, `epk \|\| AEAD(0x04 \|\| asset \|\| amount \|\| rho \|\| rcm \|\| move_key \|\| move_time \|\| exposed) \|\| tag` (label fields zero when unlabelled) |
 
 The chain mints no stake note: every row is a stake proof output (lane A's
 `commitment`, then the credit lane's `credit_commitment`), the zero note of
 a full exit included. A wallet finds its stake notes by trial decryption
 only. Read columns by name and refuse a page whose `format` is not 2.
+
+**Stake vintages** (chain v1.3.0). A stake note's denom names its vintage,
+the UTC month (`YYYYMM`) its stake was last checked in:
+`derth/<valoper>/<YYYYMM>`, except the chain's base vintage (on earth-1 the
+v1.3.0 upgrade month), whose denom is the unsuffixed `derth/<valoper>` every
+earlier note carries. One denom per (validator, vintage): the suffixed
+spelling of the base month is another asset, which the chain never supplies.
+A vintage is live in its month and the 12 after it, and retires at 00:00
+UTC on the 1st of month + 13; a retired note can only withdraw its share of
+the value booked at retirement. The stream is unchanged: the vintage is
+inside the ciphertext's asset only, so a wallet trial-decrypts as before and
+maps the asset to a denom by trying `AssetID(denom)` over its validators'
+live and retired months. The base vintage, the current one and each one's
+`retires_at` come from the chain's `Query/Vintages`
+(`/earth/shieldedstaking/v1/vintages/{validator}`), not from this service.
+`services/privacy/vintages.py` mirrors the chain's denom and month rules
+(pinned to its Go). The indexer checks the vintage events
+(`shieldedstaking_check_in`, `_vintage_retired`, `_retired_withdrawal`, the
+`vintage` / `dst_vintage` of a delegation, undelegation, redelegation and a
+Groundworks vote) against the block's month and stores none of them; a
+withdrawal's payout is an ordinary payout row of `/notes`.
 
 ### Stake nullifiers, the stake nullifier tree, roots and snapshots
 
@@ -632,7 +653,10 @@ Not served here. Since chain v1.2.1 a Groundworks vote rides on a stake note
 (keyed by its Groundworks tag) and wallets read the chain's whole list
 (`/earth/shieldedstaking/v1/groundworks_votes`), never a query about one
 tag. Blocks from before v1.2.1 carry `shieldedstaking_position` events of the
-retired positions; the indexer passes over them.
+retired positions; the indexer passes over them. Since v1.3.0 a stake vote
+has no lease (`split_expires_at` always 0): it carries its note's vintage
+and ends with it (the chain deletes it as action `retired`); only an
+operator's split is still leased.
 
 ## The indexer
 
@@ -668,8 +692,19 @@ and `previous_owner`), `move_caretaker` (distinct `nullifier` and
 `previous_nullifier`; nothing stored), `shieldedstaking_position` (`lock`
 takes exactly the next id; `update`, `split_lapsed` and `unlock` name an
 open position at the same validator; a lease end after the block, 0 for a
-lapse, and a lapse at or after the stored lease end), and `split_lapsed`
-(an operator's lapse: `expires_at` at or before the block; nothing stored).
+lapse, and a lapse at or after the stored lease end), `split_lapsed`
+(an operator's lapse: `expires_at` at or before the block; nothing stored),
+and the stake vintage events of chain v1.3.0, each checked against the
+block's UTC month and none stored: `shieldedstaking_check_in` (`to_vintage`
+the block's month, `from_vintage` a live month before it, `derth` > 0),
+`shieldedstaking_vintage_retired` (a vintage retired by the block's month,
+with supply), `shieldedstaking_retired_withdrawal` (a retired vintage,
+`derth` > 0, no value left once no supply is), the `vintage` of
+`shieldedstaking_delegate` (the block's month), `_undelegate` and
+`_redelegate` (live) and `_redelegate`'s `dst_vintage` (the block's month),
+and a `shieldedstaking_groundworks_vote` with a vintage (`cast`: live, with
+`split_expires_at` 0; `retired`: retired). Events from before v1.3.0 carry
+no vintage and are read as before.
 
 **Not read**, because they change no tree and no rate: dex LP events,
 `shielded_unshield` and the other per-msg pool events,
@@ -790,9 +825,12 @@ scenario tests (real proofs, the launch genesis path) recorded as RPC
 nullifier tree sizes and roots after each block, the slash debt tree's size,
 root and `Query/DebtTree` answer, and the chain's `Query/Handles` answer in
 pages of one. The chain's redelegation tests move funds outside blocks, so
-the recorder adds its own scenarios, `TestRecordRedelegateSlashDebt` and
-`TestRecordGroundworksLease` (a stake note's vote renewed, then lapsing, and
-an operator's vote lapsing, at a one-day lease;
+the recorder adds its own scenarios, `TestRecordRedelegateSlashDebt`,
+`TestRecordGroundworksLease` (a stake note's vote re-cast and standing past
+a one-day lease, an operator's vote lapsing at it) and
+`TestRecordStakeVintages` (a base-vintage delegation, a check-in to the
+next month, a restake naming its month, the old vintage's retirement with
+its vote swept, the retired note's withdrawal and payout;
 `bin/chainrec/zz_record_scenarios_test.go`), with their proofs in
 `bin/chainrec/proofs`. `zk_vectors.json` comes from the chain's Go zk
 packages. Both regenerate from a chain checkout without touching it:

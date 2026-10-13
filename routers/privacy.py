@@ -37,7 +37,9 @@ URLs under it. A wallet should keep the (chain_id, genesis) its local sync
 was built from and start over when status names another.
 
 The stake streams are x/shieldedstaking's stake note tree (owner-locked
-derth/<valoper> notes), served exactly like the pool's. An undelegation's
+derth/<valoper>[/<YYYYMM>] notes: since chain v1.3.0 the asset names
+the stake vintage, the base vintage's unsuffixed; services/privacy/vintages),
+served exactly like the pool's. An undelegation's
 payout is pool notes (ordinary minted rows of /notes, split ones sharing a
 ciphertext), not stake notes. Every stake note is a stake proof output (the
 chain mints none) with its 201-byte wallet stake ciphertext, the slash label

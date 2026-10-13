@@ -11,12 +11,15 @@ roots after every block. TestStakeVoteConcurrentProposals adds proposal
 snapshots (shieldedstaking_snapshot) and stake votes.
 TestRecordRedelegateSlashDebt (bin/chainrec's own scenario) adds private
 redelegations (two stake notes and two nullifiers a msg, labelled credits)
-and the slash debt tree's rows.
+and the slash debt tree's rows. TestRecordStakeVintages (bin/chainrec) and
+the chain's TestCheckInProof add stake vintages (chain v1.3.0): check-ins
+(two-lane proofs, an unlabelled credit), a restake naming its month, a
+vintage's retirement and a retired note's withdrawal.
 """
 from tests.privacy_fixtures import load
 
 STAKE_SCENARIOS = ("TestPrivateStakingLifecycle", "TestStakeNotesOwnerLocked", "TestStakeVoteConcurrentProposals",
-                   "TestRecordRedelegateSlashDebt")
+                   "TestRecordRedelegateSlashDebt", "TestRecordStakeVintages", "TestCheckInProof")
 # Private redelegations and a slash reaching them (shieldedstaking_debt_row).
 DEBT_SCENARIO = "TestRecordRedelegateSlashDebt"
 # Proposals snapshotted (shieldedstaking_snapshot, with nf_root / nf_size)

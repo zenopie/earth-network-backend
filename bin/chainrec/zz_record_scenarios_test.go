@@ -10,10 +10,12 @@
 package app
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
 	"cosmossdk.io/collections"
+	"cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -70,13 +72,14 @@ func TestRecordRedelegateSlashDebt(t *testing.T) {
 	e.invariants()
 }
 
-// TestRecordGroundworksLease: the Groundworks vote lease (chain 654f698,
-// 653e240; votes by stake note since v1.2.0) in blocks, at the shortest
-// lease (one day). A stake note voting a split (MsgRestake), renewed by a
-// restake voting the same split halfway through its lease, standing past
-// its first lease end and lapsing at its renewed one (the vote deleted, in
-// BeginBlock); and an operator's MsgSetAllocations vote lapsing the same way
-// (x/allocation split_lapsed).
+// TestRecordGroundworksLease: Groundworks leases in blocks (chain 654f698,
+// 653e240; votes by stake note since v1.2.0, no stake vote lease since
+// v1.3.0), at the shortest operator lease (one day). A stake note voting a
+// split (MsgRestake), re-cast by a restake voting the same split halfway
+// through what was its lease, standing past it (a stake vote ends with its
+// vintage, not a lease: split_expires_at is 0); and an operator's
+// MsgSetAllocations vote lapsing at its lease end (x/allocation
+// split_lapsed).
 func TestRecordGroundworksLease(t *testing.T) {
 	e := initStakeEnv(t)
 	vB, opKey := e.createValidator(1000 * ssErth)
@@ -113,15 +116,16 @@ func TestRecordGroundworksLease(t *testing.T) {
 	e.days(2)
 	voting := e.restakeVote([]*snote{dn}, false, opt)
 	require.Len(t, votes(), 1)
-	exp := votes()[0].SplitExpiresAt
-	require.Equal(t, e.now.Unix()+lease, exp)
+	require.Zero(t, votes()[0].SplitExpiresAt, "a stake vote has no lease (v1.3.0)")
+	require.Equal(t, e.month(), votes()[0].Vintage)
+	exp := e.now.Unix() + lease // where a lease would have ended
 
-	// Renewed halfway: the note respent onto itself with the same split.
+	// Re-cast halfway: the note respent onto itself with the same split.
 	e.next(12 * time.Hour)
 	e.restakeVote([]*snote{voting}, false, opt)
 	require.Len(t, votes(), 1)
-	renewed := votes()[0].SplitExpiresAt
-	require.Equal(t, e.now.Unix()+lease, renewed)
+	require.Zero(t, votes()[0].SplitExpiresAt)
+	renewed := e.now.Unix() + lease
 
 	// The operator votes its self-bond.
 	op := sdk.AccAddress(vB)
@@ -134,15 +138,108 @@ func TestRecordGroundworksLease(t *testing.T) {
 	opExp := voter.ExpiresAt
 	require.Equal(t, e.now.Unix()+lease, opExp)
 
-	// Past the first lease end the renewed vote stands.
+	// Past both would-be lease ends the stake vote stands; the operator's
+	// vote lapses at its lease end.
 	e.atUnix(exp + 60)
 	require.Len(t, votes(), 1)
-	// At the renewed end it lapses (BeginBlock), then the operator's vote.
 	e.next(time.Duration(renewed-e.now.Unix()) * time.Second)
-	require.Empty(t, votes())
+	require.Len(t, votes(), 1)
 	fbk := e.next(time.Duration(opExp-e.now.Unix()+5) * time.Second)
+	require.Len(t, votes(), 1)
 	require.Len(t, eventsOf(fbk.Events, "split_lapsed"), 1)
 	_, err = ak.Voters.Get(e.ctx(), collections.Join(uint32(gw), []byte(op)))
 	require.ErrorIs(t, err, collections.ErrNotFound)
+	e.invariants()
+}
+
+// TestRecordStakeVintages: stake vintages (v1.3.0) in blocks. A January
+// delegation on the base vintage's unsuffixed derth/<valoper>; in February
+// most of it checks in (MsgCheckIn: the change stays in January, the credit
+// is an unlabelled derth/<valoper>/<YYYYMM> note) and is restaked naming
+// its month (a non-zero msg vintage); the January change votes a
+// Groundworks split. At January's retirement (BeginBlock) its supply leaves
+// the book as a held undelegation and its vote is swept (action
+// "retired"); the change note, still on the unsuffixed asset a pre-v1.3.0
+// wallet built it with, withdraws whole (MsgUndelegate, vintage 0) and its
+// share is paid at the record's maturity. February stays live throughout.
+func TestRecordStakeVintages(t *testing.T) {
+	e := initStakeEnv(t)
+	vB, _ := e.createValidator(1000 * ssErth)
+	e.next(5 * time.Second)
+	e.shield(uint64(5_000 * ssErth))
+	for range 6 {
+		e.shield(uint64(100 * ssErth))
+	}
+	gw := allocationtypes.STREAM_ID_GROUNDWORKS
+	gov := authtypes.NewModuleAddress("gov")
+	require.NoError(t, e.app.BankKeeper.SendCoins(e.ctx(), e.userAddr(), gov, sdk.NewCoins(sdk.NewInt64Coin("uerth", 10*ssErth))))
+	_, err := allocationkeeper.NewMsgServerImpl(e.app.AllocationKeeper).AddAddressOption(e.ctx(), &allocationtypes.MsgAddAddressOption{
+		Submitter: e.bech(gov), Stream: gw, Description: "a public good", Recipient: e.bech(e.userAddr()),
+	})
+	require.NoError(t, err)
+	opt := []allocationtypes.AllocationWeight{{OptionId: 1, Percent: 100}}
+	e.next(5 * time.Second)
+
+	jan := e.month()
+	dn := e.delegate(vB, uint64(2_000*ssErth))
+	require.Equal(t, sstypes.DerthDenom(e.valoper(vB)), dn.denom, "the base vintage: the unsuffixed denom")
+	e.days(1)
+
+	// February: check 1,500 derth in.
+	feb := sstypes.AddMonths(jan, 1)
+	e.toTime(sstypes.VintageStart(feb).Add(time.Hour))
+	vc, err := e.app.ShieldedStakingKeeper.VintageContext(e.ctx())
+	require.NoError(t, err)
+	require.Equal(t, feb, vc.Current)
+	febDenom := sstypes.VintageDenom(e.valoper(vB), feb, vc.Base)
+	amount := uint64(1_500 * ssErth)
+	p := e.feeOnly()
+	change := e.freshStake(dn.denom, dn.amount-amount)
+	sp := e.stake(&stakePlan{denom: dn.denom, ins: []*snote{dn}, vOut: amount, out: change,
+		credit: &creditLane{denom: febDenom, vIn: amount}})
+	m := &sstypes.MsgCheckIn{Bundle: p.b, Validator: e.valoper(vB), FromVintage: jan, Amount: amount, Stake: sp.proof}
+	e.prove(m, p)
+	e.proveStake(m, sp)
+	res := e.run(e.privateTx(m))
+	require.Equal(t, uint32(0), res.Code, res.Log)
+	e.settle(p)
+	e.settleStake(sp)
+	require.Len(t, eventsOf(res.Events, sstypes.EventTypeCheckIn), 1)
+	require.Equal(t, febDenom, sp.credit.out.denom)
+	e.next(5 * time.Second)
+
+	// The February note restaked naming its month; the January change votes.
+	febNote := e.restake([]*snote{sp.credit.out}, false)
+	require.Equal(t, febDenom, febNote.denom)
+	janNote := e.restakeVote([]*snote{change}, false, opt)
+	e.invariants()
+
+	// January retires: its supply is booked as a held undelegation, its
+	// vote swept.
+	e.toTime(sstypes.VintageRetiresAt(jan).Add(time.Minute))
+	rv, ok := e.retiredVintage(vB, jan)
+	require.True(t, ok)
+	require.Equal(t, math.NewIntFromUint64(janNote.amount), rv.Supply)
+	require.True(t, e.vsupply(vB, feb).IsPositive(), "February is live")
+	e.next(5 * time.Second)
+
+	// The January note withdraws whole, on its unsuffixed asset.
+	um, up, usp, out := e.undelegateMsg(vB, janNote, janNote.amount)
+	require.Nil(t, usp.out, "the whole note: a zero note out")
+	res = e.run(e.privateTx(um))
+	require.Equal(t, uint32(0), res.Code, res.Log)
+	e.settle(up)
+	e.settleStake(usp)
+	ev := eventsOf(res.Events, sstypes.EventTypeRetiredWithdrawal)
+	require.Len(t, ev, 1)
+	require.Equal(t, rv.Value.String(), ev[0]["value"])
+	id, err := strconv.ParseUint(ev[0]["payout_id"], 10, 64)
+	require.NoError(t, err)
+	e.invariants()
+
+	e.days(1)
+	e.days(22)
+	got := e.payout(&unbonding{id: id, epoch: rv.Epoch, value: rv.Value.Uint64(), out: out})
+	require.NotNil(t, got)
 	e.invariants()
 }

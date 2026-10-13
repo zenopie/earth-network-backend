@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"time"
 
 	"cosmossdk.io/math"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	personhoodtypes "github.com/earth-network/earth/x/personhood/types"
 	shieldedtypes "github.com/earth-network/earth/x/shielded/types"
+	sstypes "github.com/earth-network/earth/x/shieldedstaking/types"
 	"github.com/earth-network/earth/zk/debt"
 	"github.com/earth-network/earth/zk/indexed"
 	"github.com/earth-network/earth/zk/merkle"
@@ -234,6 +236,40 @@ func main() {
 	out["handles_query"] = map[string]any{
 		"request_start": hreq.Start, "request_limit": hreq.Limit, "request": hex.EncodeToString(hreqBz),
 		"response": hex.EncodeToString(hresBz), "address": addr, "next": hres.Next, "entries": hres.Handles,
+	}
+	// Stake vintages (v1.3.0, x/shieldedstaking/types/vintage.go): the
+	// denom of a (validator, vintage), ParseDerthDenom over good and bad
+	// spellings, months, liveness and retirement times, and the stake
+	// commitment of a suffixed note.
+	const val = "earthvaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+	var denoms [][]any
+	for _, c := range [][2]uint32{{202610, 202610}, {202611, 202610}, {202609, 202610}, {210001, 202610}, {202610, 202501}} {
+		denoms = append(denoms, []any{val, c[0], c[1], sstypes.VintageDenom(val, c[0], c[1])})
+	}
+	var parses [][]any
+	for _, d := range []string{
+		"derth/" + val, "derth/" + val + "/202610", "derth/" + val + "/200001", "derth/" + val + "/999912",
+		"derth/" + val + "/202613", "derth/" + val + "/202600", "derth/" + val + "/199912", "derth/" + val + "/20261",
+		"derth/" + val + "/2026100", "derth/" + val + "/+20261", "derth/" + val + "/2026/1", "derth/" + val + "/",
+		"derth/", "derth", "derth//202610", "uerth", "xderth/" + val, "derth/" + val + "/0x2026",
+	} {
+		v, m, ok := sstypes.ParseDerthDenom(d)
+		parses = append(parses, []any{d, v, m, ok})
+	}
+	var months [][]any
+	for _, ts := range []int64{1798761599, 1798761600, 1801439999, 1801440000, 1830297600, 1735689600, 951782400} {
+		m := sstypes.MonthOf(time.Unix(ts, 0))
+		months = append(months, []any{ts, m, sstypes.VintageStart(m).Unix(), sstypes.VintageRetiresAt(m).Unix(), sstypes.OldestLiveVintage(m)})
+	}
+	var live [][]any
+	for _, c := range [][2]uint32{{202610, 202610}, {202510, 202610}, {202509, 202610}, {202611, 202610}, {202512, 202612}, {202511, 202612}, {202601, 202701}, {202512, 202701}} {
+		live = append(live, []any{c[0], c[1], sstypes.VintageLive(c[0], c[1]), sstypes.VintageRetired(c[0], c[1])})
+	}
+	vden := sstypes.VintageDenom(val, 202611, 202610)
+	out["vintages"] = map[string]any{
+		"live_months": sstypes.LiveVintageMonths, "denoms": denoms, "parse": parses, "months": months, "live": live,
+		"asset": map[string]string{"denom": vden, "id": hx(privacy.AssetID(vden))},
+		"stake_cm": map[string]string{"denom": vden, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(vden), 250000, spc, fr.Element{}))},
 	}
 	json.NewEncoder(os.Stdout).Encode(out)
 }

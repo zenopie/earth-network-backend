@@ -62,6 +62,16 @@ chain's own Query/GroundworksVotes; nothing here is stored). Blocks from
 before v1.2.0 carry shieldedstaking_position events of the retired
 positions: ignored.
 
+    shieldedstaking_groundworks_vote  action, ..., split_expires_at, vintage
+                         (v1.3.0): a stake vote has no lease (split_expires_at
+                         always "0") and ends with its vintage: the sweep
+                         deletes it as action "retired" once the vintage has
+                         retired ("lapsed" no longer occurs). With a vintage,
+                         "cast" is checked live in the block's month and
+                         unleased, "retired" checked retired; nothing is
+                         stored. Votes from before v1.3.0 (no vintage) are
+                         passed over.
+
     split_lapsed         stream, voter (an account), expires_at: an
                          operator's MsgSetAllocations split lapsed
                          (x/allocation). Checked (expires_at at or before
@@ -70,7 +80,8 @@ positions: ignored.
 
 Lease alerts (x/allocation/types/events.go, chain 7033eac; none halts the
 chain, none changes anything this index stores). Logged, never checked, so
-an attribute the chain adds or drops cannot halt the indexer:
+an attribute the chain adds or drops cannot halt the indexer. Since v1.3.0
+only operators' splits are leased (no lapser groundworks_votes):
 
     lease_retire_failed  stream, lapser (account | groundworks_votes), key,
                          expires_at, retry_at, error: a lease due could
@@ -85,7 +96,12 @@ an attribute the chain adds or drops cannot halt the indexer:
     shieldedstaking_epoch            epoch (the one that just ended)
 
 The stake note tree (x/shieldedstaking's own append-only depth-32 Poseidon2
-tree of owner-locked derth/<valoper> notes, its own nullifier set and roots).
+tree of owner-locked derth notes, its own nullifier set and roots). Since
+v1.3.0 a note's asset is AssetID(derth/<valoper>/<YYYYMM>), its stake
+vintage, except the base vintage's unsuffixed derth/<valoper> (every note
+made before v1.3.0); services/privacy/vintages. The asset is inside the
+ciphertext and the commitment only: no event names it, and the tree is the
+same tree whatever the vintages.
 The chain mints no stake note: every one is a stake proof output
 (ORCHARD_DESIGN.md section 20), and an undelegation's payout is pool notes
 (above):
@@ -137,7 +153,42 @@ module's redelegation entries):
                                      nullifier), move_time: move_key checked
                                      to be a stake nullifier of the block;
                                      an event with `minted` is refused.
-                                     Nothing of it is stored.
+                                     v1.3.0 adds vintage (the source notes',
+                                     checked live) and dst_vintage (where
+                                     the credit lands: checked to be the
+                                     block's month). Nothing of it is stored.
+
+Stake vintages (chain v1.3.0, ORCHARD_DESIGN.md 8.9; services/privacy/vintages).
+A vintage is a UTC month YYYYMM, live in its month and the 12 after it; the
+block's month is its header time's. Each event is checked against it;
+nothing is stored (wallets read Query/Vintages from the chain):
+
+    shieldedstaking_check_in         validator, from_vintage, to_vintage, derth:
+                                     MsgCheckIn moved derth from a live,
+                                     older vintage into the current one
+                                     (to_vintage, the block's month). Its
+                                     stake proof's notes and nullifiers are
+                                     the ordinary stake events (both lanes,
+                                     as a redelegation's; the credit carries
+                                     no label and no move).
+    shieldedstaking_vintage_retired  validator, vintage, supply, value, epoch,
+                                     payout_id: BeginBlock, a vintage that
+                                     has retired by the block's month left
+                                     its book as a held undelegation (a
+                                     payout with no pc: never paid as such,
+                                     so no unbond_payout names it).
+    shieldedstaking_retired_withdrawal  validator, vintage, derth, value, epoch,
+                                     payout_id, remaining_supply,
+                                     remaining_value: MsgUndelegate on a
+                                     retired vintage (instead of
+                                     shieldedstaking_undelegate). Its share is
+                                     an ordinary payout (payout_id, when value
+                                     is not 0) paid by a later
+                                     shieldedstaking_unbond_payout, checked
+                                     like any. The last derth takes the rest
+                                     (remaining_value 0 with remaining_supply 0).
+    shieldedstaking_delegate         + vintage: checked to be the block's month
+    shieldedstaking_undelegate       + vintage: checked live
 
 The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
 (sorted) Merkle tree whose leaf positions are insertion order, so wallets
@@ -152,7 +203,10 @@ Not read, because they change no tree and no rate a wallet derives:
 shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
 (private LP shares are ordinary shielded_note events; add/remove/complete
 liquidity events name no provider), shieldedstaking_delegate / _undelegate
-(validator, derth, value, epoch, payout_id) / _matured
+(validator, derth, value, epoch, payout_id; read only for their vintage) /
+_upgrade_v1_3_0 (vintage, books, votes, moves, failures) / _epoch_failure
+(its v1.3.0 stages vintage_sweep, retire_vintage, vintage_resync,
+dead_votes, upgrade_v1_3_0/<step> included) / _matured
 (validator, epoch, value, payout) / _unbond_payout_failed (payout_id,
 validator, epoch, attempts, retry_at, error: kept and retried, nothing
 minted) / _stake_vote (vote_nullifiers: both slots' vote nullifiers, a padded
@@ -179,6 +233,8 @@ tx is read regardless of its code.
 import base64
 import re
 from dataclasses import dataclass, field
+
+from . import vintages
 
 ZERO32 = bytes(32)
 # Every x/personhood handle directory event is "handle_<what>" (handle_bound,
@@ -298,6 +354,37 @@ class SplitLapse:
 
 
 @dataclass
+class VintageRetired:
+    """A shieldedstaking_vintage_retired event (checked, not stored)."""
+    validator: str
+    vintage: int
+    supply: int
+    value: int
+    payout_id: int
+
+
+@dataclass
+class RetiredWithdrawal:
+    """A shieldedstaking_retired_withdrawal event (checked, not stored)."""
+    validator: str
+    vintage: int
+    derth: int
+    value: int
+    payout_id: int
+    remaining_supply: int
+    remaining_value: int
+
+
+@dataclass
+class CheckIn:
+    """A shieldedstaking_check_in event (checked, not stored)."""
+    validator: str
+    from_vintage: int
+    to_vintage: int
+    derth: int
+
+
+@dataclass
 class BlockDelta:
     height: int
     time: int  # unix seconds of the block header, as RootRecord.time
@@ -326,6 +413,11 @@ class BlockDelta:
     split_lapses: list[SplitLapse] = field(default_factory=list)
     # Lease alerts (event type, attributes), for the log only.
     lease_alerts: list[tuple[str, dict[str, str]]] = field(default_factory=list)
+    # Stake vintages (v1.3.0): retirements, retired notes' withdrawals and
+    # check-ins, each checked against the block's month (not stored).
+    vintage_retired: list[VintageRetired] = field(default_factory=list)
+    retired_withdrawals: list[RetiredWithdrawal] = field(default_factory=list)
+    check_ins: list[CheckIn] = field(default_factory=list)
 
 
 def _attrs(event: dict) -> dict[str, str]:
@@ -397,6 +489,94 @@ def _split_lapse(a: dict[str, str], time: int) -> SplitLapse:
     return s
 
 
+def _vintage(value: str | None, what: str) -> int:
+    m = _int(value, what)
+    if not vintages.is_vintage(m):
+        raise EventError(f"{what}: {m} is not a vintage (YYYYMM)")
+    return m
+
+
+def _validator(a: dict[str, str], what: str, key: str = "validator") -> str:
+    v = a.get(key, "")
+    if not v:
+        raise EventError(f"{what}: no {key}")
+    return v
+
+
+def _check_msg_vintage(a: dict[str, str], what: str, cur: int, *, current: bool = False,
+                       key: str = "vintage") -> None:
+    """A stake msg event's vintage attribute (v1.3.0; absent before): a
+    vintage live in the block's month cur, or exactly cur when current."""
+    if key not in a:
+        return
+    m = _vintage(a[key], f"{what} {key}")
+    if current and m != cur:
+        raise EventError(f"{what}: {key} {m}, the block's month is {cur}")
+    if not vintages.is_live(m, cur):
+        raise EventError(f"{what}: {key} {m} is not live in {cur}")
+
+
+def _check_gw_vote(a: dict[str, str], cur: int) -> None:
+    """A stake note's Groundworks vote event with a vintage (v1.3.0; before
+    it, votes were leased and carried none, and are passed over): a vote is
+    cast in a live vintage with no lease (split_expires_at 0), and the sweep
+    deletes it ("retired") only once its vintage has retired. Other actions
+    (cancelled, by a spend, even of a retired note; matured) are not read."""
+    if "vintage" not in a or a.get("action") not in ("cast", "retired"):
+        return
+    w = f"shieldedstaking_groundworks_vote {a.get('action', '')}"
+    m = _vintage(a["vintage"], f"{w} vintage")
+    if a.get("action") == "cast":
+        if not vintages.is_live(m, cur):
+            raise EventError(f"{w}: vintage {m} is not live in {cur}")
+        if a.get("split_expires_at", "0") != "0":
+            raise EventError(f"{w}: split_expires_at {a['split_expires_at']} (a stake vote has no lease)")
+    elif a.get("action") == "retired" and not vintages.is_retired(m, cur):
+        raise EventError(f"{w}: vintage {m} has not retired by {cur}")
+
+
+def _vintage_retired(a: dict[str, str], cur: int) -> VintageRetired:
+    w = "shieldedstaking_vintage_retired"
+    r = VintageRetired(_validator(a, w), _vintage(a.get("vintage"), f"{w} vintage"), _int(a.get("supply"), f"{w} supply"),
+                       _int(a.get("value"), f"{w} value"), _int(a.get("payout_id"), f"{w} payout_id"))
+    _int(a.get("epoch"), f"{w} epoch")
+    if not vintages.is_retired(r.vintage, cur):
+        raise EventError(f"{w}: vintage {r.vintage} has not retired by {cur}")
+    if r.supply == 0:
+        raise EventError(f"{w}: vintage {r.vintage} retired with no supply")
+    return r
+
+
+def _retired_withdrawal(a: dict[str, str], cur: int) -> RetiredWithdrawal:
+    w = "shieldedstaking_retired_withdrawal"
+    r = RetiredWithdrawal(_validator(a, w), _vintage(a.get("vintage"), f"{w} vintage"), _int(a.get("derth"), f"{w} derth"),
+                          _int(a.get("value"), f"{w} value"), _int(a.get("payout_id"), f"{w} payout_id"),
+                          _int(a.get("remaining_supply"), f"{w} remaining_supply"),
+                          _int(a.get("remaining_value"), f"{w} remaining_value"))
+    _int(a.get("epoch"), f"{w} epoch")
+    if not vintages.is_retired(r.vintage, cur):
+        raise EventError(f"{w}: vintage {r.vintage} has not retired by {cur}")
+    if r.derth == 0:
+        raise EventError(f"{w}: no derth withdrawn")
+    # The last derth out takes all the value left.
+    if r.remaining_supply == 0 and r.remaining_value != 0:
+        raise EventError(f"{w}: nothing left of vintage {r.vintage} but {r.remaining_value} of value")
+    return r
+
+
+def _check_in(a: dict[str, str], cur: int) -> CheckIn:
+    w = "shieldedstaking_check_in"
+    c = CheckIn(_validator(a, w), _vintage(a.get("from_vintage"), f"{w} from_vintage"),
+                _vintage(a.get("to_vintage"), f"{w} to_vintage"), _int(a.get("derth"), f"{w} derth"))
+    if c.to_vintage != cur:
+        raise EventError(f"{w}: to_vintage {c.to_vintage}, the block's month is {cur}")
+    if not vintages.is_live(c.from_vintage, cur) or c.from_vintage == cur:
+        raise EventError(f"{w}: from_vintage {c.from_vintage} is not a live month before {cur}")
+    if c.derth == 0:
+        raise EventError(f"{w}: no derth moved")
+    return c
+
+
 def ordered_events(results: dict) -> list[dict]:
     """A block's events in execution order (see the module docstring)."""
     finalize = results.get("finalize_block_events") or []
@@ -426,6 +606,7 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
     if int(results.get("height", height)) != height:
         raise EventError(f"block_results for height {results.get('height')}, asked {height}")
     d = BlockDelta(height=height, time=time, hash=block_hash)
+    month = vintages.month_of(time)  # the block's stake vintage (v1.3.0)
     notes_by_pos: dict[int, Note] = {}
     mint_module: dict[int, str] = {}  # position -> shielded_mint module
     pending_rates: list[Rate] = []
@@ -488,6 +669,20 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             _int(a.get("credited"), f"{w} credited")
             _int(a.get("move_time"), f"{w} move_time")
             move_keys.append(_hex32(a.get("move_key", ""), f"{w} move_key"))
+            _check_msg_vintage(a, w, month)
+            _check_msg_vintage(a, w, month, current=True, key="dst_vintage")
+        elif t == "shieldedstaking_delegate":
+            _check_msg_vintage(_attrs(ev), t, month, current=True)
+        elif t == "shieldedstaking_undelegate":
+            _check_msg_vintage(_attrs(ev), t, month)
+        elif t == "shieldedstaking_groundworks_vote":
+            _check_gw_vote(_attrs(ev), month)
+        elif t == "shieldedstaking_check_in":
+            d.check_ins.append(_check_in(_attrs(ev), month))
+        elif t == "shieldedstaking_vintage_retired":
+            d.vintage_retired.append(_vintage_retired(_attrs(ev), month))
+        elif t == "shieldedstaking_retired_withdrawal":
+            d.retired_withdrawals.append(_retired_withdrawal(_attrs(ev), month))
         elif t == "shielded_nullifier":
             d.nullifiers.append(_hex32(_attrs(ev).get("nullifier", ""), "shielded_nullifier"))
         elif t == "shielded_root":

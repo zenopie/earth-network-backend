@@ -100,7 +100,8 @@ def stake_pc(owner: int, rho: int, rcm: int) -> int:
 
 def stake_cm(asset: int, amount: int, spc: int, label: int = 0) -> int:
     """privacy.StakeCM: a stake tree leaf, H(TAG_STAKE, asset, amount, spc,
-    label), asset = asset_id(derth/<valoper>), label 0 or stake_label(...)."""
+    label), asset = asset_id(derth/<valoper>[/<YYYYMM>]) (the stake vintage's
+    denom, services/privacy/vintages.denom), label 0 or stake_label(...)."""
     return H(TAG_STAKE, asset, amount, spc, label)
 
 
