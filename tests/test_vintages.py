@@ -2,11 +2,14 @@
 them.
 
 The denom and month rules (services/privacy/vintages) against the chain's Go
-(zk_vectors.json, bin/zkvectors). Then the recorded scenarios:
-TestRecordStakeVintages (bin/chainrec: a base-vintage delegation, a check-in
-to the next month, a restake naming its month, the old vintage's retirement
-with its Groundworks vote swept, the retired note's withdrawal on its
-unsuffixed asset and its payout at maturity) and the chain's
+(zk_vectors.json, bin/zkvectors), the month-boundary grace included. Then
+the recorded scenarios: TestRecordStakeVintages (bin/chainrec: a
+base-vintage delegation, a check-in to the next month naming it, a restake
+naming its month, in the next month's first hour a delegation and a
+redelegation's credit naming the previous month, the old vintage's boundary
+with its Groundworks vote swept, its booking at the next epoch end, the
+retired note's withdrawal on its unsuffixed asset and its payout at
+maturity) and the chain's
 TestCheckInProof, indexed whole with real proofs. Refusals are synthetic,
 in the chain's event shape.
 """
@@ -34,8 +37,10 @@ VEC = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "privac
 SCENARIO = "TestRecordStakeVintages"
 CHECK_IN = "TestCheckInProof"
 VAL = "earthvaloper1v"
-# 2027-02-01T01:00:00Z: month 202702.
+# 2027-02-01T01:00:00Z: month 202702, just past its grace.
 FEB = calendar.timegm((2027, 2, 1, 1, 0, 0))
+# 2027-02-01T00:30:00Z: in its grace (202701 may still be credited).
+FEB_GRACE = calendar.timegm((2027, 2, 1, 0, 30, 0))
 
 
 def hx(v: int) -> str:
@@ -80,6 +85,17 @@ def test_vintaged_asset_and_stake_commitment_match_go():
     # suffixed spelling (which the chain never supplies).
     v = VEC["denoms"][0]
     assert privacy.asset_id(v[3]) != privacy.asset_id(f"{v[3]}/{v[2]:06d}")
+
+
+def test_grace_matches_go():
+    assert vintages.GRACE_SECONDS == VEC["grace_seconds"]
+    assert len(VEC["grace"]) >= 30
+    for ts, cur, grace, m, ok in VEC["grace"]:
+        assert (vintages.month_of(ts), vintages.grace(ts)) == (cur, grace), ts
+        assert vintages.credit_ok(m, ts) == ok, (ts, m)
+    # Both sides of the hour, and a year boundary, are in the vectors.
+    assert {g != 0 for _, _, g, _, _ in VEC["grace"]} == {True, False}
+    assert any(cur % 100 == 1 and g for _, cur, g, _, _ in VEC["grace"])
 
 
 @pytest.mark.parametrize("m", [0, 199912, 202600, 202613, 1000001])
@@ -138,7 +154,7 @@ def test_the_recorded_check_in(tmp_path):
     # Its stake proof is a two-lane one, as a redelegation's: two notes and
     # every lane's non-zero nullifiers, in the same block; no move.
     assert len(deltas[h].stake_notes) == 2 and len(deltas[h].stake_nullifiers) >= 2
-    assert not _events(sc, "shieldedstaking_redelegate")
+    assert not [a for rh, a in _events(sc, "shieldedstaking_redelegate") if rh == h]
     # The chain's own real-proof test emits the same.
     [(h2, a)] = _events(load(CHECK_IN), "shieldedstaking_check_in")
     assert (a["from_vintage"], a["to_vintage"]) == (str(ci.from_vintage), str(ci.to_vintage))
@@ -147,17 +163,23 @@ def test_the_recorded_check_in(tmp_path):
 def test_the_recorded_retirement_withdrawal_and_payout(tmp_path, monkeypatch):
     sc = load(SCENARIO)
     deltas = _deltas(sc)
-    [(dh, dl)] = _events(sc, "shieldedstaking_delegate")
+    (dh, dl), _grace = _events(sc, "shieldedstaking_delegate")  # January's, then March's grace one
     jan = int(dl["vintage"])
     assert jan == vintages.month_of(deltas[dh].time)
 
+    # The boundary block: its Groundworks vote swept, as "retired"; the
+    # vintage is retiring, its value still in the book (no booking yet).
+    boundary = next(h for h in sorted(deltas) if deltas[h].time >= vintages.retires_at(jan))
+    swept = [(h, a) for h, a in _events(sc, "shieldedstaking_groundworks_vote") if a["action"] == "retired"]
+    assert [(h, a["vintage"]) for h, a in swept] == [(boundary, str(jan))]
+    assert not any("split_expires_at" in a for _, a in _events(sc, "shieldedstaking_groundworks_vote"))
+    # Booked at the next epoch end (EndBlock), as the epoch that ended.
     [(rh, r)] = [(h, r) for h, d in deltas.items() for r in d.vintage_retired]
     assert r.vintage == jan and r.supply > 0 and r.value > 0
-    assert deltas[rh].time >= vintages.retires_at(jan) > deltas[rh - 1].time
-    # Its Groundworks vote was swept in the same block, as "retired".
-    swept = [a for h, a in _events(sc, "shieldedstaking_groundworks_vote") if a["action"] == "retired"]
-    assert [(a["vintage"], a["split_expires_at"]) for a in swept] == [(str(jan), "0")]
-    assert all(a["split_expires_at"] == "0" for _, a in _events(sc, "shieldedstaking_groundworks_vote"))
+    assert rh > boundary and deltas[rh].epoch_ended == r.epoch
+    assert not any(deltas[h].epoch_ended is not None for h in deltas if boundary <= h < rh)
+    [(_, ra)] = _events(sc, "shieldedstaking_vintage_retired")
+    assert ra["mode"] == "EndBlock"
     # The held payout is never paid as such.
     assert all(int(a["payout_id"]) != r.payout_id for _, a in _events(sc, "shieldedstaking_unbond_payout"))
 
@@ -185,6 +207,26 @@ def test_the_recorded_retirement_withdrawal_and_payout(tmp_path, monkeypatch):
     assert len(base64.b64decode(row["ciphertext"])) == 177
 
 
+def test_the_recorded_grace_credits():
+    # March's first hour: a delegation and a redelegation's credit name
+    # February, the previous month.
+    sc = load(SCENARIO)
+    deltas = _deltas(sc)
+    [(dh, dl)] = [(h, a) for h, a in _events(sc, "shieldedstaking_delegate") if int(a["vintage"]) != vintages.month_of(deltas[h].time)]
+    [(rh, rd)] = _events(sc, "shieldedstaking_redelegate")
+    for h, m in ((dh, int(dl["vintage"])), (rh, int(rd["dst_vintage"]))):
+        t = deltas[h].time
+        assert m == vintages.grace(t) == vintages.add_months(vintages.month_of(t), -1)
+        assert t - vintages.start(vintages.month_of(t)) < vintages.GRACE_SECONDS
+    assert int(rd["vintage"]) == int(rd["dst_vintage"])
+    # The same events past the grace are refused.
+    for h in (dh, rh):
+        b = next(b for b in sc["blocks"] if b["height"] == h)
+        late = vintages.start(vintages.month_of(deltas[h].time)) + vintages.GRACE_SECONDS
+        with pytest.raises(events.EventError, match="a credit lands in the block's month"):
+            events.parse_block(h, late, b["hash"], b["block_results"])
+
+
 def test_the_recorded_restake_names_its_month():
     # The February note was restaked with its month in the msg (a non-zero
     # vintage): the chain took the proof, so the restake's block has a stake
@@ -202,8 +244,11 @@ def _ev(type_, **attrs):
     return {"type": type_, "attributes": [{"key": k, "value": str(v)} for k, v in attrs.items()]}
 
 
-def _parse(evs, time=FEB):
-    return events.parse_block(5, time, "H", {"height": "5", "txs_results": [{"code": 0, "events": evs}]})
+def _parse(evs, time=FEB, end=()):
+    """evs in a tx; end: EndBlock events (the SDK marks them mode=EndBlock)."""
+    fin = [{"type": e["type"], "attributes": e["attributes"] + [{"key": "mode", "value": "EndBlock"}]} for e in end]
+    return events.parse_block(5, time, "H", {"height": "5", "txs_results": [{"code": 0, "events": evs}],
+                                             "finalize_block_events": fin})
 
 
 RETIRED = vintages.add_months(202702, -13)  # 202601: retired at 2027-02-01
@@ -213,21 +258,62 @@ LIVE_OLD = vintages.add_months(202702, -12)  # 202602: the oldest live
 def test_well_formed_vintage_events_parse():
     d = _parse([
         _ev("shieldedstaking_check_in", validator=VAL, from_vintage=LIVE_OLD, to_vintage=202702, derth=5),
-        _ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=10, value=11, epoch=3, payout_id=0),
         _ev("shieldedstaking_retired_withdrawal", validator=VAL, vintage=RETIRED, derth=4, value=0, epoch=3, payout_id=0,
             remaining_supply=6, remaining_value=11),
         _ev("shieldedstaking_retired_withdrawal", validator=VAL, vintage=RETIRED, derth=6, value=11, epoch=3, payout_id=1,
             remaining_supply=0, remaining_value=0),
         _ev("shieldedstaking_delegate", validator=VAL, vintage=202702),
         _ev("shieldedstaking_undelegate", validator=VAL, vintage=LIVE_OLD),
-        _ev("shieldedstaking_groundworks_vote", action="cast", vintage=LIVE_OLD, split_expires_at=0),
-        _ev("shieldedstaking_groundworks_vote", action="retired", vintage=RETIRED, split_expires_at=0),
+        _ev("shieldedstaking_groundworks_vote", action="cast", vintage=LIVE_OLD),
+        _ev("shieldedstaking_groundworks_vote", action="retired", vintage=RETIRED),
         # A spend of a retired note cancels its vote: not checked.
-        _ev("shieldedstaking_groundworks_vote", action="cancelled", vintage=RETIRED, split_expires_at=0),
+        _ev("shieldedstaking_groundworks_vote", action="cancelled", vintage=RETIRED),
+        # split_expires_at (gone since v1.3.0's fix pass 1) is not read.
+        _ev("shieldedstaking_groundworks_vote", action="cast", vintage=LIVE_OLD, split_expires_at=FEB + 86400),
+        _ev("shieldedstaking_slash_debt", src_validator=VAL, dst_validator=VAL, value=5, debt=0, entries=1, late_moves=1),
+    ], end=[
+        _ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=10, value=11, epoch=3, payout_id=0),
+        _ev("shieldedstaking_epoch", epoch=3),
     ])
     assert d.check_ins == [events.CheckIn(VAL, LIVE_OLD, 202702, 5)]
-    assert d.vintage_retired == [events.VintageRetired(VAL, RETIRED, 10, 11, 0)]
+    assert d.vintage_retired == [events.VintageRetired(VAL, RETIRED, 10, 11, 0, 3)]
+    assert d.epoch_ended == 3
     assert [w.remaining_supply for w in d.retired_withdrawals] == [6, 0]
+    # In a later block of the epoch's sweep (no epoch event): any epoch.
+    d = _parse([], end=[_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=1, value=1,
+                            epoch=2, payout_id=0)])
+    assert d.vintage_retired[0].epoch == 2
+
+
+def test_the_grace_credits_the_previous_month():
+    jan = 202701
+    d = _parse([
+        _ev("shieldedstaking_check_in", validator=VAL, from_vintage=202612, to_vintage=jan, derth=5),
+        _ev("shieldedstaking_check_in", validator=VAL, from_vintage=jan, to_vintage=202702, derth=5),
+        _ev("shieldedstaking_delegate", validator=VAL, vintage=jan),
+        _ev("shieldedstaking_delegate", validator=VAL, vintage=202702),
+    ], time=FEB_GRACE)
+    assert [c.to_vintage for c in d.check_ins] == [jan, 202702]
+    # The last second of the grace, then the first past it.
+    events.parse_block(5, FEB - 1, "H", {"height": "5", "txs_results": [{"code": 0, "events": [
+        _ev("shieldedstaking_delegate", validator=VAL, vintage=jan)]}]})
+    with pytest.raises(events.EventError, match="a credit lands in the block's month 202702"):
+        _parse([_ev("shieldedstaking_delegate", validator=VAL, vintage=jan)], time=FEB)
+
+
+@pytest.mark.parametrize("ev, match", [
+    # Two months back, even in the grace.
+    (_ev("shieldedstaking_delegate", validator=VAL, vintage=202612), r"block's month 202702 \(or 202701 in its grace\)"),
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202611, to_vintage=202612, derth=5), "block's month"),
+    # Not from the credit month into itself, nor from a later one.
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202701, to_vintage=202701, derth=5), "before 202701"),
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202702, to_vintage=202701, derth=5), "before 202701"),
+    (_ev("shieldedstaking_redelegate", src_validator=VAL, dst_validator="earthvaloper1w", credited=1, move_time=1,
+         move_key="11" * 32, vintage=202701, dst_vintage=202612), "dst_vintage 202612"),
+])
+def test_the_grace_refuses(ev, match):
+    with pytest.raises(events.EventError, match=match):
+        _parse([ev], time=FEB_GRACE)
 
 
 def test_events_from_before_vintages_parse():
@@ -243,19 +329,15 @@ def test_events_from_before_vintages_parse():
 
 @pytest.mark.parametrize("ev, match", [
     (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=LIVE_OLD, to_vintage=202703, derth=5), "block's month"),
-    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202702, to_vintage=202702, derth=5), "not a live month before"),
-    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=RETIRED, to_vintage=202702, derth=5), "not a live month before"),
-    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202703, to_vintage=202702, derth=5), "not a live month before"),
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202702, to_vintage=202702, derth=5), "not a month live"),
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=RETIRED, to_vintage=202702, derth=5), "not a month live"),
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202703, to_vintage=202702, derth=5), "not a month live"),
+    # Past the grace, the previous month is no credit.
+    (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=LIVE_OLD, to_vintage=202701, derth=5), "block's month"),
     (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=LIVE_OLD, to_vintage=202702, derth=0), "no derth"),
     (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=0, to_vintage=202702, derth=1), "not a vintage"),
     (_ev("shieldedstaking_check_in", validator=VAL, from_vintage=202613, to_vintage=202702, derth=1), "not a vintage"),
     (_ev("shieldedstaking_check_in", from_vintage=LIVE_OLD, to_vintage=202702, derth=1), "no validator"),
-    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=LIVE_OLD, supply=1, value=1, epoch=1, payout_id=0),
-     "has not retired"),
-    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=0, value=0, epoch=1, payout_id=0),
-     "no supply"),
-    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=1, value=-1, epoch=1, payout_id=0),
-     "negative"),
     (_ev("shieldedstaking_retired_withdrawal", validator=VAL, vintage=LIVE_OLD, derth=1, value=1, epoch=1, payout_id=0,
          remaining_supply=0, remaining_value=0), "has not retired"),
     (_ev("shieldedstaking_retired_withdrawal", validator=VAL, vintage=RETIRED, derth=0, value=0, epoch=1, payout_id=0,
@@ -272,13 +354,39 @@ def test_events_from_before_vintages_parse():
          move_key="11" * 32, vintage=LIVE_OLD, dst_vintage=LIVE_OLD), "dst_vintage"),
     (_ev("shieldedstaking_redelegate", src_validator=VAL, dst_validator="earthvaloper1w", credited=1, move_time=1,
          move_key="11" * 32, vintage=RETIRED, dst_vintage=202702), "not live"),
-    (_ev("shieldedstaking_groundworks_vote", action="cast", vintage=RETIRED, split_expires_at=0), "not live"),
-    (_ev("shieldedstaking_groundworks_vote", action="cast", vintage=202702, split_expires_at=FEB + 86400), "no lease"),
-    (_ev("shieldedstaking_groundworks_vote", action="retired", vintage=LIVE_OLD, split_expires_at=0), "has not retired"),
+    (_ev("shieldedstaking_groundworks_vote", action="cast", vintage=RETIRED), "not live"),
+    (_ev("shieldedstaking_groundworks_vote", action="retired", vintage=LIVE_OLD), "has not retired"),
 ])
 def test_malformed_vintage_events_are_refused(ev, match):
     with pytest.raises(events.EventError, match=match):
         _parse([ev])
+
+
+@pytest.mark.parametrize("ev, match", [
+    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=LIVE_OLD, supply=1, value=1, epoch=1, payout_id=0),
+     "has not retired"),
+    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=0, value=0, epoch=1, payout_id=0),
+     "no supply"),
+    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=1, value=-1, epoch=1, payout_id=0),
+     "negative"),
+    (_ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=1, value=1, payout_id=0),
+     "epoch: not an integer"),
+])
+def test_malformed_retirements_are_refused(ev, match):
+    with pytest.raises(events.EventError, match=match):
+        _parse([], end=[ev])
+
+
+def test_a_retirement_outside_endblock_or_of_another_epoch_halts():
+    r = _ev("shieldedstaking_vintage_retired", validator=VAL, vintage=RETIRED, supply=1, value=1, epoch=3, payout_id=0)
+    # The pre-fix-pass timing: at the boundary, in BeginBlock.
+    with pytest.raises(events.EventError, match="outside EndBlock"):
+        events.parse_block(5, FEB, "H", {"height": "5", "finalize_block_events": [
+            {"type": r["type"], "attributes": r["attributes"] + [{"key": "mode", "value": "BeginBlock"}]}]})
+    with pytest.raises(events.EventError, match="outside EndBlock"):
+        _parse([r])
+    with pytest.raises(events.EventError, match="the block ended epoch 4"):
+        _parse([], end=[r, _ev("shieldedstaking_epoch", epoch=4)])
 
 
 def test_a_recorded_check_in_moved_to_another_month_halts(tmp_path):
@@ -289,6 +397,9 @@ def test_a_recorded_check_in_moved_to_another_month_halts(tmp_path):
                                              for e in tx.get("events") or []))
     t = parse_time(b["time"])
     events.parse_block(b["height"], t, b["hash"], b["block_results"])
+    # Past the next month's grace (inside it, the check-in's month is
+    # still a credit vintage).
+    nxt = vintages.start(vintages.add_months(vintages.month_of(t), 1))
+    events.parse_block(b["height"], nxt, b["hash"], b["block_results"])
     with pytest.raises(events.EventError, match="block's month"):
-        events.parse_block(b["height"], vintages.start(vintages.add_months(vintages.month_of(t), 1)), b["hash"],
-                           b["block_results"])
+        events.parse_block(b["height"], nxt + vintages.GRACE_SECONDS, b["hash"], b["block_results"])

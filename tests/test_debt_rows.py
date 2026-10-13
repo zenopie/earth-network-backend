@@ -103,7 +103,9 @@ def test_slash_events_agree_with_their_rows():
     moved = [a for _, a in _finalize(sc, "shieldedstaking_move_slashed")]
     (sd,) = [a for _, a in _finalize(sc, "shieldedstaking_slash_debt")]
     assert [(m["move_key"], m["retained"]) for m in moved] == [(r["move_key"], r["retained"]) for r in rows]
-    assert int(sd["debt"]) <= sum(int(m["debt"]) for m in moved) and int(sd["entries"]) == 2
+    # v1.3.0: the debt is booked whole (no cap); no move was past its window.
+    assert int(sd["debt"]) == sum(int(m["debt"]) for m in moved) and int(sd["entries"]) == 2
+    assert sd["late_moves"] == "0"
     # The rows are the two redelegations' moves, keyed by their credit nullifiers.
     keys = [_attrs(e)["move_key"] for _, _, evs in _txs(sc) for e in evs if e["type"] == "shieldedstaking_redelegate"]
     assert keys == [r["move_key"] for r in rows]
@@ -318,12 +320,14 @@ def _ev(type_: str, **attrs) -> dict:
             [{"key": "mode", "value": "BeginBlock"}]}
 
 
-def _slash(key="11" * 32, retained=90, debt_=10, index=1, root="22" * 32, total=None, src=V1, dst=V2):
+def _slash(key="11" * 32, retained=90, debt_=10, index=1, root="22" * 32, total=None, src=V1, dst=V2, late=0):
+    """late: the slash_debt's late_moves (None: a pre-v1.3.0 event without it)."""
+    extra = {} if late is None else {"late_moves": late}
     return [_ev("shieldedstaking_debt_row", move_key=key, retained=retained, index=index, root=root),
             _ev("shieldedstaking_move_slashed", move_key=key, src_validator=src, dst_validator=dst, debt=debt_,
                 retained=retained),
             _ev("shieldedstaking_slash_debt", src_validator=V1, dst_validator=V2, value=50,
-                debt=debt_ if total is None else total, entries=1)]
+                debt=debt_ if total is None else total, entries=1, **extra)]
 
 
 def _parse(fin, txs=()):
@@ -334,8 +338,19 @@ def _parse(fin, txs=()):
 def test_a_slash_parses_to_its_row():
     d = _parse(_slash())
     assert d.debt_rows == [events.DebtRow(bytes([0x11]) * 32, 90, 1, bytes([0x22]) * 32)]
-    # The book may cap the slash_debt below its moves' sum.
-    assert _parse(_slash(total=3)).debt_rows
+    # Before v1.3.0 (no late_moves) the book could cap the slash_debt below
+    # its moves' sum.
+    assert _parse(_slash(total=3, late=None)).debt_rows
+
+
+def test_late_moves_owe_nothing():
+    # v1.3.0: a late move (its label may have cleared) gets no debt row and
+    # no move_slashed; the slash_debt counts it and books the in-window
+    # moves' debt whole.
+    assert _parse(_slash(late=2)).debt_rows
+    only_late = [_ev("shieldedstaking_slash_debt", src_validator=V1, dst_validator=V2, value=50, debt=0, entries=1,
+                     late_moves=1)]
+    assert _parse(only_late).debt_rows == []
 
 
 @pytest.mark.parametrize("fin,match", [
@@ -346,6 +361,12 @@ def test_a_slash_parses_to_its_row():
     ([_slash()[0], _slash(retained=91)[1], _slash()[2]], "does not follow its debt row"),
     ([_slash()[0], _slash(key="33" * 32)[1], _slash()[2]], "does not follow its debt row"),
     (_slash(total=11), "debt 11, its moves owe 10"),
+    (_slash(total=11, late=None), "debt 11, its moves owe 10"),
+    (_slash(total=9), "debt 9, its moves owe 10"),
+    ([_ev("shieldedstaking_slash_debt", src_validator=V1, dst_validator=V2, value=50, debt=1, entries=1,
+          late_moves=1)], "debt 1, its moves owe 0"),
+    (_slash(late=-1), "late_moves: negative"),
+    (_slash(late="x"), "late_moves: not an integer"),
     (_slash(src="earthvaloper1other"), "a move of earthvaloper1other"),
     (_slash(key="00" * 32), "the sentinel's"),
     (_slash(index=0), "index 0"),

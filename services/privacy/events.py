@@ -62,15 +62,15 @@ chain's own Query/GroundworksVotes; nothing here is stored). Blocks from
 before v1.2.0 carry shieldedstaking_position events of the retired
 positions: ignored.
 
-    shieldedstaking_groundworks_vote  action, ..., split_expires_at, vintage
-                         (v1.3.0): a stake vote has no lease (split_expires_at
-                         always "0") and ends with its vintage: the sweep
-                         deletes it as action "retired" once the vintage has
-                         retired ("lapsed" no longer occurs). With a vintage,
-                         "cast" is checked live in the block's month and
-                         unleased, "retired" checked retired; nothing is
-                         stored. Votes from before v1.3.0 (no vintage) are
-                         passed over.
+    shieldedstaking_groundworks_vote  action, ..., vintage (v1.3.0): a stake
+                         vote has no lease (the v1.3.0 event has no
+                         split_expires_at; one is not read if present) and
+                         ends with its vintage: the sweep deletes it as
+                         action "retired" once the vintage has retired
+                         ("lapsed" no longer occurs). With a vintage, "cast"
+                         is checked live in the block's month, "retired"
+                         checked retired; nothing is stored. Votes from
+                         before v1.3.0 (no vintage) are passed over.
 
     split_lapsed         stream, voter (an account), expires_at: an
                          operator's MsgSetAllocations split lapsed
@@ -81,9 +81,9 @@ positions: ignored.
 Lease alerts (x/allocation/types/events.go, chain 7033eac; none halts the
 chain, none changes anything this index stores). Logged, never checked, so
 an attribute the chain adds or drops cannot halt the indexer. Since v1.3.0
-only operators' splits are leased (no lapser groundworks_votes):
+only operators' splits are leased (lapser is always "account"):
 
-    lease_retire_failed  stream, lapser (account | groundworks_votes), key,
+    lease_retire_failed  stream, lapser (account), key,
                          expires_at, retry_at, error: a lease due could
                          not be retired; its weight counts until retry_at
                          (a day later). Logged as an error: page on it.
@@ -144,9 +144,16 @@ module's redelegation entries):
                                      debt, retained: right after its row,
                                      checked to repeat its key and retained.
     shieldedstaking_slash_debt       src_validator, dst_validator, value, debt,
-                                     entries: after its moves, checked to
-                                     name their validators and a debt of at
-                                     most theirs summed (the book may cap it).
+                                     entries, late_moves (v1.3.0): after its
+                                     moves, checked to name their validators
+                                     and exactly their debt summed. A late
+                                     move (move_time below the highest
+                                     clear_before named: its label may have
+                                     cleared) owes nothing, has no debt row
+                                     and no move_slashed; late_moves counts
+                                     them (an integer; absent before v1.3.0,
+                                     when the book could cap the debt, so
+                                     there it is checked at most the sum).
     shieldedstaking_redelegate       src_validator, dst_validator, derth,
                                      value, credited, queued, bonded,
                                      completion_time, move_key (the credit
@@ -155,28 +162,45 @@ module's redelegation entries):
                                      an event with `minted` is refused.
                                      v1.3.0 adds vintage (the source notes',
                                      checked live) and dst_vintage (where
-                                     the credit lands: checked to be the
-                                     block's month). Nothing of it is stored.
+                                     the credit lands, MsgRedelegate's
+                                     credit_vintage: checked to be the
+                                     block's month, or the previous one in
+                                     the month's first hour, the grace).
+                                     Nothing of it is stored.
 
 Stake vintages (chain v1.3.0, ORCHARD_DESIGN.md 8.9; services/privacy/vintages).
 A vintage is a UTC month YYYYMM, live in its month and the 12 after it; the
 block's month is its header time's. Each event is checked against it;
-nothing is stored (wallets read Query/Vintages from the chain):
+nothing is stored (wallets read Query/VintageBooks from the chain). A credit
+vintage (a delegation's vintage, a redelegation's dst_vintage, a check-in's
+to_vintage) is the block's month, or the previous month during the month's
+first vintages.GRACE_SECONDS (a proof built before the boundary):
 
     shieldedstaking_check_in         validator, from_vintage, to_vintage, derth:
-                                     MsgCheckIn moved derth from a live,
-                                     older vintage into the current one
-                                     (to_vintage, the block's month). Its
+                                     MsgCheckIn moved derth from a live
+                                     vintage older than to_vintage into
+                                     to_vintage (its credit_vintage: a
+                                     credit vintage, above). Its
                                      stake proof's notes and nullifiers are
                                      the ordinary stake events (both lanes,
                                      as a redelegation's; the credit carries
                                      no label and no move).
     shieldedstaking_vintage_retired  validator, vintage, supply, value, epoch,
-                                     payout_id: BeginBlock, a vintage that
-                                     has retired by the block's month left
-                                     its book as a held undelegation (a
-                                     payout with no pc: never paid as such,
-                                     so no unbond_payout names it).
+                                     payout_id: EndBlock, at the first epoch
+                                     end after the vintage's boundary (or a
+                                     later one, if the booking was deferred;
+                                     in a later block of the same sweep past
+                                     EpochValidatorLimit books): a vintage
+                                     retired by the block's month left its
+                                     book as a held undelegation of `epoch`,
+                                     the epoch that ended (a payout with no
+                                     pc: never paid as such, so no
+                                     unbond_payout names it), already
+                                     undelegated. Checked to be an EndBlock
+                                     event, and, when the block ends an
+                                     epoch, to name that epoch. Between the
+                                     boundary and it the vintage is
+                                     "retiring": no msg, no withdrawal.
     shieldedstaking_retired_withdrawal  validator, vintage, derth, value, epoch,
                                      payout_id, remaining_supply,
                                      remaining_value: MsgUndelegate on a
@@ -187,7 +211,7 @@ nothing is stored (wallets read Query/Vintages from the chain):
                                      shieldedstaking_unbond_payout, checked
                                      like any. The last derth takes the rest
                                      (remaining_value 0 with remaining_supply 0).
-    shieldedstaking_delegate         + vintage: checked to be the block's month
+    shieldedstaking_delegate         + vintage: checked to be a credit vintage
     shieldedstaking_undelegate       + vintage: checked live
 
 The stake nullifier tree (ORCHARD_DESIGN.md section 15) is an indexed
@@ -205,8 +229,9 @@ shielded_unshield / _spend_to_module / _fee / _asset, the dex's LP events
 liquidity events name no provider), shieldedstaking_delegate / _undelegate
 (validator, derth, value, epoch, payout_id; read only for their vintage) /
 _upgrade_v1_3_0 (vintage, books, votes, moves, failures) / _epoch_failure
-(its v1.3.0 stages vintage_sweep, retire_vintage, vintage_resync,
-dead_votes, upgrade_v1_3_0/<step> included) / _matured
+(its v1.3.0 stages vintage_sweep, vintage_totals (the monthly pass, per
+book), retire_vintage (the epoch-end booking), vintage_resync, dead_votes
+("vote <id> parked"), upgrade_v1_3_0/<step> included) / _matured
 (validator, epoch, value, payout) / _unbond_payout_failed (payout_id,
 validator, epoch, attempts, retry_at, error: kept and retried, nothing
 minted) / _stake_vote (vote_nullifiers: both slots' vote nullifiers, a padded
@@ -361,6 +386,7 @@ class VintageRetired:
     supply: int
     value: int
     payout_id: int
+    epoch: int
 
 
 @dataclass
@@ -503,15 +529,26 @@ def _validator(a: dict[str, str], what: str, key: str = "validator") -> str:
     return v
 
 
-def _check_msg_vintage(a: dict[str, str], what: str, cur: int, *, current: bool = False,
+def _check_credit(m: int, what: str, time: int) -> None:
+    """A credit vintage: the block's month, or the previous one during the
+    month's first vintages.GRACE_SECONDS."""
+    if not vintages.credit_ok(m, time):
+        cur = vintages.month_of(time)
+        raise EventError(f"{what} {m}: a credit lands in the block's month {cur}"
+                         + (f" (or {vintages.grace(time)} in its grace)" if vintages.grace(time) else ""))
+
+
+def _check_msg_vintage(a: dict[str, str], what: str, time: int, *, credit: bool = False,
                        key: str = "vintage") -> None:
     """A stake msg event's vintage attribute (v1.3.0; absent before): a
-    vintage live in the block's month cur, or exactly cur when current."""
+    vintage live in the block's month, or a credit vintage when credit."""
     if key not in a:
         return
     m = _vintage(a[key], f"{what} {key}")
-    if current and m != cur:
-        raise EventError(f"{what}: {key} {m}, the block's month is {cur}")
+    if credit:
+        _check_credit(m, f"{what}: {key}", time)
+        return
+    cur = vintages.month_of(time)
     if not vintages.is_live(m, cur):
         raise EventError(f"{what}: {key} {m} is not live in {cur}")
 
@@ -519,7 +556,8 @@ def _check_msg_vintage(a: dict[str, str], what: str, cur: int, *, current: bool 
 def _check_gw_vote(a: dict[str, str], cur: int) -> None:
     """A stake note's Groundworks vote event with a vintage (v1.3.0; before
     it, votes were leased and carried none, and are passed over): a vote is
-    cast in a live vintage with no lease (split_expires_at 0), and the sweep
+    cast in a live vintage (no lease: split_expires_at, gone since v1.3.0,
+    is not read), and the sweep
     deletes it ("retired") only once its vintage has retired. Other actions
     (cancelled, by a spend, even of a retired note; matured) are not read."""
     if "vintage" not in a or a.get("action") not in ("cast", "retired"):
@@ -529,8 +567,6 @@ def _check_gw_vote(a: dict[str, str], cur: int) -> None:
     if a.get("action") == "cast":
         if not vintages.is_live(m, cur):
             raise EventError(f"{w}: vintage {m} is not live in {cur}")
-        if a.get("split_expires_at", "0") != "0":
-            raise EventError(f"{w}: split_expires_at {a['split_expires_at']} (a stake vote has no lease)")
     elif a.get("action") == "retired" and not vintages.is_retired(m, cur):
         raise EventError(f"{w}: vintage {m} has not retired by {cur}")
 
@@ -538,8 +574,11 @@ def _check_gw_vote(a: dict[str, str], cur: int) -> None:
 def _vintage_retired(a: dict[str, str], cur: int) -> VintageRetired:
     w = "shieldedstaking_vintage_retired"
     r = VintageRetired(_validator(a, w), _vintage(a.get("vintage"), f"{w} vintage"), _int(a.get("supply"), f"{w} supply"),
-                       _int(a.get("value"), f"{w} value"), _int(a.get("payout_id"), f"{w} payout_id"))
-    _int(a.get("epoch"), f"{w} epoch")
+                       _int(a.get("value"), f"{w} value"), _int(a.get("payout_id"), f"{w} payout_id"),
+                       _int(a.get("epoch"), f"{w} epoch"))
+    # Booked by the epoch-end sweep (retireDue), never at the boundary.
+    if a.get("mode") != "EndBlock":
+        raise EventError(f"{w}: vintage {r.vintage} booked outside EndBlock (mode {a.get('mode', '')!r})")
     if not vintages.is_retired(r.vintage, cur):
         raise EventError(f"{w}: vintage {r.vintage} has not retired by {cur}")
     if r.supply == 0:
@@ -564,14 +603,14 @@ def _retired_withdrawal(a: dict[str, str], cur: int) -> RetiredWithdrawal:
     return r
 
 
-def _check_in(a: dict[str, str], cur: int) -> CheckIn:
+def _check_in(a: dict[str, str], time: int) -> CheckIn:
     w = "shieldedstaking_check_in"
     c = CheckIn(_validator(a, w), _vintage(a.get("from_vintage"), f"{w} from_vintage"),
                 _vintage(a.get("to_vintage"), f"{w} to_vintage"), _int(a.get("derth"), f"{w} derth"))
-    if c.to_vintage != cur:
-        raise EventError(f"{w}: to_vintage {c.to_vintage}, the block's month is {cur}")
-    if not vintages.is_live(c.from_vintage, cur) or c.from_vintage == cur:
-        raise EventError(f"{w}: from_vintage {c.from_vintage} is not a live month before {cur}")
+    _check_credit(c.to_vintage, f"{w}: to_vintage", time)
+    cur = vintages.month_of(time)
+    if not vintages.is_live(c.from_vintage, cur) or vintages.index(c.from_vintage) >= vintages.index(c.to_vintage):
+        raise EventError(f"{w}: from_vintage {c.from_vintage} is not a month live in {cur} before {c.to_vintage}")
     if c.derth == 0:
         raise EventError(f"{w}: no derth moved")
     return c
@@ -669,16 +708,16 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             _int(a.get("credited"), f"{w} credited")
             _int(a.get("move_time"), f"{w} move_time")
             move_keys.append(_hex32(a.get("move_key", ""), f"{w} move_key"))
-            _check_msg_vintage(a, w, month)
-            _check_msg_vintage(a, w, month, current=True, key="dst_vintage")
+            _check_msg_vintage(a, w, time)
+            _check_msg_vintage(a, w, time, credit=True, key="dst_vintage")
         elif t == "shieldedstaking_delegate":
-            _check_msg_vintage(_attrs(ev), t, month, current=True)
+            _check_msg_vintage(_attrs(ev), t, time, credit=True)
         elif t == "shieldedstaking_undelegate":
-            _check_msg_vintage(_attrs(ev), t, month)
+            _check_msg_vintage(_attrs(ev), t, time)
         elif t == "shieldedstaking_groundworks_vote":
             _check_gw_vote(_attrs(ev), month)
         elif t == "shieldedstaking_check_in":
-            d.check_ins.append(_check_in(_attrs(ev), month))
+            d.check_ins.append(_check_in(_attrs(ev), time))
         elif t == "shieldedstaking_vintage_retired":
             d.vintage_retired.append(_vintage_retired(_attrs(ev), month))
         elif t == "shieldedstaking_retired_withdrawal":
@@ -757,6 +796,12 @@ def parse_block(height: int, time: int, block_hash: str, results: dict) -> Block
             # and the store labels them with the epoch the sweep belongs to
             # (the last one ended, Store.apply).
             epoch = _int(_attrs(ev).get("epoch"), "shieldedstaking_epoch epoch")
+            # This epoch end's bookings (retireDue, before the epoch event)
+            # are of the epoch that ended.
+            for r in d.vintage_retired:
+                if r.epoch != epoch:
+                    raise EventError(f"shieldedstaking_vintage_retired {r.validator}/{r.vintage}: epoch {r.epoch}, "
+                                     f"the block ended epoch {epoch}")
             for r in pending_rates:
                 r.epoch = epoch
             d.rates.extend(pending_rates)
@@ -798,8 +843,16 @@ def _check_slash_debt(a: dict[str, str], moves: list[tuple[str, str, int]]) -> N
     for s_, d_, _ in moves:
         if (s_, d_) != (src, dst):
             raise EventError(f"{w} {src} -> {dst}: a move of {s_} -> {d_} before it")
-    if debt > sum(x for _, _, x in moves):
-        raise EventError(f"{w} {src} -> {dst}: debt {debt}, its moves owe {sum(x for _, _, x in moves)}")
+    owed = sum(x for _, _, x in moves)
+    if "late_moves" in a:
+        # v1.3.0: every in-window move's debt is booked whole on its live
+        # vintage (less is an invariant failure, and the guarded settle then
+        # writes nothing, events included); late moves owe nothing.
+        _int(a["late_moves"], f"{w} late_moves")
+        if debt != owed:
+            raise EventError(f"{w} {src} -> {dst}: debt {debt}, its moves owe {owed}")
+    elif debt > owed:
+        raise EventError(f"{w} {src} -> {dst}: debt {debt}, its moves owe {owed}")
 
 
 PAYOUT_MODULE = "shieldedstaking"

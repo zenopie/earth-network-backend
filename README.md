@@ -538,10 +538,15 @@ the value booked at retirement. The stream is unchanged: the vintage is
 inside the ciphertext's asset only, so a wallet trial-decrypts as before and
 maps the asset to a denom by trying `AssetID(denom)` over its validators'
 live and retired months. The base vintage, the current one and each one's
-`retires_at` come from the chain's `Query/Vintages`
-(`/earth/shieldedstaking/v1/vintages/{validator}`), not from this service.
-`services/privacy/vintages.py` mirrors the chain's denom and month rules
-(pinned to its Go). The indexer checks the vintage events
+`retires_at` come from the chain's `Query/VintageInfo` and
+`Query/VintageBooks` (`/earth/shieldedstaking/v1/vintage_info`,
+`/vintage_books`, read whole: no query names a validator), not from this
+service. A credit (a delegation, a redelegation's credit lane, a check-in)
+may name the previous month during a month's first hour (the grace). A
+vintage past its boundary is *retiring* until the next epoch end books its
+value; only then can its notes withdraw.
+`services/privacy/vintages.py` mirrors the chain's denom, month and grace
+rules (pinned to its Go). The indexer checks the vintage events
 (`shieldedstaking_check_in`, `_vintage_retired`, `_retired_withdrawal`, the
 `vintage` / `dst_vintage` of a delegation, undelegation, redelegation and a
 Groundworks vote) against the block's month and stores none of them; a
@@ -654,7 +659,7 @@ Not served here. Since chain v1.2.1 a Groundworks vote rides on a stake note
 (`/earth/shieldedstaking/v1/groundworks_votes`), never a query about one
 tag. Blocks from before v1.2.1 carry `shieldedstaking_position` events of the
 retired positions; the indexer passes over them. Since v1.3.0 a stake vote
-has no lease (`split_expires_at` always 0): it carries its note's vintage
+has no lease (its event has no `split_expires_at`): it carries its note's vintage
 and ends with it (the chain deletes it as action `retired`); only an
 operator's split is still leased.
 
@@ -684,7 +689,9 @@ must be this block's x/shieldedstaking uerth mints, distinct, one ciphertext,
 summing to `amount`; nothing stored), `shieldedstaking_debt_row` (a new key
 at exactly the next leaf, a known key at its own, `retained` never rising),
 `shieldedstaking_move_slashed` (must follow its row), `shieldedstaking_slash_debt`
-(must name its moves' validators and at most their summed debt),
+(must name its moves' validators and, since v1.3.0, exactly their summed
+debt, with an integer `late_moves`: moves past their label window owe
+nothing and have no row; before, at most the sum),
 `shieldedstaking_redelegate` (`move_key` must be a stake nullifier of the
 block; `minted` refused; nothing stored), the handle events (only as a
 signal to re-read the directory; `handle_moved` must name distinct `owner`
@@ -695,16 +702,19 @@ open position at the same validator; a lease end after the block, 0 for a
 lapse, and a lapse at or after the stored lease end), `split_lapsed`
 (an operator's lapse: `expires_at` at or before the block; nothing stored),
 and the stake vintage events of chain v1.3.0, each checked against the
-block's UTC month and none stored: `shieldedstaking_check_in` (`to_vintage`
-the block's month, `from_vintage` a live month before it, `derth` > 0),
-`shieldedstaking_vintage_retired` (a vintage retired by the block's month,
-with supply), `shieldedstaking_retired_withdrawal` (a retired vintage,
-`derth` > 0, no value left once no supply is), the `vintage` of
-`shieldedstaking_delegate` (the block's month), `_undelegate` and
-`_redelegate` (live) and `_redelegate`'s `dst_vintage` (the block's month),
-and a `shieldedstaking_groundworks_vote` with a vintage (`cast`: live, with
-`split_expires_at` 0; `retired`: retired). Events from before v1.3.0 carry
-no vintage and are read as before.
+block's UTC month and none stored. A *credit vintage* is the block's month,
+or the previous one in the month's first hour (the grace):
+`shieldedstaking_check_in` (`to_vintage` a credit vintage, `from_vintage`
+live and before it, `derth` > 0), `shieldedstaking_vintage_retired` (an
+EndBlock event, at an epoch end: a vintage retired by the block's month,
+with supply, its `epoch` the one the block ended if it ended one),
+`shieldedstaking_retired_withdrawal` (a retired vintage, `derth` > 0, no
+value left once no supply is), the `vintage` of `shieldedstaking_delegate`
+(a credit vintage), `_undelegate` and `_redelegate` (live) and
+`_redelegate`'s `dst_vintage` (a credit vintage), and a
+`shieldedstaking_groundworks_vote` with a vintage (`cast`: live; `retired`:
+retired; `split_expires_at` is not read). Events from before v1.3.0 carry no
+vintage and are read as before.
 
 **Not read**, because they change no tree and no rate: dex LP events,
 `shielded_unshield` and the other per-msg pool events,

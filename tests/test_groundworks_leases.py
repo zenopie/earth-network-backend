@@ -3,7 +3,7 @@ events and the lease alerts. Groundworks votes themselves (chain v1.2.0,
 by stake note) are not indexed: wallets read the chain's whole list.
 
 TestRecordGroundworksLease (bin/chainrec's own scenario, recorded from chain
-v1.3.0): a stake note's vote has no lease (split_expires_at 0, v1.3.0) and
+v1.3.0): a stake note's vote has no lease (no split_expires_at, v1.3.0) and
 stands past one; the operator's MsgSetAllocations vote lapsing
 (x/allocation split_lapsed) is checked. shieldedstaking_position events
 (before v1.2.0) are history the indexer passes over. Refusals are
@@ -53,7 +53,8 @@ def test_the_lease_scenario_indexes_and_the_operator_vote_lapses(tmp_path):
               for b in sc["blocks"] for e in b["block_results"].get("finalize_block_events") or []
               if e["type"] == "shieldedstaking_groundworks_vote"]
     assert sorted(v["action"] for v in votes) == ["cancelled", "cast", "cast"]
-    assert all(v["split_expires_at"] == "0" and v["vintage"] for v in votes)
+    # No lease attribute since v1.3.0's fix pass 1.
+    assert all("split_expires_at" not in v and v["vintage"] for v in votes)
 
 
 def _ev(type_, **attrs):

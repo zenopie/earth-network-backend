@@ -10,7 +10,14 @@ A stake note's asset names its validator and its vintage, the UTC month
 
 One denom per (validator, vintage): the suffixed spelling of the base month
 is a different asset the chain never supplies. A vintage is live in its own
-month and the 12 after it, and retires at 00:00 UTC on the 1st of month + 13.
+month and the 12 after it, and retires at 00:00 UTC on the 1st of month + 13
+(from then every msg on it but a withdrawal is refused); its value is booked
+at the next epoch end (it is "retiring" until then).
+
+A credit (a delegation, a redelegation's credit lane, a check-in) lands in
+the current month's vintage, or, during a month's first GRACE_SECONDS, in the
+previous month's (types.NewVintageCtx, VintageCtx.CheckCredit): a proof built
+before the boundary and included after it.
 
 The indexer reads vintages only from events (a check-in's, a retirement's, a
 withdrawal's, the msgs' vintage attributes), to check them against the
@@ -25,6 +32,8 @@ DERTH_PREFIX = "derth/"
 LIVE_VINTAGE_MONTHS = 13
 MIN_VINTAGE_YEAR = 2000
 MAX_VINTAGE_YEAR = 9999
+# types.VintageGraceSeconds (= ClearBeforeSlackSeconds).
+GRACE_SECONDS = 3600
 
 _SUFFIX = re.compile(r"[0-9]{6}")
 
@@ -77,6 +86,20 @@ def is_live(m: int, cur: int) -> bool:
 def is_retired(m: int, cur: int) -> bool:
     """types.VintageRetired: m has retired by month cur."""
     return index(m) <= index(cur) - LIVE_VINTAGE_MONTHS
+
+
+def grace(unix: int) -> int:
+    """types.NewVintageCtx's Grace at block time unix: the previous month
+    during the current one's first GRACE_SECONDS, else 0."""
+    cur = month_of(unix)
+    return add_months(cur, -1) if unix - start(cur) < GRACE_SECONDS else 0
+
+
+def credit_ok(m: int, unix: int) -> bool:
+    """VintageCtx.CheckCredit at block time unix: m is the block's month, or
+    the previous one during the grace."""
+    g = grace(unix)
+    return m == month_of(unix) or (g != 0 and m == g)
 
 
 def denom(valoper: str, m: int, base: int) -> str:

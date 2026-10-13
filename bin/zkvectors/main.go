@@ -265,9 +265,20 @@ func main() {
 	for _, c := range [][2]uint32{{202610, 202610}, {202510, 202610}, {202509, 202610}, {202611, 202610}, {202512, 202612}, {202511, 202612}, {202601, 202701}, {202512, 202701}} {
 		live = append(live, []any{c[0], c[1], sstypes.VintageLive(c[0], c[1]), sstypes.VintageRetired(c[0], c[1])})
 	}
+	// The month-boundary grace (NewVintageCtx, CheckCredit): a credit may
+	// name the previous month during the current one's first
+	// VintageGraceSeconds.
+	var grace [][]any
+	for _, ts := range []int64{1798761599, 1798761600, 1798765199, 1798765200, 1801439999, 1801440000, 1801443599, 1801443600, 1830297600} {
+		vc := sstypes.NewVintageCtx(202610, time.Unix(ts, 0))
+		for _, m := range []uint32{vc.Current, sstypes.AddMonths(vc.Current, -1), sstypes.AddMonths(vc.Current, -2), sstypes.AddMonths(vc.Current, 1)} {
+			grace = append(grace, []any{ts, vc.Current, vc.Grace, m, vc.CheckCredit(m) == nil})
+		}
+	}
 	vden := sstypes.VintageDenom(val, 202611, 202610)
 	out["vintages"] = map[string]any{
 		"live_months": sstypes.LiveVintageMonths, "denoms": denoms, "parse": parses, "months": months, "live": live,
+		"grace_seconds": sstypes.VintageGraceSeconds, "grace": grace,
 		"asset": map[string]string{"denom": vden, "id": hx(privacy.AssetID(vden))},
 		"stake_cm": map[string]string{"denom": vden, "amount": "250000", "cm": hx(privacy.StakeCM(privacy.AssetID(vden), 250000, spc, fr.Element{}))},
 	}
