@@ -30,8 +30,8 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --no-deps -r
 # change the node has and this binary lacks means refusing proofs the chain
 # would take. It must be the release of the chain the service grants on
 # (privacy/orchard; RELAUNCH.md in the deploy repo, section 4.1).
-ARG EARTHD_VERSION=v1.2.1
-ARG EARTHD_SHA256=042ec76c1d269cfc0def585c14975c25c5dbc6478b90fdef5cb9246029c13c7c
+ARG EARTHD_VERSION=v1.3.0
+ARG EARTHD_SHA256=fc431842ec14c841cf10475f5eec957b871dbb9929bea958219276fb297a8b92
 # Releases that cannot check the relaunch chain's MsgRegister (they predate
 # handles, the chain-id binding and error 1127): every registration would be
 # refused, and new humans could never get a gas note. The image refuses to
